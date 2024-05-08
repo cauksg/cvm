@@ -70,6 +70,7 @@ make -C busybox-1.33.1 defconfig
 cd busybox-1.33.1
 echo 'CONFIG_CROSS_COMPILER_PREFIX="riscv64-unknown-linux-gnu-' >> .config
 echo 'CONFIG_STATIC=y' >> .config
+cd ..
 make -C busybox-1.33.1 install
 mkdir -p busybox-1.33.1/_install/etc/init.d
 mkdir -p busybox-1.33.1/_install/dev
