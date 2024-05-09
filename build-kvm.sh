@@ -1,5 +1,6 @@
 #!/bin/bash
-git submodule update --init --recursive
+
+git submodule update --init
 
 #Compiling the toolchain
 mkdir ~/riscv
@@ -18,8 +19,10 @@ echo 'export PATH="$PATH:$RISCV"' >> ~/.bashrc
 source ~/.bashrc
 cd ..
 
+
 #Compiling QEMU for RSIC-V with virtualization extensions
 sudo apt install ninja-build pkg-config libglib2.0-dev libpixman-1-dev libtirpc-dev unzip
+sudo apt-get install python3-venv
 #git clone https://github.com/kvm-riscv/qemu.git
 cd qemu
 ./configure --target-list="riscv32-softmmu riscv64-softmmu"
