@@ -13,7 +13,9 @@ cd riscv-gnu-toolchain
 ./configure --prefix=$RISCV --enable-multilib
 make -j $(nproc)
 make -j $(nproc) linux
-export PATH=$PATH:$RISCV
+echo 'export RISCV=~/riscv/bin' >> ~/.bashrc
+echo 'export PATH="$PATH:$RISCV"' >> ~/.bashrc
+source ~/.bashrc
 cd ..
 
 #Compiling QEMU for RSIC-V with virtualization extensions
