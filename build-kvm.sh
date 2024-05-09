@@ -14,7 +14,7 @@ cd riscv-gnu-toolchain
 ./configure --prefix=$RISCV --enable-multilib
 make -j $(nproc)
 make -j $(nproc) linux
-echo 'export RISCV=~/riscv/bin' >> ~/.bashrc
+eval echo 'export RISCV=$(eval echo ~)/riscv/bin' >> ~/.bashrc
 echo 'export PATH="$PATH:$RISCV"' >> ~/.bashrc
 source ~/.bashrc
 cd ..
