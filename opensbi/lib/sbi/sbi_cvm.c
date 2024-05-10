@@ -236,7 +236,7 @@ struct cvm_vcpu_node *get_cvm_vcpu_node(struct kvm_vmid *vmid_ptr, int vcpu_id)
 	for(struct cvm_vcpu_node *cur = vcpu_list_head; cur->next; cur = cur->next)
 	{
 		struct cvm_vcpu_node *node = cur->next;
-        sbi_printf("[IIE CVM Monitor@%s] node vcpu id = %d\tvcpu id = %d\n", __func__, *node->vcpu.vcpu_id, vcpu_id);
+        sbi_printf("[IIE CVM Monitor@%s] node vcpu id = %d\tvcpu id = %d\n", __func__, *node->vcpu.vcpu_id, );
 		if(*node->vcpu.vcpu_id == vcpu_id)
 			return node;
 	}
