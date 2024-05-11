@@ -35,6 +35,15 @@ static int sbi_ecall_rfence_handler(unsigned long extid, unsigned long funcid,
 				  SBI_TLB_FENCE_I, source_hart);
 		ret = sbi_tlb_request(regs->a0, regs->a1, &tlb_info);
 		break;
+	
+	/* sbi_ecall(ext, fid, hmask, hbase, start, size, 0, 0);
+		a0: hmask
+		a1: hbase
+		a2: start
+		a3: size
+		a4: vmid = 0
+		sbi_ecall(SBI_EXT_RFENCE, SBI_EXT_RFENCE_REMOTE_HFENCE_GVMA, 0, -1UL, 0, 0, SBI_TLB_HFENCE_GVMA, source_hart)
+	*/
 	case SBI_EXT_RFENCE_REMOTE_HFENCE_GVMA:
 		SBI_TLB_INFO_INIT(&tlb_info, regs->a2, regs->a3, 0, 0,
 				  SBI_TLB_HFENCE_GVMA, source_hart);

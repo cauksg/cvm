@@ -343,6 +343,7 @@ static int tlb_update(struct sbi_scratch *scratch,
 	 * then just do a local flush and return;
 	 */
 	if (sbi_hartindex_to_hartid(remote_hartindex) == curr_hartid) {
+
 		tlb_entry_local_process(tinfo);
 		return SBI_IPI_UPDATE_BREAK;
 	}

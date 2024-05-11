@@ -655,6 +655,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 	{		
 		struct sbiret retval = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_RUN_VCPU,
 		  pa_cvm, 0, 0, 0, 0, 0);
+		// retval = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_FINALIZE, 0, 0, 0, 0, 0, 0);
 		// printk("Kernel: RUN retval.value = %d\tretval.error = %d\n", retval.value, retval.error);
 	}
 

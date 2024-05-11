@@ -59,6 +59,7 @@ struct iie_cvm_sbi_params {
 	struct kvm_vmid *vmid_ptr;
 	int *vcpu_id_ptr;	/* id given by userspace at creation */
 
+    /* only need GPA. As confidential Memory is managed by CVM Monitor */
 	/* G-stage page table */
 	pgd_t *pgd_ptr;
 	phys_addr_t *pgd_phys_ptr;

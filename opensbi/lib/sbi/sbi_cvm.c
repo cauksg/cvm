@@ -2,6 +2,8 @@
 #include <sbi/sbi_console.h>
 #include <sbi/sbi_string.h>
 #include <sbi/sbi_heap.h>
+#include <sbi/sbi_tlb.h>
+
 
 spinlock_t spin_lock_cm_list;
 spinlock_t spin_lock_bitmap;
@@ -236,7 +238,7 @@ struct cvm_vcpu_node *get_cvm_vcpu_node(struct kvm_vmid *vmid_ptr, int vcpu_id)
 	for(struct cvm_vcpu_node *cur = vcpu_list_head; cur->next; cur = cur->next)
 	{
 		struct cvm_vcpu_node *node = cur->next;
-        sbi_printf("[IIE CVM Monitor@%s] node vcpu id = %d\tvcpu id = %d\n", __func__, *node->vcpu.vcpu_id, );
+        sbi_printf("[IIE CVM Monitor@%s] node vcpu id = %d\tvcpu id = %d\n", __func__, *node->vcpu.vcpu_id, vcpu_id);
 		if(*node->vcpu.vcpu_id == vcpu_id)
 			return node;
 	}
@@ -273,8 +275,30 @@ int sbi_cvm_run_vcpu(struct iie_cvm_sbi_params * cvm_sbi_params)
 
 int sbi_cvm_create_finalize(struct iie_cvm_sbi_params * cvm_sbi_params)
 {
-	/* TODO */
-	return 0;
+    /* 
+        SBI_TLB_INFO_INIT(&tlb_info, regs->a2, regs->a3, 0, 0, SBI_TLB_HFENCE_GVMA, source_hart);
+        sbi_tlb_request(regs->a0, regs->a1, &tlb_info);
+        int sbi_tlb_request(ulong hmask, ulong hbase, struct sbi_tlb_info *tinfo);
+        int sbi_ipi_send_many(ulong hmask, ulong hbase, u32 event, void *data);
+        a0: hmask: any value
+        a1: hbase: -1UL: ignore hmask
+        a2: start: 0
+		a3: size: 0
+            The remote fence function acts as a full TLB flush if
+                • start_addr and size are both 0
+                • size is equal to 2^XLEN-1
+		a4: vmid = 0
+        a5: gpa
+        hart_mask_base can be set to -1 to indicate that hart_mask can be ignored 
+        and all available harts must be considered.
+    */
+   	struct sbi_tlb_info tlb_info;
+   	u32 source_hart = current_hartid();
+    /* #define SBI_TLB_INFO_INIT(__p, __start, __size, __asid, __vmid, __type, __src) */
+    SBI_TLB_INFO_INIT(&tlb_info, 0, 0, 0, 0, SBI_TLB_HFENCE_GVMA, source_hart);
+	int ret = sbi_tlb_request(0, -1UL, &tlb_info);
+
+	return ret;
 }
 
 int sbi_cvm_create_memory_region(struct iie_cvm_sbi_params * cvm_sbi_params)

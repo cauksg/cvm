@@ -61,6 +61,7 @@ static int sbi_ipi_send(struct sbi_scratch *scratch, u32 remote_hartindex,
 		if (ret != SBI_IPI_UPDATE_SUCCESS)
 			return ret;
 	} else if (scratch == remote_scratch) {
+
 		/*
 		 * IPI events with an update() callback are expected to return
 		 * SBI_IPI_UPDATE_BREAK for self-IPIs. For other events, check
@@ -115,7 +116,7 @@ int sbi_ipi_send_many(ulong hmask, ulong hbase, u32 event, void *data)
 	struct sbi_hartmask target_mask = {0};
 	struct sbi_domain *dom = sbi_domain_thishart_ptr();
 	struct sbi_scratch *scratch = sbi_scratch_thishart_ptr();
-
+	
 	/* Find the target harts */
 	if (hbase != -1UL) {
 		rc = sbi_hsm_hart_interruptible_mask(dom, hbase, &m);
@@ -128,6 +129,7 @@ int sbi_ipi_send_many(ulong hmask, ulong hbase, u32 event, void *data)
 				sbi_hartmask_set_hartid(i, &target_mask);
 		}
 	} else {
+		// sbi_printf("[IIE CVM Monitor@%s] Enter sbi_ipi_send_many. hmask = %lx\thbase=%lx\tevent=%u\n", __func__, hmask, hbase, event);
 		hbase = 0;
 		while (!sbi_hsm_hart_interruptible_mask(dom, hbase, &m)) {
 			for (i = hbase; m; i++, m >>= 1) {
@@ -136,13 +138,18 @@ int sbi_ipi_send_many(ulong hmask, ulong hbase, u32 event, void *data)
 			}
 			hbase += BITS_PER_LONG;
 		}
+		// sbi_printf("[IIE CVM Monitor@%s] Enter else seg. hmask = %lx\thbase=%lx\tevent=%u\n", __func__, hmask, hbase, event);
+
 	}
 
 	/* Send IPIs */
 	do {
 		retry_needed = false;
 		sbi_hartmask_for_each_hartindex(i, &target_mask) {
+		// sbi_printf("[IIE CVM Monitor@%s] Enter sbi_hartmask_for_each_hartindex\n", __func__, hmask, hbase, event);
+
 			rc = sbi_ipi_send(scratch, i, event, data);
+		// sbi_printf("[IIE CVM Monitor@%s] Enter sbi_hartmask_for_each_hartindex\trc = %d\n", __func__, rc);
 			if (rc < 0)
 				goto done;
 			if (rc == SBI_IPI_UPDATE_RETRY)
