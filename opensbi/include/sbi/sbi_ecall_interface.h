@@ -126,6 +126,7 @@
 #define SBI_EXT_CVM_FINALIZE				0x4
 #define SBI_EXT_CVM_INIT_MEM_POOL			0x5
 #define SBI_EXT_CVM_RUN_VCPU				0x6
+#define SBI_EXT_CVM_LOAD_FILE				0x7
 
 /** General pmu event codes specified in SBI PMU extension */
 enum sbi_pmu_hw_generic_events_t {

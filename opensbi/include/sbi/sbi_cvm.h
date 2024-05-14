@@ -43,6 +43,7 @@ struct sbi_cvm {
 	enum cvm_state state;
 	struct cvm_vcpu_node *cvm_vcpu_list_head;
 	uint32_t cmode;
+    unsigned long root_pt;
 };
 
 /* Page Global Directory entry */
@@ -61,9 +62,30 @@ struct iie_cvm_sbi_params {
 
     /* only need GPA. As confidential Memory is managed by CVM Monitor */
 	/* G-stage page table */
-	pgd_t *pgd_ptr;
-	phys_addr_t *pgd_phys_ptr;
+	// pgd_t *pgd_ptr;
+	// phys_addr_t *pgd_phys_ptr;
+    
+    unsigned long gpa;
 
+};
+
+//for share 
+struct iie_cvm_sbi_params_shared {
+	/* G-stage vmid */
+	struct kvm_vmid *vmid_ptr;
+	int *vcpu_id_ptr;	/* id given by userspace at creation */
+
+	unsigned long *gpa;
+	unsigned long *hpa;
+	unsigned long count;
+};
+
+struct iie_cvm_sbi_params_load {
+	/* G-stage vmid */
+	struct kvm_vmid *vmid_ptr;
+	unsigned long *src_hpa_array;
+	unsigned long des_gpa;
+	unsigned long count;
 };
 
 
@@ -197,11 +219,12 @@ union mcvm
 
 
 //function
-int malloc_cvm_empty_page(vaddr_t gpa, cvm_lifecycle_t* cvm_lifecycle);
-int mfree_cvm_page(vaddr_t gpa, cvm_lifecycle_t* cvm_lifecycle);
-paddr_t mreclaim_cvm_page(vaddr_t gpa, cvm_lifecycle_t* cvm_lifecycle);
-int add_cvm_share_pages(cvm_lifecycle_t* cvm_lifecycle,  vaddr_t* normal_gpa, paddr_t* normal_hpa, int count);
+int malloc_cvm_empty_page(struct cvm_vcpu_node *vcpu_node, struct iie_cvm_sbi_params *cvm_sbi_params);
+int mfree_cvm_page(struct cvm_vcpu_node *vcpu_node, struct iie_cvm_sbi_params *cvm_sbi_params);
+paddr_t mreclaim_cvm_page(struct cvm_vcpu_node *vcpu_node, struct iie_cvm_sbi_params *cvm_sbi_params);
+int add_cvm_share_pages(struct cvm_vcpu_node *vcpu_node, struct iie_cvm_sbi_params_shared *shared_pages);
 int convert_cvm_pages(paddr_t* normal_address, int count);
+int load_file(struct iie_cvm_sbi_params_load *load_file);
 
 void set_bitmap(paddr_t page_address);
 void reset_bitmap(paddr_t page_address);

@@ -88,6 +88,8 @@ struct cvm_vcpu {
 	struct cpu_trap* kvm_vcpu_trap;
 	struct cpu_context* kvm_vcpu_context;
 	struct sbi_cvm *cvm;
+	//TODO: delete it because root_pt is for each cvm rather than each vcpu
+	unsigned long root_pt;
 };
 
 typedef struct

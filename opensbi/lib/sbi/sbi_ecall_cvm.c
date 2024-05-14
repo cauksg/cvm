@@ -39,6 +39,8 @@ static int sbi_ecall_cvm_handler(unsigned long extid, unsigned long funcid,
 		sbi_printf("[IIE CVM Monitor@%s] SBI_EXT_CVM_INIT_MEM_POOL.\n", __func__);
 		ret = sbi_cvm_init_mem_pool((void *)regs->a0);
 		break;
+	case SBI_EXT_CVM_LOAD_FILE:
+		ret = load_file((void *)regs->a0);
 	default:
 		break;
 	}
