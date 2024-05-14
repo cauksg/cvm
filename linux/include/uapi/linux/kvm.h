@@ -1474,6 +1474,14 @@ struct kvm_vfio_spapr_tce {
 #define KVM_SET_TSS_ADDR          _IO(KVMIO,   0x47)
 #define KVM_SET_IDENTITY_MAP_ADDR _IOW(KVMIO,  0x48, __u64)
 
+struct load_file{
+	unsigned long src_hva;
+	unsigned long des_gpa;
+	unsigned long file_size;
+};
+
+#define KVM_LOAD_FILE		  	_IOWR(KVMIO, 0x49, struct load_file)
+
 /* enable ucontrol for s390 */
 struct kvm_s390_ucas_mapping {
 	__u64 user_addr;
