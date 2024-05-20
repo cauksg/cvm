@@ -237,7 +237,7 @@ static inline unsigned long sbi_regs_gva(const struct sbi_trap_regs *regs)
 }
 
 int sbi_trap_redirect(struct sbi_trap_regs *regs,
-		      const struct sbi_trap_info *trap);
+		    const struct sbi_trap_info *trap);
 
 static inline struct sbi_trap_context *sbi_trap_get_context(struct sbi_scratch *scratch)
 {

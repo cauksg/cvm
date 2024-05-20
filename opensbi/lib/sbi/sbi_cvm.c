@@ -2,15 +2,14 @@
 #include <sbi/sbi_console.h>
 #include <sbi/sbi_string.h>
 #include <sbi/sbi_heap.h>
-#include <sbi/sbi_tlb.h>
-
 
 spinlock_t spin_lock_cm_list;
 spinlock_t spin_lock_bitmap;
 spinlock_t spin_lock_page_own_table;
 
 struct list_head* free_mem_list_head;
-//page_own_table_t *page_own_table = sbi_calloc(1, 4);
+//page_own_table_t *page_own_table = (page_own_table_t*)sbi_calloc(1, 4);
+
 
 //todo: array is too big !
 page_own_table_t page_own_table[PAGE_NUM];
@@ -55,153 +54,154 @@ static inline void list_del(struct list_head *entry){
 
 /* CVM Life Cycle ------------------------------------------------------------------------------ */
 
-struct cvm_node *iie_cvm_list_head = NULL;
-cpu_state_t cpus[MAX_HARTS];
+// struct cvm_node *iie_cvm_list_head = NULL;
+// cpu_state_t cpus[MAX_HARTS];
 
-// #define LOCK_DEBUG   0
-static spinlock_t cvm_metadata_lock = SPIN_LOCK_INITIALIZER;
-
-
-/* TODO: memory allocated should be in confidential memory region */
-static struct cvm_node* alloc_cvm_node()
-{
-	return (struct cvm_node *)sbi_malloc(sizeof(struct cvm_node));
-}
-
-/* TODO: memory allocated should be in confidential memory region */
-static struct cvm_vcpu_node* alloc_cvm_vcpu_node()
-{
-	return (struct cvm_vcpu_node *)sbi_malloc(sizeof(struct cvm_vcpu_node));
-}
-
-static uint32_t get_keyID(struct kvm_vmid *vmid)
-{
-	/* TODO */
-	static int cnt = 1;
-	return ++ cnt;
-}
-
-static void cvm_insert_node(struct cvm_node *node)
-{
-	node->next = iie_cvm_list_head->next;
-	iie_cvm_list_head->next = node;
-}
-
-static void cvm_insert_vcpu_node(struct cvm_vcpu_node *list_head, struct cvm_vcpu_node *node)
-{
-	node->next = list_head->next;
-	list_head->next = node;
-}
-
-int sbi_cvm_create(struct iie_cvm_sbi_params *cvm_sbi_params)
-{
-	sbi_printf("[IIE CVM Monitor@%s] vmid = %d\n", __func__,cvm_sbi_params->vmid_ptr->vmid);
-	sbi_printf("[IIE CVM Monitor@%s] vcpu_id = %d\n", __func__,*cvm_sbi_params->vcpu_id_ptr);
-	// sbi_printf("[IIE CVM Monitor@%s] pgd_ptr = %lx\n", __func__,cvm_sbi_params->pgd_ptr);
-	// sbi_printf("[IIE CVM Monitor@%s] pgd_phys_ptr = %lx\n", __func__,cvm_sbi_params->pgd_phys_ptr);
-	// sbi_printf("[IIE CVM Monitor@%s] pgd = %lx\n", __func__,*cvm_sbi_params->pgd_ptr);
-	// sbi_printf("[IIE CVM Monitor@%s] pgd_phys = %lx\n", __func__,*cvm_sbi_params->pgd_phys_ptr);
+// // #define LOCK_DEBUG   0
+// static spinlock_t cvm_metadata_lock = SPIN_LOCK_INITIALIZER;
 
 
-	/* alloc a memory block for cvm struct */
-	struct cvm_node* cvm_node = alloc_cvm_node();
-	if(!cvm_node)
-	{
-		sbi_printf("[IIE CVM Monitor@%s] cvm allocation is failed \r\n", __func__);
-		return TEE_NO_MEMORY;
-	}
-	sbi_printf("[IIE CVM Monitor@%s] cvm allocation is successfull. \r\n", __func__);
+// /* TODO: memory allocated should be in confidential memory region */
+// static struct cvm_node* alloc_cvm_node()
+// {
+// 	return (struct cvm_node *)sbi_malloc(sizeof(struct cvm_node));
+// }
+
+// /* TODO: memory allocated should be in confidential memory region */
+// static struct cvm_vcpu_node* alloc_cvm_vcpu_node()
+// {
+// 	return (struct cvm_vcpu_node *)sbi_malloc(sizeof(struct cvm_vcpu_node));
+// }
+
+// static uint32_t get_keyID(struct kvm_vmid *vmid)
+// {
+// 	/* TODO */
+// 	static int cnt = 1;
+// 	return ++ cnt;
+// }
+
+// static void cvm_insert_node(struct cvm_node *node)
+// {
+// 	node->next = iie_cvm_list_head->next;
+// 	iie_cvm_list_head->next = node;
+// }
+
+// static void cvm_insert_vcpu_node(struct cvm_vcpu_node *list_head, struct cvm_vcpu_node *node)
+// {
+// 	node->next = list_head->next;
+// 	list_head->next = node;
+// }
+
+// int sbi_cvm_create(struct iie_cvm_sbi_params *cvm_sbi_params)
+// {
+// 	sbi_printf("[IIE CVM Monitor@%s] vmid = %d\n", __func__,cvm_sbi_params->vmid_ptr->vmid);
+// 	sbi_printf("[IIE CVM Monitor@%s] vcpu_id = %d\n", __func__,*cvm_sbi_params->vcpu_id_ptr);
+// 	//sbi_printf("[IIE CVM Monitor@%s] pgd_ptr = %lx\n", __func__,cvm_sbi_params->pgd_ptr);
+// 	//sbi_printf("[IIE CVM Monitor@%s] pgd_phys_ptr = %lx\n", __func__,cvm_sbi_params->pgd_phys_ptr);
+// 	//sbi_printf("[IIE CVM Monitor@%s] pgd = %lx\n", __func__,*cvm_sbi_params->pgd_ptr);
+// 	//sbi_printf("[IIE CVM Monitor@%s] pgd_phys = %lx\n", __func__,*cvm_sbi_params->pgd_phys_ptr);
+
+
+// 	/* alloc a memory block for cvm struct */
+// 	struct cvm_node* cvm_node = alloc_cvm_node();
+// 	if(!cvm_node)
+// 	{
+// 		sbi_printf("[IIE CVM Monitor@%s] cvm allocation is failed \r\n", __func__);
+// 		return TEE_NO_MEMORY;
+// 	}
+// 	sbi_printf("[IIE CVM Monitor@%s] cvm allocation is successfull. \r\n", __func__);
     
-	/* Initialize cvm structure*/
-	// sbi_printf("[IIE CVM Monitor@%s] CVM initializing. \r\n", __func__);
-	cvm_node->cvm.vmid = cvm_sbi_params->vmid_ptr;
-	cvm_node->cvm.KeyID = get_keyID(cvm_node->cvm.vmid);
-	cvm_node->cvm.state = INITIALIZING;
-	cvm_node->cvm.cvm_vcpu_list_head = alloc_cvm_vcpu_node();
-	cvm_node->cvm.cvm_vcpu_list_head->next = NULL;
-	cvm_node->cvm.cmode = 1;
-	cvm_node->next = NULL;
+// 	/* Initialize cvm structure*/
+// 	// sbi_printf("[IIE CVM Monitor@%s] CVM initializing. \r\n", __func__);
+// 	cvm_node->cvm.vmid = cvm_sbi_params->vmid_ptr;
+// 	cvm_node->cvm.KeyID = get_keyID(cvm_node->cvm.vmid);
+// 	cvm_node->cvm.state = INITIALIZING;
+// 	cvm_node->cvm.cvm_vcpu_list_head = alloc_cvm_vcpu_node();
+// 	cvm_node->cvm.cvm_vcpu_list_head->next = NULL;
+// 	cvm_node->cvm.cmode = 1;
+// 	cvm_node->next = NULL;
 
-	/* maintain the cvm List */
-	// sbi_printf("[IIE CVM Monitor@%s] CVM List. \r\n", __func__);
-	if(iie_cvm_list_head == NULL)
-	{
-		/* alloc memory first */
-		iie_cvm_list_head = alloc_cvm_node();
-		iie_cvm_list_head->next = cvm_node;
-	}
-	else cvm_insert_node(cvm_node);
-	// sbi_printf("[IIE CVM Monitor@%s] print_cvm_list. \r\n", __func__);
-	print_cvm_list();
-
-
-	// TODO: Calculate the enclave's measurement
-
-	// TODO: verify hash and whitelist check
-
-	// Check page table mapping secure and not out of bound
-	//put it in run_enclave for debug
-/*
+// 	/* maintain the cvm List */
+// 	// sbi_printf("[IIE CVM Monitor@%s] CVM List. \r\n", __func__);
+// 	if(iie_cvm_list_head == NULL)
+// 	{
+// 		/* alloc memory first */
+// 		iie_cvm_list_head = alloc_cvm_node();
+// 		iie_cvm_list_head->next = cvm_node;
+// 	}
+// 	else cvm_insert_node(cvm_node);
+// 	// sbi_printf("[IIE CVM Monitor@%s] print_cvm_list. \r\n", __func__);
+// 	print_cvm_list();
 
 
-/*
- * If create failed for above reasons, secure memory and enclave struct
- * allocated before will never be used. So we need to free these momery.
- */
+// 	// TODO: Calculate the enclave's measurement
 
-// error_out:
-/*
-	sbi_memset((void*)(enclave->paddr), 0, enclave->size);
-	mm_free((void*)(enclave->paddr), enclave->size);
-	//free enclave struct
-	free_enclave(eid); //the enclave state will be set INVALID here
-*/
-	return CVM_ERROR;
-}
+// 	// TODO: verify hash and whitelist check
+
+// 	// Check page table mapping secure and not out of bound
+// 	//put it in run_enclave for debug
+// /*
 
 
-int sbi_cvm_create_vcpu(struct iie_cvm_sbi_params * cvm_sbi_params)
-{
-	struct kvm_vmid *vmid_ptr = cvm_sbi_params->vmid_ptr;
-	int *vcpu_id_ptr = cvm_sbi_params->vcpu_id_ptr;
-	struct cvm_node *cvm_node = get_cvm(vmid_ptr);
-	if(!cvm_node)
-	{
-		sbi_printf("[IIE CVM Monitor@%s] CVM Node is NULL, get_cvm failed!\n", __func__);
-		return -1;
-	}
-	struct cvm_vcpu_node *vcpu_list_head = cvm_node->cvm.cvm_vcpu_list_head;
-	struct cvm_vcpu_node *vcpu_node = alloc_cvm_vcpu_node();
-	if(!vcpu_node)
-	{
-		sbi_printf("[IIE CVM Monitor@%s] CVM vcpu Node allocated failed!\n", __func__);
-		return -1;
-	}
-	vcpu_node->vcpu.vcpu_id = vcpu_id_ptr;
-	vcpu_node->vcpu.cvm = &cvm_node->cvm;
+// /*
+//  * If create failed for above reasons, secure memory and enclave struct
+//  * allocated before will never be used. So we need to free these momery.
+//  */
 
-	sbi_printf("[IIE CVM Monitor@%s] vmid = %d\n", __func__,vmid_ptr->vmid);
-	sbi_printf("[IIE CVM Monitor@%s] vcpu_id = %d\n", __func__,*vcpu_id_ptr);
+// // error_out:
+// /*
+// 	sbi_memset((void*)(enclave->paddr), 0, enclave->size);
+// 	mm_free((void*)(enclave->paddr), enclave->size);
+// 	//free enclave struct
+// 	free_enclave(eid); //the enclave state will be set INVALID here
+// */
+// 	return CVM_ERROR;
+// }
+
+
+// int sbi_cvm_create_vcpu(struct iie_cvm_sbi_params * cvm_sbi_params)
+// {
+// 	struct kvm_vmid *vmid_ptr = cvm_sbi_params->vmid_ptr;
+// 	int *vcpu_id_ptr = cvm_sbi_params->vcpu_id_ptr;
+// 	struct cvm_node *cvm_node = get_cvm(vmid_ptr);
+// 	if(!cvm_node)
+// 	{
+// 		sbi_printf("[IIE CVM Monitor@%s] CVM Node is NULL, get_cvm failed!\n", __func__);
+// 		return -1;
+// 	}
+// 	struct cvm_vcpu_node *vcpu_list_head = cvm_node->cvm.cvm_vcpu_list_head;
+// 	struct cvm_vcpu_node *vcpu_node = alloc_cvm_vcpu_node();
+// 	if(!vcpu_node)
+// 	{
+// 		sbi_printf("[IIE CVM Monitor@%s] CVM vcpu Node allocated failed!\n", __func__);
+// 		return -1;
+// 	}
+// 	vcpu_node->vcpu.vcpu_id = vcpu_id_ptr;
+// 	vcpu_node->vcpu.cvm = &cvm_node->cvm;
+
+// 	sbi_printf("[IIE CVM Monitor@%s] vmid = %d\n", __func__,vmid_ptr->vmid);
+// 	sbi_printf("[IIE CVM Monitor@%s] vcpu_id = %d\n", __func__,*vcpu_id_ptr);
 	
 
-	if(vcpu_list_head->next == NULL)
-	{
-		vcpu_list_head->next = vcpu_node;
-	}
-	else cvm_insert_vcpu_node(vcpu_list_head, vcpu_node);
+// 	if(vcpu_list_head->next == NULL)
+// 	{
+// 		vcpu_list_head->next = vcpu_node;
+// 	}
+// 	else cvm_insert_vcpu_node(vcpu_list_head, vcpu_node);
 
 	
 
-	return 0;
-}
+// 	return 0;
+// }
 
-static uint32_t get_cmode(int vcpu_id)
-{
-	if(vcpu_id < 0 || vcpu_id >= MAX_HARTS) return 0;
-	return 1;
-	// return cpus[vcpu_id].cmode;
-}
+// static uint32_t get_cmode(int vcpu_id)
+// {
+// 	if(vcpu_id < 0 || vcpu_id >= MAX_HARTS) return 0;
+// 	return 1;
+// 	// return cpus[vcpu_id].cmode;
+// }
 
+struct cvm_node *iie_cvm_list_head;
 struct cvm_node *get_cvm(struct kvm_vmid *vmid_ptr)
 {
 	
@@ -218,116 +218,94 @@ struct cvm_node *get_cvm(struct kvm_vmid *vmid_ptr)
 	return NULL;
 }
 
-struct cvm_vcpu_node *get_cvm_vcpu_node(struct kvm_vmid *vmid_ptr, int vcpu_id)
-{
-	struct cvm_node *cvm_node = get_cvm(vmid_ptr);
-	if(!cvm_node)
-	{
-		sbi_printf("[IIE CVM Monitor@%s] cvm_node is NULL!\n", __func__);
-		return -1;
-	}
-	struct cvm_vcpu_node *vcpu_list_head = cvm_node->cvm.cvm_vcpu_list_head;
-    if(!vcpu_list_head)
-	{
-		sbi_printf("[IIE CVM Monitor@%s] vcpu_list_head is NULL!\n", __func__);
-		return -1;
-	}
+// struct cvm_vcpu_node *get_cvm_vcpu_node(struct kvm_vmid *vmid_ptr, int vcpu_id)
+// {
+// 	struct cvm_node *cvm_node = get_cvm(vmid_ptr);
+// 	if(!cvm_node)
+// 	{
+// 		sbi_printf("[IIE CVM Monitor@%s] cvm_node is NULL!\n", __func__);
+// 		return -1;
+// 	}
+// 	struct cvm_vcpu_node *vcpu_list_head = cvm_node->cvm.cvm_vcpu_list_head;
+//     if(!vcpu_list_head)
+// 	{
+// 		sbi_printf("[IIE CVM Monitor@%s] vcpu_list_head is NULL!\n", __func__);
+// 		return -1;
+// 	}
 
-	// acquire_big_metadata_lock(__func__);
+// 	// acquire_big_metadata_lock(__func__);
 
-	for(struct cvm_vcpu_node *cur = vcpu_list_head; cur->next; cur = cur->next)
-	{
-		struct cvm_vcpu_node *node = cur->next;
-        sbi_printf("[IIE CVM Monitor@%s] node vcpu id = %d\tvcpu id = %d\n", __func__, *node->vcpu.vcpu_id, vcpu_id);
-		if(*node->vcpu.vcpu_id == vcpu_id)
-			return node;
-	}
+// 	for(struct cvm_vcpu_node *cur = vcpu_list_head; cur->next; cur = cur->next)
+// 	{
+// 		struct cvm_vcpu_node *node = cur->next;
+//         sbi_printf("[IIE CVM Monitor@%s] node vcpu id = %d\tvcpu id = %d\n", __func__, *node->vcpu.vcpu_id);
+// 		if(*node->vcpu.vcpu_id == vcpu_id)
+// 			return node;
+// 	}
 
-    // release_big_metadata_lock(__func__);
-	return NULL;
-}
+//     // release_big_metadata_lock(__func__);
+// 	return NULL;
+// }
 
-int sbi_cvm_run_vcpu(struct iie_cvm_sbi_params * cvm_sbi_params)
-{
-	struct cvm_vcpu_node *vcpu_node = get_cvm_vcpu_node(cvm_sbi_params->vmid_ptr, *cvm_sbi_params->vcpu_id_ptr);	
-	if(!vcpu_node)
-	{
-		sbi_printf("[IIE CVM Monitor@%s] vcpu_node is NULL!\n", __func__);
-		return -1;
-	}
-	struct cvm_vcpu *vcpu = &vcpu_node->vcpu;
-	if(!vcpu)
-	{
-		sbi_printf("[IIE CVM Monitor@%s] vcpu is NULL!\n", __func__);
-		return -1;
-	}
-	uint32_t cmode = get_cmode(*vcpu->vcpu_id);
-	struct sbi_cvm *cvm = vcpu->cvm;
-	if(cmode && cvm->state != READY)
-	{
-		/* Exception: CVM hasn't been initialized. */
-		sbi_printf("[IIE CVM Monitor@%s] Exception: CVM hasn't been initialized.\n", __func__);
-		// exit(0);
-		return 0xff;
-	}
-	return 0;
-}
+// int sbi_cvm_run_vcpu(struct iie_cvm_sbi_params * cvm_sbi_params)
+// {
+// 	struct cvm_vcpu_node *vcpu_node = get_cvm_vcpu_node(cvm_sbi_params->vmid_ptr, *cvm_sbi_params->vcpu_id_ptr);	
+// 	if(!vcpu_node)
+// 	{
+// 		sbi_printf("[IIE CVM Monitor@%s] vcpu_node is NULL!\n", __func__);
+// 		return -1;
+// 	}
+// 	struct cvm_vcpu *vcpu = &vcpu_node->vcpu;
+// 	if(!vcpu)
+// 	{
+// 		sbi_printf("[IIE CVM Monitor@%s] vcpu is NULL!\n", __func__);
+// 		return -1;
+// 	}
+// 	uint32_t cmode = get_cmode(*vcpu->vcpu_id);
+// 	struct sbi_cvm *cvm = vcpu->cvm;
+// 	if(cmode && cvm->state != READY)
+// 	{
+// 		/* Exception: CVM hasn't been initialized. */
+// 		sbi_printf("[IIE CVM Monitor@%s] Exception: CVM hasn't been initialized.\n", __func__);
+// 		// exit(0);
+// 		return 0xff;
+// 	}
+// 	return 0;
+// }
 
-int sbi_cvm_create_finalize(struct iie_cvm_sbi_params * cvm_sbi_params)
-{
-    /* 
-        SBI_TLB_INFO_INIT(&tlb_info, regs->a2, regs->a3, 0, 0, SBI_TLB_HFENCE_GVMA, source_hart);
-        sbi_tlb_request(regs->a0, regs->a1, &tlb_info);
-        int sbi_tlb_request(ulong hmask, ulong hbase, struct sbi_tlb_info *tinfo);
-        int sbi_ipi_send_many(ulong hmask, ulong hbase, u32 event, void *data);
-        a0: hmask: any value
-        a1: hbase: -1UL: ignore hmask
-        a2: start: 0
-		a3: size: 0
-            The remote fence function acts as a full TLB flush if
-                • start_addr and size are both 0
-                • size is equal to 2^XLEN-1
-		a4: vmid = 0
-        a5: gpa
-        hart_mask_base can be set to -1 to indicate that hart_mask can be ignored 
-        and all available harts must be considered.
-    */
-   	struct sbi_tlb_info tlb_info;
-   	u32 source_hart = current_hartid();
-    /* #define SBI_TLB_INFO_INIT(__p, __start, __size, __asid, __vmid, __type, __src) */
-    SBI_TLB_INFO_INIT(&tlb_info, 0, 0, 0, 0, SBI_TLB_HFENCE_GVMA, source_hart);
-	int ret = sbi_tlb_request(0, -1UL, &tlb_info);
+// int sbi_cvm_create_finalize(struct iie_cvm_sbi_params * cvm_sbi_params)
+// {
+// 	/* TODO */
+// 	return 0;
+// }
 
-	return ret;
-}
+// int sbi_cvm_create_memory_region(struct iie_cvm_sbi_params * cvm_sbi_params)
+// {
+// 	/* TODO */
+// 	return 0;
+// }
 
-int sbi_cvm_create_memory_region(struct iie_cvm_sbi_params * cvm_sbi_params)
-{
-	/* TODO */
-	return 0;
-}
+// int sbi_cvm_create_measured_pages(struct iie_cvm_sbi_params * cvm_sbi_params)
+// {
+// 	/* TODO */
+// 	return 0;
+// }
 
-int sbi_cvm_create_measured_pages(struct iie_cvm_sbi_params * cvm_sbi_params)
-{
-	/* TODO */
-	return 0;
-}
+// int sbi_cvm_init_mem_pool(struct iie_cvm_sbi_params * cvm_sbi_params)
+// {
+// 	/* TODO */
+// 	return 0;
+// }
 
-int sbi_cvm_init_mem_pool(struct iie_cvm_sbi_params * cvm_sbi_params)
-{
-	/* TODO */
-	return 0;
-}
-
-inline void print_cvm_list()
-{
-	int i = 1;
-	for(struct cvm_node *cur = iie_cvm_list_head; cur->next; cur = cur->next)
-	{
-		struct cvm_node *node = cur->next;
-		sbi_printf("[IIE CVM DEBUG@%s] vmid = %d\tKeyID = %d\tcount = %d\n", __func__, node->cvm.vmid->vmid, node->cvm.KeyID, i ++);
-	}
-}
+// inline void print_cvm_list()
+// {
+// 	int i = 1;
+// 	for(struct cvm_node *cur = iie_cvm_list_head; cur->next; cur = cur->next)
+// 	{
+// 		struct cvm_node *node = cur->next;
+// 		sbi_printf("[IIE CVM DEBUG@%s] vmid = %d\tKeyID = %d\tcount = %d\n", __func__, node->cvm.vmid->vmid, node->cvm.KeyID, i ++);
+// 	}
+// }
 
 /* CVM Life Cycle ------------------------------------------------------------------------------ */
 
@@ -716,3 +694,293 @@ int load_file(struct iie_cvm_sbi_params_load *load_file){
     }
     return 1;
 }
+
+
+
+/*-------------------------------byk----------------------------------------*/
+cpu_state_t cpus[2] = {{0,}, };
+struct cvm_vcpu cvm_vcpu[4] = {{0,}, };
+
+void init_cvm_vcpu()
+{
+    int i;
+    for(i = 0; i < 4; i++)
+    {
+        *cvm_vcpu[i].vcpu_id = i;
+        // guest_context and guest_csr will be copied from kvm
+        cvm_vcpu[i].guest_csr.scounteren = 0x7;
+        cvm_vcpu[i].guest_mie = MIP_VSTIP | MIP_MTIP | MIP_VSSIP | MIP_MSIP | MIP_SEIP | MIP_VSEIP;
+        cvm_vcpu[i].guest_mstatus |= MSTATUS_MPIE | MSTATUS_SPIE | MSTATUS_FS;
+        cvm_vcpu[i].guest_mstatus |= PRV_S << MSTATUS_MPP_SHIFT;
+        cvm_vcpu[i].guest_mstatus |= MSTATUS_MPV | _ULL(0xa00000000);
+
+        cvm_vcpu[i].guest_mideleg = 0;
+        cvm_vcpu[i].guest_mideleg |= MIP_SGEIP | MIP_STIP | MIP_VSTIP | MIP_VSSIP | MIP_VSEIP;
+        
+        cvm_vcpu[i].guest_medeleg = 0;
+        cvm_vcpu[i].guest_medeleg |= (1UL << CAUSE_MISALIGNED_FETCH);
+        cvm_vcpu[i].guest_medeleg |= (1UL << CAUSE_BREAKPOINT);
+        cvm_vcpu[i].guest_medeleg |= (1UL << CAUSE_USER_ECALL);
+        cvm_vcpu[i].guest_medeleg |= (1UL << CAUSE_FETCH_PAGE_FAULT);
+        cvm_vcpu[i].guest_medeleg |= (1UL << CAUSE_LOAD_PAGE_FAULT);
+        cvm_vcpu[i].guest_medeleg |= (1UL << CAUSE_STORE_PAGE_FAULT);
+    }
+    for(i = 0; i < 2; i++)
+    {
+        cpus[i].cmode = 0;
+        cpus[i].cvmid = 0;
+        cpus[i].vcpuid = 0;
+    }
+}
+
+uint32_t get_cvm_id()
+{
+	return cpus[csr_read(CSR_MHARTID)].cvmid;
+}
+
+void* get_vcpu()
+{
+    int cmvid = get_cvm_id();
+    return &cvm_vcpu[cmvid];
+}
+
+void* get_vcpu_by_id(int id)
+{
+    return &cvm_vcpu[id];
+}
+
+int check_in_cmode()
+{
+	return cpus[csr_read(CSR_MHARTID)].cmode;
+}
+
+static void enter_cmode(uint32_t cvmid, uint32_t vcpuid)
+{
+	cpus[csr_read(CSR_MHARTID)].cmode = 1;
+	cpus[csr_read(CSR_MHARTID)].cvmid = cvmid;
+	cpus[csr_read(CSR_MHARTID)].vcpuid = vcpuid;
+}
+
+static void exit_cmode()
+{
+	cpus[csr_read(CSR_MHARTID)].cmode = 0;
+	cpus[csr_read(CSR_MHARTID)].cvmid = -1;
+	cpus[csr_read(CSR_MHARTID)].vcpuid = -1;
+}
+
+static void swap_in_context(uint64_t* next_ctx, uint64_t* prev_ctx, uint64_t* host_regs)
+{
+	uint64_t i;
+    
+    for(i = 1; i < 32; i++)
+    {
+        prev_ctx[i] = host_regs[i];
+        host_regs[i] = next_ctx[i];
+    }
+}
+
+// static void swap_in_ptbr(uint64_t ptbr)
+// {
+//     csr_write(CSR_HGATP, ptbr);
+// }
+
+static void swap_in_sstatus(uint64_t* next_val, uint64_t* prev_val)
+{
+    *prev_val = csr_swap(CSR_SSTATUS, *next_val);
+}
+
+static void swap_in_hstatus(uint64_t* next_val, uint64_t* prev_val)
+{
+    *prev_val = csr_swap(CSR_HSTATUS, *next_val);
+}
+
+static void swap_in_scounteren(uint64_t* next_val, uint64_t* prev_val)
+{
+    *prev_val = csr_swap(CSR_SCOUNTEREN, *next_val);
+}
+
+// static void swap_in_sscratch(uint64_t* next_val, uint64_t* prev_val)
+// {
+//     *prev_val = csr_swap(CSR_SSCRATCH, *next_val);
+// }
+
+static void swap_in_mepc(uint64_t* next_val, uint64_t* prev_val, struct sbi_trap_regs* host_regs)
+{
+    // *prev_val = csr_swap(CSR_MEPC, *next_val);
+    *prev_val = host_regs->mepc;
+    host_regs->mepc = *next_val;
+
+}
+
+static void swap_in_mie(uint64_t* next_val, uint64_t* prev_val)
+{
+    *prev_val = csr_swap(CSR_MIE, *next_val);
+}
+
+static void swap_in_mstatus(uint64_t* next_val, uint64_t* prev_val, struct sbi_trap_regs* host_regs)
+{
+    *prev_val = host_regs->mstatus;
+    host_regs->mstatus = *next_val;
+}
+
+static void swap_in_mideleg(uint64_t* next_val, uint64_t* prev_val)
+{
+    *prev_val = csr_swap(CSR_MIDELEG, *next_val);
+}
+
+static void swap_in_medeleg(uint64_t* next_val, uint64_t* prev_val)
+{
+    *prev_val = csr_swap(CSR_MEDELEG, *next_val);
+}
+
+static void context_switch_to_cvm(struct sbi_trap_regs* host_regs, struct cvm_vcpu* cvm_vcpu)
+{
+    swap_in_context((uint64_t*)&cvm_vcpu->guest_context, (uint64_t*)&cvm_vcpu->host_context, (uint64_t*)host_regs);
+    swap_in_sstatus(&cvm_vcpu->guest_context.sstatus, &cvm_vcpu->host_context.sstatus);
+    swap_in_hstatus(&cvm_vcpu->guest_context.hstatus, &cvm_vcpu->host_context.hstatus);
+    swap_in_scounteren(&cvm_vcpu->guest_csr.scounteren, &cvm_vcpu->host_scounteren);
+    // swap_in_sscratch(&cvm_vcpu->guest_context.a0, &cvm_vcpu->host_sscratch);
+    swap_in_mepc(&cvm_vcpu->guest_context.sepc, &cvm_vcpu->host_mepc, host_regs);
+    swap_in_mie(&cvm_vcpu->guest_mie, &cvm_vcpu->host_mie);
+    swap_in_mstatus(&cvm_vcpu->guest_mstatus, &cvm_vcpu->host_mstatus, host_regs);
+    swap_in_mideleg(&cvm_vcpu->guest_mideleg, &cvm_vcpu->host_mideleg);
+    swap_in_medeleg(&cvm_vcpu->guest_medeleg, &cvm_vcpu->host_medeleg);
+    csr_clear(CSR_MIDELEG, MIP_SEIP);
+    csr_clear(CSR_MIP, MIP_SEIP);
+    // csr_set(CSR_MIE, MIP_SEIP);
+    enter_cmode(0, *cvm_vcpu->vcpu_id); 
+}
+
+static void context_switch_to_host(struct sbi_trap_regs* host_regs, struct cvm_vcpu* cvm_vcpu)
+{
+    swap_in_context((uint64_t*)&cvm_vcpu->host_context, (uint64_t*)&cvm_vcpu->guest_context, (uint64_t*)host_regs);
+    swap_in_sstatus(&cvm_vcpu->host_context.sstatus, &cvm_vcpu->guest_context.sstatus);
+    swap_in_hstatus(&cvm_vcpu->host_context.hstatus, &cvm_vcpu->guest_context.hstatus);
+    swap_in_mepc(&cvm_vcpu->host_mepc, &cvm_vcpu->guest_context.sepc, host_regs);
+    swap_in_scounteren(&cvm_vcpu->host_scounteren, &cvm_vcpu->guest_csr.scounteren);
+    // swap_in_sscratch(&cvm_vcpu->host_sscratch, &cvm_vcpu->guest_context.a0);
+    swap_in_mie(&cvm_vcpu->host_mie, &cvm_vcpu->guest_mie);
+    swap_in_mstatus(&cvm_vcpu->host_mstatus, &cvm_vcpu->guest_mstatus, host_regs);
+    swap_in_mideleg(&cvm_vcpu->host_mideleg, &cvm_vcpu->guest_mideleg);
+    swap_in_medeleg(&cvm_vcpu->host_medeleg, &cvm_vcpu->guest_medeleg);
+    exit_cmode(); 
+}
+
+
+int sbi_cvm_enter(struct sbi_trap_regs* host_regs, uint64_t kvm_vcpu_context, uint64_t kvm_vcpu_csr, uint64_t kvm_vcpu_trap)
+{
+    struct cpu_context* kvm_guest_context = (struct cpu_context*)kvm_vcpu_context;
+    struct vcpu_csr* kvm_guest_csr = (struct vcpu_csr*)kvm_vcpu_csr;
+    // struct vcpu* cvm_vcpu = get_vcpu();
+    struct cvm_vcpu* cvm_vcpu = get_vcpu_by_id(0);
+
+    cvm_vcpu->kvm_vcpu_trap = (struct cpu_trap*)kvm_vcpu_trap;
+    cvm_vcpu->kvm_vcpu_context = kvm_guest_context;
+    cvm_vcpu->kvm_vcpu_csr = kvm_guest_csr;
+
+    // TODO only copy selected reg value
+    sbi_memcpy(&cvm_vcpu->guest_context, kvm_guest_context, sizeof(struct cpu_context));
+    // sbi_memcpy(&cvm_vcpu->guest_csr, kvm_guest_csr, sizeof(struct vcpu_csr));
+    context_switch_to_cvm(host_regs, cvm_vcpu);
+
+    // if(exit_reason == IRQ_S_EXT)
+    // {
+    //     sbi_printf("enter: mepc %lx mie %lx mip %lx mideleg %lx\r\n", host_regs->mepc, csr_read(CSR_MIE),  csr_read(CSR_MIP),  csr_read(CSR_MIDELEG));
+    //     csr_clear(CSR_MIP, MIP_SEIP);
+    //     sbi_printf("enter: mepc %lx mie %lx mip %lx mideleg %lx\r\n", host_regs->mepc, csr_read(CSR_MIE),  csr_read(CSR_MIP),  csr_read(CSR_MIDELEG));
+    // }
+    // sbi_printf("*******************enter*********************\r\n");
+    // debug_print_csr(host_regs, cvm_vcpu);
+	//TODO flush TLB
+    // csr_write(CSR_MSTATUS, host_regs->mstatus);
+    // sbi_printf("enter: mideleg %lx mie %lx\r\n", csr_read(CSR_MIDELEG), csr_read(CSR_MIE));
+    // if(!(csr_read(CSR_MIE) & MIP_SEIP))
+    //     sbi_printf("enter: mideleg %lx mie %lx\r\n", csr_read(CSR_MIDELEG), csr_read(CSR_MIE));
+
+    return 0;
+}
+
+int sbi_cvm_exit(struct sbi_trap_regs* host_regs)
+{
+    // struct vcpu* cvm_vcpu = get_vcpu();
+    struct cvm_vcpu* cvm_vcpu = get_vcpu_by_id(0);
+    struct cpu_trap trap;
+	struct cpu_context* kvm_vcpu_context = cvm_vcpu->kvm_vcpu_context;
+	// struct vcpu_csr* kvm_vcpu_csr = cvm_vcpu->kvm_vcpu_csr;
+
+    // 更新kvm_vcpu_context 和 kvm_vcpu_trap; 
+    trap.scause = csr_read(CSR_MCAUSE);
+    trap.stval = csr_read(CSR_MTVAL);
+    trap.htval = csr_read(CSR_MTVAL2);
+    trap.htinst = csr_read(CSR_MTINST);
+    csr_write(CSR_SCAUSE, trap.scause);
+    csr_write(CSR_STVAL, trap.stval);
+    csr_write(CSR_HTVAL, trap.htval);
+    csr_write(CSR_HTINST, 0);
+    // TODO 读取inst 更新CSR_HTINST
+    // csr_write(CSR_HTINST, trap.htinst);
+
+    // set exit_reason
+    // exit_reason = trap.scause & ~(1UL << (__riscv_xlen - 1));
+
+    context_switch_to_host(host_regs, cvm_vcpu);
+    host_regs->mepc +=4;
+
+    cvm_vcpu->guest_context.hstatus &= ~HSTATUS_SPVP;
+    if((cvm_vcpu->guest_mstatus & MSTATUS_MPP) == (PRV_S<< MSTATUS_MPP_SHIFT))
+        cvm_vcpu->guest_context.hstatus |= HSTATUS_SPVP;
+
+    cvm_vcpu->guest_context.hstatus &= ~HSTATUS_SPV;
+    if((cvm_vcpu->guest_mstatus & MSTATUS_MPV) == MSTATUS_MPV)
+        cvm_vcpu->guest_context.hstatus |= HSTATUS_SPV;
+
+    cvm_vcpu->guest_context.hstatus &= ~HSTATUS_GVA;
+    if((cvm_vcpu->guest_mstatus & MSTATUS_GVA) == MSTATUS_GVA)
+        cvm_vcpu->guest_context.hstatus |= HSTATUS_GVA;
+    sbi_memcpy(kvm_vcpu_context, &cvm_vcpu->guest_context, sizeof(struct cpu_context));
+    // sbi_memcpy(kvm_vcpu_csr, &cvm_vcpu->guest_csr, sizeof(struct vcpu_csr));
+    // sbi_printf("*******************exit*********************\r\n");
+    // debug_print_csr(host_regs, cvm_vcpu);
+    // if(exit_reason == IRQ_S_EXT)
+    // {
+    //     sbi_printf("exit: mepc %lx mie %lx mip %lx mideleg %lx\r\n", host_regs->mepc, csr_read(CSR_MIE),  csr_read(CSR_MIP),  csr_read(CSR_MIDELEG));
+    // }
+    // sbi_printf("exit: trap sepc %lx scause %lx stval %lx htval %lx htinst %lx \r\n", 
+    //     cvm_vcpu->guest_context.sepc, trap.scause, trap.stval, trap.htval, trap.htinst);
+    // sbi_printf("exit: mepc %lx hstatus %lx mstatus %lx\r\n", host_regs->mepc, cvm_vcpu->guest_context.hstatus, cvm_vcpu->guest_mstatus);
+	//TODO flush TLB
+    return 0;
+}
+
+
+int cvm_trap_redirect_to_hs(struct sbi_trap_regs* host_regs)
+{
+    // 传递trap 同步上下文
+    return sbi_cvm_exit(host_regs);
+}
+
+int cvm_trap_virtual_inst(struct sbi_trap_regs* host_regs)
+{
+    // TODO 读取虚拟机中指令并保存到csr mtval, 目前没看到需要读CVM中指令的需求
+    // 传递trap 同步上下文
+    return sbi_cvm_exit(host_regs);
+}
+
+int cvm_trap_gstage_page_fault(struct sbi_trap_regs* host_regs)
+{
+    // TODO 处理CVM 内存的PF, 分配内存页, 标记bitmap, 创建页表
+    // 传递trap 同步上下文
+    sbi_cvm_exit(host_regs);
+
+    return 0;
+}
+
+int cvm_trap_sbi_ecall(struct sbi_trap_regs* host_regs)
+{
+    // 传递trap 同步上下文
+    return sbi_cvm_exit(host_regs);
+}
+
+
+
+

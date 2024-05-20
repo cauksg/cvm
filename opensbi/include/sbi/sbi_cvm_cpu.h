@@ -80,8 +80,13 @@ struct cvm_vcpu {
 	unsigned long host_sstateen0;
 	unsigned long host_mepc;
 	unsigned long host_mie;
+	unsigned long host_mstatus;
 	unsigned long host_mideleg;
 	unsigned long host_medeleg;
+	unsigned long guest_mie;
+	unsigned long guest_mstatus;
+	unsigned long guest_mideleg;
+	unsigned long guest_medeleg;
 	struct cpu_context host_context;
 	struct cpu_context guest_context;
 	struct vcpu_csr guest_csr;
@@ -90,15 +95,17 @@ struct cvm_vcpu {
 	struct sbi_cvm *cvm;
 	//TODO: delete it because root_pt is for each cvm rather than each vcpu
 	unsigned long root_pt;
+	struct vcpu_csr* kvm_vcpu_csr;
 };
 
 typedef struct
 {
 	uint32_t cmode;
 	uint32_t cvmid;
+	uint32_t vcpuid;
 }cpu_state_t;
 
-extern cpu_state_t cpus[MAX_HARTS];
+extern cpu_state_t cpu_s[MAX_HARTS];
 
 struct cvm_vcpu_node {
 	struct cvm_vcpu vcpu;

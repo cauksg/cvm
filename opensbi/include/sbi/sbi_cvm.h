@@ -1,6 +1,8 @@
 #ifndef __SBI_CVM_H__
 #define __SBI_CVM_H__
 #include <sbi/sbi_types.h>
+#include <sbi/riscv_encoding.h>
+#include <sbi/sbi_trap.h>
 
 /* CVM Life Cycle ------------------------------------------------------------------------------ */
 
@@ -60,13 +62,7 @@ struct iie_cvm_sbi_params {
 	struct kvm_vmid *vmid_ptr;
 	int *vcpu_id_ptr;	/* id given by userspace at creation */
 
-    /* only need GPA. As confidential Memory is managed by CVM Monitor */
-	/* G-stage page table */
-	// pgd_t *pgd_ptr;
-	// phys_addr_t *pgd_phys_ptr;
-    
-    unsigned long gpa;
-
+	unsigned long gpa;
 };
 
 //for share 
@@ -225,7 +221,6 @@ paddr_t mreclaim_cvm_page(struct cvm_vcpu_node *vcpu_node, struct iie_cvm_sbi_pa
 int add_cvm_share_pages(struct cvm_vcpu_node *vcpu_node, struct iie_cvm_sbi_params_shared *shared_pages);
 int convert_cvm_pages(paddr_t* normal_address, int count);
 int load_file(struct iie_cvm_sbi_params_load *load_file);
-
 void set_bitmap(paddr_t page_address);
 void reset_bitmap(paddr_t page_address);
 paddr_t* init_bitmap();
@@ -234,6 +229,17 @@ int reset_page_own_table(paddr_t page_address, uint64_t id);
 page_own_table_t* init_page_own_table();
 
 
+
+// /** cvm functions */
+void init_cvm_vcpu();
+int check_in_cmode();
+int sbi_cvm_print(unsigned long keyID);
+int sbi_cvm_enter(struct sbi_trap_regs* host_regs, uint64_t kvm_vcpu_context, uint64_t kvm_vcpu_csr, uint64_t kvm_vcpu_trap);
+int sbi_cvm_exit(struct sbi_trap_regs* host_regs);
+int cvm_trap_redirect_to_hs(struct sbi_trap_regs* host_regs);
+int cvm_trap_virtual_inst(struct sbi_trap_regs* host_regs);
+int cvm_trap_gstage_page_fault(struct sbi_trap_regs* host_regs);
+int cvm_trap_sbi_ecall(struct sbi_trap_regs* host_regs);
 
 
 #endif
