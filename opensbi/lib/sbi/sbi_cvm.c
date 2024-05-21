@@ -626,15 +626,20 @@ void flush_tlb(){
 
 //paddr_t narmal_address[count] = {paddr1, paddr2 ,...}
 int convert_cvm_pages(paddr_t* normal_address, int count){
+    //sbi_printf("--------------------sbi convert_cvm_pages begin!-------------------------\n");
     if(count<=0){
         return 0;
     }
+    free_mem_list_head = (struct list_head *)*(normal_address);
+    free_mem_list_head->next = free_mem_list_head;
     int i;
     for(i=1; i<count; i++){
-        set_bitmap(*(normal_address+i));
+        //sbi_printf("sbi function convert_cvm_pages accepted physical address %lx\n", *(normal_address+i));
+        set_bitmap((unsigned long)*(normal_address+i));
         spin_lock(&spin_lock_cm_list);
+
         //convert normal_address to CM pool rather than CVM memory 
-        put_free_page(free_mem_list_head, *(normal_address+i));
+        put_free_page(free_mem_list_head, (unsigned long)*(normal_address+i));
         spin_unlock(&spin_lock_cm_list);
     }
     return 1;

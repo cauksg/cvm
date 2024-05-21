@@ -13,6 +13,12 @@
 #include <asm/csr.h>
 #include <asm/hwcap.h>
 #include <asm/sbi.h>
+#include <linux/vmalloc.h>
+
+#define SBI_EXT_CVM 				0x20000217
+#define SBI_EXT_CVM_PRINT 			0x0
+#define SBI_EXT_CVM_LOAD 			0x7
+#define SBI_EXT_CVM_INIT_PAGE_LIST	0x9
 
 long kvm_arch_dev_ioctl(struct file *filp,
 			unsigned int ioctl, unsigned long arg)
@@ -65,8 +71,66 @@ void kvm_arch_hardware_disable(void)
 	csr_write(CSR_HIDELEG, 0);
 }
 
+unsigned long kernel_page_translate(unsigned long addr){
+	pgd_t *pgd;
+	pud_t *pud;
+	p4d_t *p4d;
+	pmd_t *pmd;
+	pte_t *pte;
+
+	pgd = pgd_offset_k(addr);
+	if (!pgd_present(*pgd))
+		return false;
+	if (pgd_leaf(*pgd))
+		return true;
+
+	p4d = p4d_offset(pgd, addr);
+	if (!p4d_present(*p4d))
+		return false;
+	if (p4d_leaf(*p4d))
+		return true;
+
+	pud = pud_offset(p4d, addr);
+	if (!pud_present(*pud))
+		return false;
+	if (pud_leaf(*pud))
+		return true;
+
+	pmd = pmd_offset(pud, addr);
+	if (!pmd_present(*pmd))
+		return false;
+	if (pmd_leaf(*pmd))
+		return true;
+
+	pte = pte_offset_kernel(pmd, addr);
+	return (pte_val(*pte) >> _PAGE_PFN_SHIFT);
+}
+
 static int __init riscv_kvm_init(void)
 {
+	struct sbiret ret;
+	//apply for free memory and translation their hva to hpa
+	unsigned long *hva = vmalloc(PAGE_SIZE << 14);
+	unsigned long *list_va = (unsigned long *)__get_free_pages(GFP_KERNEL, 5);
+	if (!hva){
+		printk("----------------------------------\n");
+		printk("memory mmap failed!\n");
+		printk("----------------------------------\n");
+	}else{
+		printk("----------------------------------\n");
+		printk("memory mmap successed!\n");
+		printk("virtual address begin at %lx\n", (unsigned long)hva);
+		printk("----------------------------------\n");
+		for(int i=0;i<(1<<14);i++){
+			*(list_va+i) = kernel_page_translate((unsigned long)hva + i*PAGE_SIZE) << PAGE_SHIFT;
+			//printk("virtual address %lx is translated to pfn %lx\n", (unsigned long)hva + i*PAGE_SIZE, *(list_va+i));
+		}
+		ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_INIT_PAGE_LIST, __pa((unsigned long)list_va), (1<<14), 0, 0, 0, 0);
+	}
+	//ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_INIT_PAGE_LIST, __pa((unsigned long)list_va), 14, 0, 0, 0, 0);
+	// int r;
+	// r = ret.error;
+
 	int rc;
 	const char *str;
 
