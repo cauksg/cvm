@@ -974,10 +974,22 @@ int cvm_trap_virtual_inst(struct sbi_trap_regs* host_regs)
 int cvm_trap_gstage_page_fault(struct sbi_trap_regs* host_regs)
 {
     // TODO 处理CVM 内存的PF, 分配内存页, 标记bitmap, 创建页表
+    int ret=0;
+    unsigned long addr = csr_read(CSR_MTVAL2);
+    if(addr){
+        addr = addr << 2;
+        if(addr >= 0x80000000){
+            struct kvm_vmid kvm_id;
+            kvm_id.vmid = get_cvm_id();
+            struct cvm_node *cvm = get_cvm(&kvm_id);
+            ret = malloc_cvm_empty_page(cvm, addr);
+            return ret;
+        }
+    }
     // 传递trap 同步上下文
     sbi_cvm_exit(host_regs);
 
-    return 0;
+    return 1;
 }
 
 int cvm_trap_sbi_ecall(struct sbi_trap_regs* host_regs)
