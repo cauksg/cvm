@@ -1,0 +1,8 @@
+#ignore busybox 
+busybox/
+
+#ignore build-riscv64
+build-riscv64/
+
+*.bz2
+*.tar
