@@ -1,5 +1,35 @@
 #!/bin/bash
 
+git submodule update --init
+
+#Compiling the toolchain
+mkdir ~/riscv
+export RISCV=~/riscv
+sudo apt install autoconf automake autotools-dev curl libmpc-dev libmpfr-dev libgmp-dev \
+                 libusb-1.0-0-dev gawk build-essential bison flex texinfo gperf libtool \
+                 patchutils bc zlib1g-dev device-tree-compiler pkg-config libexpat-dev  \
+                 libncurses5-dev libncursesw5-dev git
+#git clone https://github.com/riscv/riscv-gnu-toolchain
+cd riscv-gnu-toolchain
+./configure --prefix=$RISCV --enable-multilib
+make -j $(nproc)
+make -j $(nproc) linux
+eval echo 'export RISCV=$(eval echo ~)/riscv/bin' >> ~/.bashrc
+echo 'export PATH="$PATH:$RISCV"' >> ~/.bashrc
+source ~/.bashrc
+cd ..
+
+
+#Compiling QEMU for RSIC-V with virtualization extensions
+sudo apt install ninja-build pkg-config libglib2.0-dev libpixman-1-dev libtirpc-dev unzip
+sudo apt-get install python3-venv
+#git clone https://github.com/kvm-riscv/qemu.git
+cd qemu
+./configure --target-list="riscv32-softmmu riscv64-softmmu"
+make -j $(nproc)
+cd ..
+
+#M-mode runtime for boot: OpenSBI Firmware
 #git clone https://github.com/riscv/opensbi.git
 cd opensbi
 export CROSS_COMPILE=riscv64-unknown-linux-gnu-
@@ -37,6 +67,8 @@ ${CROSS_COMPILE}strip lkvm-static
 cd ..
 
 #build a root FS for our OS
+wget https://busybox.net/downloads/busybox-1.33.1.tar.bz2
+tar -C . -xvf busybox-1.33.1.tar.bz2
 export ARCH=riscv
 export CROSS_COMPILE=riscv64-unknown-linux-gnu-
 make -C busybox-1.33.1 defconfig
