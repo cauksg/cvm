@@ -110,7 +110,7 @@ int sbi_cvm_convert_page(pte_t *pte);
 int sbi_cvm_load_kernel_image(phys_addr_t to, phys_addr_t from, unsigned int image_size);
 
 /* Check vcpu states  */
-int sbi_cvm_run_vcpu(struct iie_cvm_sbi_params * cvm_sbi_params);
+int sbi_cvm_run_vcpu(struct sbi_trap_regs *regs, struct iie_cvm_sbi_params * cvm_sbi_params, uint64_t kvm_vcpu_context, uint64_t kvm_vcpu_csr);
 
 struct cvm_node {
 	struct sbi_cvm cvm;
@@ -231,11 +231,12 @@ page_own_table_t* init_page_own_table();
 
 
 // /** cvm functions */
-void init_cvm_vcpu();
+void init_cpus();
+void init_cvm_vcpu(struct cvm_vcpu* cvm_vcpu);
 int check_in_cmode();
 int sbi_cvm_print(unsigned long keyID);
-int sbi_cvm_enter(struct sbi_trap_regs* host_regs, uint64_t kvm_vcpu_context, uint64_t kvm_vcpu_csr, uint64_t kvm_vcpu_trap);
-int sbi_cvm_exit(struct sbi_trap_regs* host_regs);
+int cvm_vcpu_enter(struct sbi_trap_regs* host_regs, struct cvm_vcpu* cvm_vcpu, uint64_t kvm_vcpu_context, uint64_t kvm_vcpu_csr);
+int cvm_vcpu_exit(struct sbi_trap_regs* host_regs);
 int cvm_trap_redirect_to_hs(struct sbi_trap_regs* host_regs);
 int cvm_trap_virtual_inst(struct sbi_trap_regs* host_regs);
 int cvm_trap_gstage_page_fault(struct sbi_trap_regs* host_regs);

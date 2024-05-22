@@ -643,21 +643,20 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 	int ret;
 	struct kvm_cpu_trap trap;
 	struct kvm_run *run = vcpu->run;
-
 	struct iie_cvm_sbi_params *cvm_sbi_params = kmalloc(sizeof(struct iie_cvm_sbi_params), GFP_KERNEL);
+
 	cvm_sbi_params->vmid_ptr = __pa(&vcpu->kvm->arch.vmid);
 	cvm_sbi_params->vcpu_id_ptr = __pa(&vcpu->vcpu_id);
 	cvm_sbi_params->pgd = __pa(vcpu->kvm->arch.pgd);
 	cvm_sbi_params->pgd_phys = __pa(&vcpu->kvm->arch.pgd_phys);
-	uintptr_t pa_cvm = __pa(cvm_sbi_params);
 
-	if (!vcpu->arch.ran_atleast_once)
-	{		
-		struct sbiret retval = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_RUN_VCPU,
-		  pa_cvm, 0, 0, 0, 0, 0);
-		// retval = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_FINALIZE, 0, 0, 0, 0, 0, 0);
-		// printk("Kernel: RUN retval.value = %d\tretval.error = %d\n", retval.value, retval.error);
-	}
+	// if (!vcpu->arch.ran_atleast_once)
+	// {		
+	// 	struct sbiret retval = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_RUN_VCPU,
+	// 	  pa_cvm, __pa(&vcpu->arch.guest_context), __pa(&vcpu->arch.guest_csr), 0, 0, 0);
+	// 	// retval = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_FINALIZE, 0, 0, 0, 0, 0, 0);
+	// 	// printk("Kernel: RUN retval.value = %d\tretval.error = %d\n", retval.value, retval.error);
+	// }
 
 	/* Mark this VCPU ran at least once */
 	vcpu->arch.ran_atleast_once = true;
@@ -760,7 +759,9 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 
 		guest_timing_enter_irqoff();
 
-		kvm_riscv_vcpu_enter_exit(vcpu);
+		// kvm_riscv_vcpu_enter_exit(vcpu);
+		sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_RUN_VCPU, __pa(cvm_sbi_params),
+			__pa(&vcpu->arch.guest_context), __pa(&vcpu->arch.guest_csr), 0, 0, 0);
 
 		vcpu->mode = OUTSIDE_GUEST_MODE;
 		vcpu->stat.exits++;

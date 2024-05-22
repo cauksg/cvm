@@ -57,9 +57,6 @@ struct vcpu_csr {
 	unsigned long vsatp;
 	unsigned long scounteren;
 	unsigned long senvcfg;
-	unsigned long mie;
-	unsigned long mideleg;
-	unsigned long medeleg;
 };
 
 struct cpu_trap {
