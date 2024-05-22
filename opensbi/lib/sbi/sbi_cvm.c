@@ -667,7 +667,7 @@ int convert_cvm_pages(paddr_t* normal_address, int count){
         put_free_page(free_mem_list_head, (unsigned long)*(normal_address+i));
         spin_unlock(&spin_lock_cm_list);
     }
-    return 1;
+    return 0;
 }
 
 
