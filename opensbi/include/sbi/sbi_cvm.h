@@ -215,7 +215,7 @@ union mcvm
 
 
 //function
-int malloc_cvm_empty_page(struct cvm_vcpu_node *vcpu_node, struct iie_cvm_sbi_params *cvm_sbi_params);
+int malloc_cvm_empty_page(struct cvm_vcpu_node *vcpu_node, vaddr_t gpa);
 int mfree_cvm_page(struct cvm_vcpu_node *vcpu_node, struct iie_cvm_sbi_params *cvm_sbi_params);
 paddr_t mreclaim_cvm_page(struct cvm_vcpu_node *vcpu_node, struct iie_cvm_sbi_params *cvm_sbi_params);
 int add_cvm_share_pages(struct cvm_vcpu_node *vcpu_node, struct iie_cvm_sbi_params_shared *shared_pages);

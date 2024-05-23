@@ -5035,7 +5035,7 @@ static long kvm_vm_ioctl(struct file *filp,
 		sbi_load_params->des_gpa = load_file_t.des_gpa;
 		sbi_load_params->count = pages_num;
 		sbi_load_params->src_hpa_array = (unsigned long*)file_paddr_array;
-		sbi_load_params->vmid_ptr = &kvm->arch.vmid;
+		sbi_load_params->vmid_ptr = __pa(&kvm->arch.vmid);
 		printk("file physical address  array is placed at %lx\n", file_paddr_array);
         ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_LOAD, __pa(va_sbi_params), 0, 0, 0, 0, 0);
 		r = ret.error;
