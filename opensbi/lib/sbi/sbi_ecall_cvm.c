@@ -25,7 +25,8 @@ static int sbi_ecall_cvm_handler(unsigned long extid, unsigned long funcid,
 		ret = sbi_cvm_create_vcpu((void *)regs->a0);
 		break;
 	case SBI_EXT_CVM_RUN_VCPU:
-		ret = sbi_cvm_run_vcpu((void *)regs->a0);
+		ret = sbi_cvm_run_vcpu(regs, (void *)regs->a0, regs->a1, regs->a2);
+		out->skip_regs_update = true;
 		break;
 	case SBI_EXT_CVM_FINALIZE:
 		ret = sbi_cvm_create_finalize((void *)regs->a0);
@@ -35,10 +36,6 @@ static int sbi_ecall_cvm_handler(unsigned long extid, unsigned long funcid,
 		break;
 	case SBI_EXT_CVM_LOAD_FILE:
 		ret = load_file((void *)regs->a0);
-	case SBI_EXT_CVM_ENTER:
-        ret = sbi_cvm_enter(regs, regs->a0, regs->a1, regs->a2);
-		out->skip_regs_update = true;
-        break;
 	case SBI_EXT_CVM_INIT_PAGE_LIST:
 		ret = convert_cvm_pages((void *)regs->a0, regs->a1);
 	default:

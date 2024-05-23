@@ -294,22 +294,22 @@ static int sbi_trap_nonaia_irq(struct sbi_trap_regs *regs, ulong mcause)
 		switch (mcause) {
 		case IRQ_M_TIMER:
 			// sbi_printf("timer mcause %lx\r\n",mcause);
-			sbi_cvm_exit(regs);
+			cvm_vcpu_exit(regs);
 			sbi_timer_process();
 			break;
 		case IRQ_M_SOFT:
-			sbi_cvm_exit(regs);
+			cvm_vcpu_exit(regs);
 			sbi_ipi_process();
 			break;
 		case IRQ_M_EXT:
 			return sbi_irqchip_process();
 		case IRQ_S_EXT:
-			sbi_cvm_exit(regs);
+			cvm_vcpu_exit(regs);
 			csr_set(CSR_MIDELEG, MIP_SEIP);
 			
 			break;
 		default:
-			sbi_cvm_exit(regs);
+			cvm_vcpu_exit(regs);
 			return SBI_ENOENT;
 		}
 	}else{
