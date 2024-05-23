@@ -215,10 +215,10 @@ union mcvm
 
 
 //function
-int malloc_cvm_empty_page(struct cvm_vcpu_node *vcpu_node, vaddr_t gpa);
-int mfree_cvm_page(struct cvm_vcpu_node *vcpu_node, struct iie_cvm_sbi_params *cvm_sbi_params);
-paddr_t mreclaim_cvm_page(struct cvm_vcpu_node *vcpu_node, struct iie_cvm_sbi_params *cvm_sbi_params);
-int add_cvm_share_pages(struct cvm_vcpu_node *vcpu_node, struct iie_cvm_sbi_params_shared *shared_pages);
+int malloc_cvm_empty_page(struct sbi_cvm* cvm, vaddr_t gpa);
+int mfree_cvm_page(struct sbi_cvm* cvm, struct iie_cvm_sbi_params *cvm_sbi_params);
+paddr_t mreclaim_cvm_page(struct sbi_cvm* cvm, struct iie_cvm_sbi_params *cvm_sbi_params);
+int add_cvm_share_pages(struct sbi_cvm* cvm, struct iie_cvm_sbi_params_shared *shared_pages);
 int convert_cvm_pages(paddr_t* normal_address, int count);
 int load_file(struct iie_cvm_sbi_params_load *load_file);
 void set_bitmap(paddr_t page_address);

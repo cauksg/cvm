@@ -80,10 +80,12 @@ struct cvm_vcpu {
 	unsigned long host_mstatus;
 	unsigned long host_mideleg;
 	unsigned long host_medeleg;
+	unsigned long host_hgatp;
 	unsigned long guest_mie;
 	unsigned long guest_mstatus;
 	unsigned long guest_mideleg;
 	unsigned long guest_medeleg;
+	unsigned long guest_hgatp;
 	struct cpu_context host_context;
 	struct cpu_context guest_context;
 	struct vcpu_csr guest_csr;
