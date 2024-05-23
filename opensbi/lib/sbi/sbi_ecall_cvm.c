@@ -12,27 +12,27 @@ static int sbi_ecall_cvm_handler(unsigned long extid, unsigned long funcid,
 	// uint64_t temp;
 	sbi_printf("sbi_ecall_cvm_handler!\n");
 	switch (funcid) {
-	// case SBI_EXT_CVM_CREATE:
-	// 	ret = sbi_cvm_create((void *)regs->a0);
-	// 	break;
-	// case SBI_EXT_CVM_CREATE_MEMORY_REGION:
-	// 	ret = sbi_cvm_create_memory_region((void *)regs->a0);
-	// 	break;
-	// case SBI_EXT_CVM_MEASURED_PAGES:
-	// 	ret = sbi_cvm_create_measured_pages((void *)regs->a0);
-	// 	break;
-	// case SBI_EXT_CVM_CREATE_VCPU:
-	// 	ret = sbi_cvm_create_vcpu((void *)regs->a0);
-	// 	break;
-	// case SBI_EXT_CVM_RUN_VCPU:
-	// 	ret = sbi_cvm_run_vcpu((void *)regs->a0);
-	// 	break;
-	// case SBI_EXT_CVM_FINALIZE:
-	// 	ret = sbi_cvm_create_finalize((void *)regs->a0);
-	// 	break;
-	// case SBI_EXT_CVM_INIT_MEM_POOL:
-	// 	ret = sbi_cvm_init_mem_pool((void *)regs->a0);
-	// 	break;
+	case SBI_EXT_CVM_CREATE:
+		ret = sbi_cvm_create((void *)regs->a0);
+		break;
+	case SBI_EXT_CVM_CREATE_MEMORY_REGION:
+		ret = sbi_cvm_create_memory_region((void *)regs->a0);
+		break;
+	case SBI_EXT_CVM_MEASURED_PAGES:
+		ret = sbi_cvm_create_measured_pages((void *)regs->a0);
+		break;
+	case SBI_EXT_CVM_CREATE_VCPU:
+		ret = sbi_cvm_create_vcpu((void *)regs->a0);
+		break;
+	case SBI_EXT_CVM_RUN_VCPU:
+		ret = sbi_cvm_run_vcpu((void *)regs->a0);
+		break;
+	case SBI_EXT_CVM_FINALIZE:
+		ret = sbi_cvm_create_finalize((void *)regs->a0);
+		break;
+	case SBI_EXT_CVM_INIT_MEM_POOL:
+		ret = sbi_cvm_init_mem_pool((void *)regs->a0);
+		break;
 	case SBI_EXT_CVM_LOAD_FILE:
 		ret = load_file((void *)regs->a0);
 	case SBI_EXT_CVM_ENTER:

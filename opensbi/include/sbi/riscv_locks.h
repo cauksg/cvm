@@ -10,6 +10,9 @@
 
 #include <sbi/sbi_types.h>
 
+/* added by wsw */
+#define LOCK_DEBUG   0
+
 #define TICKET_SHIFT	16
 
 typedef struct {

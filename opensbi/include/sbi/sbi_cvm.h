@@ -117,7 +117,7 @@ struct cvm_node {
 	struct cvm_node *next;
 };
 
-struct cvm_node *get_cvm(struct kvm_vmid *vmid);
+struct cvm_node *get_cvm(unsigned long vmid);
 
 /* CVM Life Cycle ------------------------------------------------------------------------------ */
 

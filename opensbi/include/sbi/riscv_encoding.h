@@ -12,6 +12,23 @@
 
 #include <sbi/sbi_const.h>
 
+/* added by wsw */
+/* page table entry (PTE) fields */
+#define PTE_V				_UL(0x001) /* Valid */
+#define PTE_R				_UL(0x002) /* Read */
+#define PTE_W				_UL(0x004) /* Write */
+#define PTE_X				_UL(0x008) /* Execute */
+#define PTE_U				_UL(0x010) /* User */
+#define PTE_G				_UL(0x020) /* Global */
+#define PTE_A				_UL(0x040) /* Accessed */
+#define PTE_D				_UL(0x080) /* Dirty */
+#define PTE_SOFT			_UL(0x300) /* Reserved for Software */
+#define PTE_PPN_SHIFT			10
+#define PTE_TABLE(PTE)			\
+	(((PTE) & (PTE_V | PTE_R | PTE_W | PTE_X)) == PTE_V)
+#define RISCV_PGSHIFT			12
+#define RISCV_PGSIZE			(1 << RISCV_PGSHIFT)
+
 /* clang-format off */
 #define MSTATUS_SIE			_UL(0x00000002)
 #define MSTATUS_MIE			_UL(0x00000008)
