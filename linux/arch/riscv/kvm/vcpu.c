@@ -159,7 +159,8 @@ int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 		  pa_cvm, 0, 0, 0, 0, 0);
 	struct sbiret retval = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_CREATE_VCPU,
 		  pa_cvm, 0, 0, 0, 0, 0);
-
+	// retval = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_RUN_VCPU,
+	// 	  pa_cvm, 0, 0, 0, 0, 0);
 
 	return 0;
 }

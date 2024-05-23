@@ -1,3 +1,5 @@
+// #define DEBUG_WSW
+
 #include <sbi/sbi_cvm.h>
 #include <sbi/sbi_console.h>
 #include <sbi/sbi_string.h>
@@ -344,12 +346,20 @@ int sbi_cvm_create(struct iie_cvm_sbi_params *cvm_sbi_params)
 	//sbi_printf("[IIE CVM Monitor@%s] pgd = %lx\n", __func__,*cvm_sbi_params->pgd_ptr);
 	//sbi_printf("[IIE CVM Monitor@%s] pgd_phys = %lx\n", __func__,*cvm_sbi_params->pgd_phys_ptr);
 
+    
 
 	/* alloc a memory block for cvm struct */
-	struct cvm_node* cvm_node = alloc_cvm_node();
+	struct cvm_node* cvm_node = get_cvm(cvm_sbi_params->vmid_ptr->vmid);
+    if(!cvm_node)
+    {
+        cvm_node = alloc_cvm_node();
+        sbi_printf("[IIE CVM Monitor@%s] cvm allocating... \r\n", __func__);
+    }
+    else return 0;
+    
 	if(!cvm_node)
 	{
-		sbi_printf("[IIE CVM Monitor@%s] cvm allocation is failed \r\n", __func__);
+		sbi_printf("[IIE CVM Monitor@%s] cvm allocation is failed. \r\n", __func__);
 		return TEE_NO_MEMORY;
 	}
 	sbi_printf("[IIE CVM Monitor@%s] cvm allocation is successfull. \r\n", __func__);
@@ -370,12 +380,18 @@ int sbi_cvm_create(struct iie_cvm_sbi_params *cvm_sbi_params)
 	{
 		/* alloc memory first */
 		iie_cvm_list_head = alloc_cvm_node();
+        if(iie_cvm_list_head == NULL)
+        {
+            sbi_printf("[IIE CVM Monitor@%s] cvm list_head allocation is failed. \r\n", __func__);
+		    return TEE_NO_MEMORY;
+        }
 		iie_cvm_list_head->next = cvm_node;
 	}
 	else cvm_insert_node(cvm_node);
 	// sbi_printf("[IIE CVM Monitor@%s] print_cvm_list. \r\n", __func__);
-	print_cvm_list();
-
+#ifdef DEBUG_WSW
+    print_cvm_list();
+#endif
 
 	// TODO: Calculate the enclave's measurement
 
@@ -406,7 +422,7 @@ int sbi_cvm_create_vcpu(struct iie_cvm_sbi_params * cvm_sbi_params)
 {
 	struct kvm_vmid *vmid_ptr = cvm_sbi_params->vmid_ptr;
 	int *vcpu_id_ptr = cvm_sbi_params->vcpu_id_ptr;
-	struct cvm_node *cvm_node = get_cvm(vmid_ptr);
+	struct cvm_node *cvm_node = get_cvm(vmid_ptr->vmid);
 	if(!cvm_node)
 	{
 		sbi_printf("[IIE CVM Monitor@%s] CVM Node is NULL, get_cvm failed!\n", __func__);
@@ -435,7 +451,9 @@ int sbi_cvm_create_vcpu(struct iie_cvm_sbi_params * cvm_sbi_params)
 	}
 	else cvm_insert_vcpu_node(vcpu_list_head, vcpu_node);
 
-
+#ifdef DEBUG_WSW
+    print_vcpu_list(cvm_node);
+#endif
 	return 0;
 }
 
@@ -447,15 +465,20 @@ static uint32_t get_cmode(int vcpu_id)
 }
 
 struct cvm_node *iie_cvm_list_head;
-struct cvm_node *get_cvm(struct kvm_vmid *vmid_ptr)
+struct cvm_node *get_cvm(unsigned long vmid)
 {
-	
+	if(iie_cvm_list_head == NULL) 
+    {
+        sbi_printf("[IIE CVM Monitor@%s] cvm list is empty.\n", __func__);
+        return NULL;
+    }
     // acquire_big_metadata_lock(__func__);
 
 	for(struct cvm_node *cur = iie_cvm_list_head; cur->next; cur = cur->next)
 	{
 		struct cvm_node *node = cur->next;
-		if(node->cvm.vmid == vmid_ptr)
+        // sbi_printf("[IIE CVM Monitor@%s] node vmid id = %d\tvmid = %d\n", __func__, node->cvm.vmid->vmid, vmid);
+		if(node->cvm.vmid->vmid == vmid)
 			return node;
 	}
 
@@ -463,9 +486,9 @@ struct cvm_node *get_cvm(struct kvm_vmid *vmid_ptr)
 	return NULL;
 }
 
-struct cvm_vcpu_node *get_cvm_vcpu_node(struct kvm_vmid *vmid_ptr, int vcpu_id)
+struct cvm_vcpu_node *get_cvm_vcpu_node(unsigned long vmid, int vcpu_id)
 {
-	struct cvm_node *cvm_node = get_cvm(vmid_ptr);
+	struct cvm_node *cvm_node = get_cvm(vmid);
 	if(!cvm_node)
 	{
 		sbi_printf("[IIE CVM Monitor@%s] cvm_node is NULL!\n", __func__);
@@ -483,7 +506,7 @@ struct cvm_vcpu_node *get_cvm_vcpu_node(struct kvm_vmid *vmid_ptr, int vcpu_id)
 	for(struct cvm_vcpu_node *cur = vcpu_list_head; cur->next; cur = cur->next)
 	{
 		struct cvm_vcpu_node *node = cur->next;
-        sbi_printf("[IIE CVM Monitor@%s] node vcpu id = %d\tvcpu id = %d\n", __func__, *node->vcpu.vcpu_id, vcpu_id);
+        // sbi_printf("[IIE CVM Monitor@%s] node vcpu id = %d\tvcpu id = %d\n", __func__, *node->vcpu.vcpu_id, vcpu_id);
 		if(*node->vcpu.vcpu_id == vcpu_id)
 			return node;
 	}
@@ -494,20 +517,25 @@ struct cvm_vcpu_node *get_cvm_vcpu_node(struct kvm_vmid *vmid_ptr, int vcpu_id)
 
 int sbi_cvm_run_vcpu(struct sbi_trap_regs *regs, struct iie_cvm_sbi_params * cvm_sbi_params, uint64_t kvm_vcpu_context, uint64_t kvm_vcpu_csr)
 {
-	struct cvm_vcpu_node *vcpu_node = get_cvm_vcpu_node(cvm_sbi_params->vmid_ptr, *cvm_sbi_params->vcpu_id_ptr);	
-	struct cvm_vcpu *vcpu = &vcpu_node->vcpu;
-	uint32_t cmode = get_cmode(*vcpu->vcpu_id);
-	struct sbi_cvm *cvm = vcpu->cvm;
-
-	if(!vcpu_node)
+	struct cvm_vcpu_node *vcpu_node = get_cvm_vcpu_node(cvm_sbi_params->vmid_ptr->vmid, *cvm_sbi_params->vcpu_id_ptr);	
+    if(!vcpu_node)
 	{
 		sbi_printf("[IIE CVM Monitor@%s] vcpu_node is NULL!\n", __func__);
 		return -1;
 	}
 
+	struct cvm_vcpu *vcpu = &vcpu_node->vcpu;
 	if(!vcpu)
 	{
 		sbi_printf("[IIE CVM Monitor@%s] vcpu is NULL!\n", __func__);
+		return -1;
+	}
+
+	uint32_t cmode = get_cmode(*vcpu->vcpu_id);
+	struct sbi_cvm *cvm = vcpu->cvm;
+    if(!cvm)
+	{
+		sbi_printf("[IIE CVM Monitor@%s] cvm is NULL!\n", __func__);
 		return -1;
 	}
 
@@ -516,7 +544,9 @@ int sbi_cvm_run_vcpu(struct sbi_trap_regs *regs, struct iie_cvm_sbi_params * cvm
 		/* Exception: CVM hasn't been initialized. */
 		sbi_printf("[IIE CVM Monitor@%s] Exception: CVM hasn't been initialized.\n", __func__);
 		// exit(0);
-		return 0xff;
+
+        /* Here should terminate, do not delete!!! */
+		// return 0xff;
 	}
 
     // enter cvm vcpu ctx
@@ -580,6 +610,16 @@ inline void print_cvm_list()
 	{
 		struct cvm_node *node = cur->next;
 		sbi_printf("[IIE CVM DEBUG@%s] vmid = %d\tKeyID = %d\tcount = %d\n", __func__, node->cvm.vmid->vmid, node->cvm.KeyID, i ++);
+	}
+}
+
+inline void print_vcpu_list(struct cvm_node *cvm_node)
+{
+	int i = 1;
+	for(struct cvm_vcpu_node *cur = cvm_node->cvm.cvm_vcpu_list_head; cur->next; cur = cur->next)
+	{
+		struct cvm_vcpu_node *node = cur->next;
+		sbi_printf("[IIE CVM DEBUG@%s] vcpuid = %d\n", __func__, *node->vcpu.vcpu_id, i ++);
 	}
 }
 
@@ -924,7 +964,7 @@ int convert_cvm_pages(paddr_t* normal_address, int count){
 
 int load_file(struct iie_cvm_sbi_params_load *load_file){
     sbi_printf("--------------------sbi load file begin!-------------------------\n");
-    struct cvm_node *cvm_node = get_cvm(load_file->vmid_ptr);
+    struct cvm_node *cvm_node = get_cvm(load_file->vmid_ptr->vmid);
     //sbi_printf("--------------------++++++++++++++++++++-------------------------\n");
     unsigned long count = load_file->count;
     paddr_t root_pt = cvm_node->cvm.root_pt;
@@ -1002,7 +1042,7 @@ int cvm_trap_gstage_page_fault(struct sbi_trap_regs* host_regs)
         if(addr >= 0x80000000){
             struct kvm_vmid kvm_id;
             kvm_id.vmid = get_cvm_id();
-            struct cvm_node *cvm = get_cvm(&kvm_id);
+            struct cvm_node *cvm = get_cvm(kvm_id.vmid);
             ret = malloc_cvm_empty_page(cvm, addr);
             return ret;
         }
