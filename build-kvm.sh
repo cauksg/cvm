@@ -1,4 +1,5 @@
 #!/bin/bash
+git submodule --init update
 
 #git clone https://github.com/riscv/opensbi.git
 cd opensbi
@@ -39,6 +40,8 @@ cd ..
 #build a root FS for our OS
 export ARCH=riscv
 export CROSS_COMPILE=riscv64-unknown-linux-gnu-
+wget https://busybox.net/downloads/busybox-1.33.1.tar.bz2
+tar -C . -xvf busybox-1.33.1.tar.bz2
 make -C busybox-1.33.1 defconfig
 cd busybox-1.33.1
 echo 'CONFIG_CROSS_COMPILER_PREFIX="riscv64-unknown-linux-gnu-' >> .config

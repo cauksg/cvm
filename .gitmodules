@@ -1,21 +1,15 @@
 [submodule "riscv-gnu-toolchain"]
-	path = riscv-gnu-toolchain
-	url = http://192.168.104.44/lubailong/riscv-gnu-toolchain.git
+        path = riscv-gnu-toolchain
+        url = https://gitee.com/lubailong/riscv-gnu-toolchain.git
 [submodule "qemu"]
-	path = qemu
-	url = http://192.168.104.44/lubailong/qemu.git
-[submodule "opensbi"]
-	path = opensbi
-	url = http://192.168.104.44/lubailong/opensbi.git
+        path = qemu
+        url = https://gitee.com/lubailong/qemu.git
 [submodule "kvmtool"]
-	path = kvmtool
-	url = http://192.168.104.44/lubailong/kvmtool.git
+        path = kvmtool
+        url = https://gitee.com/lubailong/kvmtool.git
 [submodule "howto"]
-	path = howto
-	url = http://192.168.104.44/lubailong/howto.git
+        path = howto
+        url = https://gitee.com/lubailong/howto.git
 [submodule "dtc"]
-	path = dtc
-	url = http://192.168.104.44/lubailong/dtc.git
-[submodule "linux"]
-	path = linux
-	url = http://192.168.104.44/lubailong/linux.git
+        path = dtc
+        url = https://gitee.com/lubailong/dtc.git
