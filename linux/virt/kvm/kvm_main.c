@@ -70,6 +70,7 @@
 #include <linux/kvm_dirty_ring.h>
 
 #include "enclave-driver.h"
+#include <cvm/iie-cvm-sbi.h>
 
 /* Worst case buffer size needed for holding an integer. */
 #define ITOA_MAX_LEN 12
@@ -4984,6 +4985,7 @@ static long kvm_vm_ioctl(struct file *filp,
 		r = kvm_vm_ioctl_get_stats_fd(kvm);
 		break;
 	case KVM_LOAD_FILE:
+	#ifdef PROG_LBL
 		printk("----------------linux vm ioctl begin to load kernel-------------------\n");
 		struct sbiret ret;
 		unsigned long file_paddr_array;
@@ -5041,7 +5043,9 @@ static long kvm_vm_ioctl(struct file *filp,
 		r = ret.error;
 		//free_pages(unsigned long addr, unsigned int order);
 		printk("----------------linux vm ioctl end to load kernel-------------------\n");
-        break;
+	#endif
+
+		break;
 	default:
 		r = kvm_arch_vm_ioctl(filp, ioctl, arg);
 	}

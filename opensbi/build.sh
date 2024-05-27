@@ -1,2 +1,2 @@
-export CROSS_COMPILE=riscv64-unknown-linux-gnu-
+export CROSS_COMPILE=riscv64-linux-gnu-
 make -j $(nproc) PLATFORM=generic

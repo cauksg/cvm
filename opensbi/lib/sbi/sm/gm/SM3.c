@@ -248,7 +248,7 @@ void SM3_compress(SM3_STATE *md)
 
 /******************************************************************************
   Function:         SM3_process
-  Description:      compress the first (len/64) blocks of message
+  Description:      compress the first (len/64) blocks of message. Copy buf into md->buf, until the buffer length up to 64
   Calls:            SM3_compress
   Called By:        SM3_256
   Input:            SM3_STATE *md
@@ -278,7 +278,7 @@ void SM3_process(SM3_STATE *md, unsigned char *buf, int len)
 
 /******************************************************************************
   Function:         SM3_done
-  Description:      compress the rest message that the SM3_process has left behind
+  Description:      compress the rest message that the SM3_process has left behind, and copy the result into hash[]
   Calls:            SM3_compress
   Called By:        SM3_256
   Input:            SM3_STATE *md

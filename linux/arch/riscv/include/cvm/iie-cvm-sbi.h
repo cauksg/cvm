@@ -13,7 +13,12 @@
 #define SBI_EXT_CVM_FINALIZE				0x4
 #define SBI_EXT_CVM_INIT_MEM_POOL			0x5
 #define SBI_EXT_CVM_RUN_VCPU				0x6
+#define SBI_EXT_CVM_LOAD 			0x7
+#define SBI_EXT_CVM_INIT_PAGE_LIST	0x9
 
+// #define PROG_BYK
+// #define PROG_LBL
+#define PROG_WSW
 
 struct iie_cvm_vcpu_sbi_params {
 	int *vcpu_id_ptr;	/* id given by userspace at creation */

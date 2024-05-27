@@ -466,7 +466,9 @@ int sbi_cvm_create(struct iie_cvm_sbi_params *cvm_sbi_params)
 	cvm_node->cvm.cmode = 1;
 	cvm_node->next = NULL;
 
+#ifdef PROG_LBL
     init_cvm_vcpu_root_pt(&cvm_node->cvm);
+#endif
 
 	/* maintain the cvm List */
 	// sbi_printf("[IIE CVM Monitor@%s] CVM List. \r\n", __func__);

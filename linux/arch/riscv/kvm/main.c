@@ -14,11 +14,7 @@
 #include <asm/hwcap.h>
 #include <asm/sbi.h>
 #include <linux/vmalloc.h>
-
-#define SBI_EXT_CVM 				0x20000217
-#define SBI_EXT_CVM_PRINT 			0x0
-#define SBI_EXT_CVM_LOAD 			0x7
-#define SBI_EXT_CVM_INIT_PAGE_LIST	0x9
+#include <cvm/iie-cvm-sbi.h>
 
 long kvm_arch_dev_ioctl(struct file *filp,
 			unsigned int ioctl, unsigned long arg)
@@ -108,10 +104,14 @@ unsigned long kernel_page_translate(unsigned long addr){
 
 static int __init riscv_kvm_init(void)
 {
+	#ifdef PROG_LBL
+	
 	struct sbiret ret;
 	//apply for free memory and translation their hva to hpa
 	unsigned long *hva = vmalloc(PAGE_SIZE << 14);
 	unsigned long *list_va = (unsigned long *)__get_free_pages(GFP_KERNEL, 5);
+
+	
 	if (!hva){
 		printk("----------------------------------\n");
 		printk("memory mmap failed!\n");
@@ -130,6 +130,8 @@ static int __init riscv_kvm_init(void)
 	//ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_INIT_PAGE_LIST, __pa((unsigned long)list_va), 14, 0, 0, 0, 0);
 	// int r;
 	// r = ret.error;
+
+	#endif
 
 	int rc;
 	const char *str;

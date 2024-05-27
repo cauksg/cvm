@@ -146,6 +146,8 @@ int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 	/* Reset VCPU */
 	kvm_riscv_reset_vcpu(vcpu);
 
+	#ifdef PROG_WSW
+
 	struct iie_cvm_sbi_params *cvm_sbi_params = kmalloc(sizeof(struct iie_cvm_sbi_params), GFP_KERNEL);
 	cvm_sbi_params->vmid_ptr = __pa(&vcpu->kvm->arch.vmid);
 	cvm_sbi_params->vcpu_id_ptr = __pa(&vcpu->vcpu_id);
@@ -161,6 +163,7 @@ int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 		  pa_cvm, 0, 0, 0, 0, 0);
 	// retval = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_RUN_VCPU,
 	// 	  pa_cvm, 0, 0, 0, 0, 0);
+	#endif
 
 	return 0;
 }
@@ -760,9 +763,13 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 
 		guest_timing_enter_irqoff();
 
-		// kvm_riscv_vcpu_enter_exit(vcpu);
+		
+		#ifdef PROG_BYK
 		sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_RUN_VCPU, __pa(cvm_sbi_params),
 			__pa(&vcpu->arch.guest_context), __pa(&vcpu->arch.guest_csr), 0, 0, 0);
+		#else
+		kvm_riscv_vcpu_enter_exit(vcpu);
+		#endif
 
 		vcpu->mode = OUTSIDE_GUEST_MODE;
 		vcpu->stat.exits++;
