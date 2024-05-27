@@ -645,7 +645,7 @@ static void noinstr kvm_riscv_vcpu_enter_exit(struct kvm_vcpu *vcpu)
 int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 {
 	int ret;
-	struct kvm_cpu_trap trap;
+	struct kvm_cpu_trap *trap = kmalloc(sizeof(struct kvm_cpu_trap), GFP_KERNEL);
 	struct kvm_run *run = vcpu->run;
 	struct iie_cvm_sbi_params *cvm_sbi_params = kmalloc(sizeof(struct iie_cvm_sbi_params), GFP_KERNEL);
 
@@ -766,7 +766,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		
 		#ifdef PROG_BYK
 		sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_RUN_VCPU, __pa(cvm_sbi_params),
-			__pa(&vcpu->arch.guest_context), __pa(&vcpu->arch.guest_csr), 0, 0, 0);
+			__pa(&vcpu->arch.guest_context), __pa(&vcpu->arch.guest_csr), __pa(trap), 0, 0);
 		#else
 		kvm_riscv_vcpu_enter_exit(vcpu);
 		#endif
@@ -779,11 +779,11 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		 * get an interrupt between __kvm_riscv_switch_to() and
 		 * local_irq_enable() which can potentially change CSRs.
 		 */
-		trap.sepc = vcpu->arch.guest_context.sepc;
-		trap.scause = csr_read(CSR_SCAUSE);
-		trap.stval = csr_read(CSR_STVAL);
-		trap.htval = csr_read(CSR_HTVAL);
-		trap.htinst = csr_read(CSR_HTINST);
+		// trap->sepc = vcpu->arch.guest_context.sepc;
+		// trap->scause = csr_read(CSR_SCAUSE);
+		// trap->stval = csr_read(CSR_STVAL);
+		// trap->htval = csr_read(CSR_HTVAL);
+		// trap->htinst = csr_read(CSR_HTINST);
 
 		/* Syncup interrupts state with HW */
 		kvm_riscv_vcpu_sync_interrupts(vcpu);
@@ -809,7 +809,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 
 		kvm_vcpu_srcu_read_lock(vcpu);
 
-		ret = kvm_riscv_vcpu_exit(vcpu, run, &trap);
+		ret = kvm_riscv_vcpu_exit(vcpu, run, trap);
 	}
 
 	kvm_sigset_deactivate(vcpu);

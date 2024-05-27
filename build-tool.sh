@@ -3,26 +3,26 @@
 git submodule update --init
 
 #Compiling the toolchain
-mkdir ~/riscv
-export RISCV=~/riscv
-sudo apt install autoconf automake autotools-dev curl libmpc-dev libmpfr-dev libgmp-dev \
-                 libusb-1.0-0-dev gawk build-essential bison flex texinfo gperf libtool \
-                 patchutils bc zlib1g-dev device-tree-compiler pkg-config libexpat-dev  \
-                 libncurses5-dev libncursesw5-dev git
-#git clone https://github.com/riscv/riscv-gnu-toolchain
-cd riscv-gnu-toolchain
-./configure --prefix=$RISCV --enable-multilib
-make -j $(nproc)
-make -j $(nproc) linux
-eval echo 'export RISCV=$(eval echo ~)/riscv/bin' >> ~/.bashrc
-echo 'export PATH="$PATH:$RISCV"' >> ~/.bashrc
-source ~/.bashrc
-cd ..
+#mkdir ~/riscv
+#export RISCV=~/riscv
+#sudo apt install autoconf automake autotools-dev curl libmpc-dev libmpfr-dev libgmp-dev \
+#                 libusb-1.0-0-dev gawk build-essential bison flex texinfo gperf libtool \
+#                 patchutils bc zlib1g-dev device-tree-compiler pkg-config libexpat-dev  \
+#                 libncurses5-dev libncursesw5-dev git
+##git clone https://github.com/riscv/riscv-gnu-toolchain
+#cd riscv-gnu-toolchain
+#./configure --prefix=$RISCV --enable-multilib
+#make -j $(nproc)
+#make -j $(nproc) linux
+#eval echo 'export RISCV=$(eval echo ~)/riscv/bin' >> ~/.bashrc
+#echo 'export PATH="$PATH:$RISCV"' >> ~/.bashrc
+#source ~/.bashrc
+#cd ..
 
 
 #Compiling QEMU for RSIC-V with virtualization extensions
-sudo apt install ninja-build pkg-config libglib2.0-dev libpixman-1-dev libtirpc-dev unzip
-sudo apt-get install python3-venv
+#sudo apt install ninja-build pkg-config libglib2.0-dev libpixman-1-dev libtirpc-dev unzip
+#sudo apt-get install python3-venv
 #git clone https://github.com/kvm-riscv/qemu.git
 cd qemu
 ./configure --target-list="riscv32-softmmu riscv64-softmmu"
@@ -61,6 +61,7 @@ cd ..
 #git clone https://github.com/kvm-riscv/kvmtool.git
 export ARCH=riscv
 export CROSS_COMPILE=riscv64-unknown-linux-gnu-
+export LIBFDT_DIR=`pwd`/dtc/lib64/lp64d
 cd kvmtool
 make lkvm-static -j $(nproc)
 ${CROSS_COMPILE}strip lkvm-static

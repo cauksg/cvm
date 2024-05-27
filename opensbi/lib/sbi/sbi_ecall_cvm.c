@@ -10,7 +10,7 @@ static int sbi_ecall_cvm_handler(unsigned long extid, unsigned long funcid,
 {
     int ret = 0;
 	// uint64_t temp;
-	sbi_printf("sbi_ecall_cvm_handler!\n");
+	// sbi_printf("sbi_ecall_cvm_handler!\n");
 	switch (funcid) {
 	case SBI_EXT_CVM_CREATE:
 		ret = sbi_cvm_create((void *)regs->a0);
@@ -25,7 +25,7 @@ static int sbi_ecall_cvm_handler(unsigned long extid, unsigned long funcid,
 		ret = sbi_cvm_create_vcpu((void *)regs->a0);
 		break;
 	case SBI_EXT_CVM_RUN_VCPU:
-		ret = sbi_cvm_run_vcpu(regs, (void *)regs->a0, regs->a1, regs->a2);
+		ret = sbi_cvm_run_vcpu(regs, (void *)regs->a0, regs->a1, regs->a2, regs->a3);
 		out->skip_regs_update = true;
 		break;
 	case SBI_EXT_CVM_FINALIZE:
