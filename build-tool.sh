@@ -44,8 +44,8 @@ cd ..
 #git clone https://github.com/kvm-riscv/linux.git
 mkdir build-riscv64
 make -C linux O=`pwd`/build-riscv64 defconfig
-echo "CONFIG_KVM=y" >> ./build-riscv64/.config
-#TODO close virtio
+sed -i 's|^CONFIG_NET_9P_VIRTIO=.*$|CONFIG_NET_9P_VIRTIO=n|' ./build-riscv64/.config
+sed -i 's|^CONFIG_VIRTIO_NET=.*$|CONFIG_VIRTIO_NET=n|' ./build-riscv64/.config
 make -C linux O=`pwd`/build-riscv64 -j $(nproc)
 
 #KVM tool depends on dtc at runtime. So we first compile it.
@@ -76,6 +76,11 @@ cd ..
 #build a root FS for our OS
 wget https://busybox.net/downloads/busybox-1.33.1.tar.bz2
 tar -C . -xvf busybox-1.33.1.tar.bz2
+cd busybox-1.33.1
+make defconfig
+sed -i 's|^CONFIG_CROSS_COMPILER_PREFIX=.*$|CONFIG_CROSS_COMPILER_PREFIX="riscv64-linux-gnu-"|' .config
+sed -i 's|.*CONFIG_STATIC.*|CONFIG_STATIC=y|' .config
+cd ..
 #cd busybox-1.33.1
 #make defconfig
 #echo 'CONFIG_CROSS_COMPILER_PREFIX="riscv64-linux-gnu-' >> .config

@@ -1,5 +1,5 @@
 // #define DEBUG_WSW
-
+#define PROG_LBL
 #include <sbi/sbi_cvm.h>
 #include <sbi/sbi_console.h>
 #include <sbi/sbi_string.h>

@@ -16,8 +16,8 @@
 #define SBI_EXT_CVM_LOAD 			0x7
 #define SBI_EXT_CVM_INIT_PAGE_LIST	0x9
 
-// #define PROG_BYK
-// #define PROG_LBL
+#define PROG_BYK
+#define PROG_LBL
 #define PROG_WSW
 
 struct iie_cvm_vcpu_sbi_params {
