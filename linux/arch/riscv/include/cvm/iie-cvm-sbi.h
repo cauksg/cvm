@@ -13,8 +13,14 @@
 #define SBI_EXT_CVM_FINALIZE				0x4
 #define SBI_EXT_CVM_INIT_MEM_POOL			0x5
 #define SBI_EXT_CVM_RUN_VCPU				0x6
-#define SBI_EXT_CVM_LOAD 			0x7
-#define SBI_EXT_CVM_INIT_PAGE_LIST	0x9
+#define SBI_EXT_CVM_LOAD_FILE				0x7
+#define SBI_EXT_CVM_ENTER					0x8
+#define SBI_EXT_CVM_INIT_PAGE_LIST			0x9
+#define SBI_EXT_CVM_HASH_IMAGE				0xa
+#define SBI_EXT_CVM_ATTEST					0xb
+/* define for function test */
+#define SBI_EXT_CVM_TEST					0xffff
+
 
 // #define PROG_BYK
 // #define PROG_LBL
@@ -32,8 +38,10 @@ struct iie_cvm_sbi_params {
 	int *vcpu_id_ptr;	/* id given by userspace at creation */
 
 	/* G-stage page table */
+	uintptr_t *pgd_phys_ptr;
 	pgd_t *pgd;
-	phys_addr_t *pgd_phys;
+	phys_addr_t pgd_phys;
+
 	// struct kvm_vcpu *vcpu;
 	// struct iie_cvm_vcpu_sbi_params cvm_vcpu_sbi_params;
 

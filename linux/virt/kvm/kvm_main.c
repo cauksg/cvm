@@ -4032,6 +4032,27 @@ static int kvm_vm_ioctl_create_vcpu(struct kvm *kvm, u32 id)
 	mutex_unlock(&kvm->lock);
 	kvm_arch_vcpu_postcreate(vcpu);
 	kvm_create_vcpu_debugfs(vcpu);
+
+	
+	#ifdef PROG_WSW
+
+	struct iie_cvm_sbi_params *cvm_sbi_params = kmalloc(sizeof(struct iie_cvm_sbi_params), GFP_KERNEL);
+	cvm_sbi_params->vmid_ptr = __pa(&vcpu->kvm->arch.vmid);
+	cvm_sbi_params->vcpu_id_ptr = __pa(&vcpu->vcpu_id);
+	cvm_sbi_params->pgd = __pa(vcpu->kvm->arch.pgd);
+	cvm_sbi_params->pgd_phys = __pa(&vcpu->kvm->arch.pgd_phys);
+	cvm_sbi_params->pgd_phys_ptr = __pa(&vcpu->kvm->arch.pgd_phys);
+	uintptr_t pa_cvm = __pa(cvm_sbi_params);
+
+	// printk("pgd_phys_ptr = %lx, pgd_phys = %lx\n", 	cvm_sbi_params->pgd_phys_ptr, vcpu->kvm->arch.pgd_phys);
+	sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_HASH_IMAGE, pa_cvm, 0, 0, 0, 0, 0);
+	sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_ATTEST, pa_cvm, 0, 0, 0, 0, 0);
+	if(vcpu->vcpu_id == 1)
+		sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_TEST, pa_cvm, 0, 0, 0, 0, 0);
+
+	#endif
+
+
 	return r;
 
 kvm_put_xa_release:

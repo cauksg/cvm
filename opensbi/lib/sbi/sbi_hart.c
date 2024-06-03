@@ -23,6 +23,7 @@
 #include <sbi/sbi_string.h>
 #include <sbi/sbi_trap.h>
 #include <sbi/sbi_hfence.h>
+#include <sm/sm.h>
 
 extern void __sbi_expected_trap(void);
 extern void __sbi_expected_trap_hext(void);
@@ -1057,6 +1058,10 @@ sbi_hart_switch_mode(unsigned long arg0, unsigned long arg1,
 			csr_write(CSR_UIE, 0);
 		}
 	}
+
+	/* Init IIE SM */
+	sm_init();
+	// sbi_printf("SM2 = %d\n", SM2_SelfCheck());
 
 	register unsigned long a0 asm("a0") = arg0;
 	register unsigned long a1 asm("a1") = arg1;

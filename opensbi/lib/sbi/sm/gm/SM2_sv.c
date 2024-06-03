@@ -406,6 +406,11 @@ static void SM2_gen_random(unsigned char rand[])
 	big_to_bytes(SM2_NUMWORD, x, (char *)rand, TRUE);
 }
 
+void SM2_Gen_Random(unsigned char rand[])
+{
+	SM2_gen_random(rand);
+}
+
 /****************************************************************
   Function:            SM2_compute_ZA
   Description:         compute ZA out of a given pubkey
@@ -487,7 +492,7 @@ int SM2_Sign(unsigned char *message, int len, unsigned char d[], unsigned char R
 	KG 	= epoint_init_mem(mem_point, 0);
 
 	//step1,set M=ZA||M
-	sbi_memset(M, 0, MAX_MESSAGE_SIZE + SM3_len / 8 + 1);
+	sbi_memset(M, 0, MAX_MESSAGE_SIZE + SM3_len / 8 + 1);	
 	SM2_make_pubkey(d, Px, Py);
 	SM2_compute_ZA(ZA, Px, Py);
 	sbi_memcpy(M, ZA, SM3_len / 8);

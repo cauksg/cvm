@@ -11,6 +11,8 @@
 #define TEE_NO_MEMORY 	-1
 #define CVM_ERROR		-2
 
+#define CVM_HASH_SIZE 32
+
 #ifdef CONFIG_PHYS_ADDR_T_64BIT
 typedef u64 phys_addr_t;
 #else
@@ -28,11 +30,11 @@ struct kvm_vmid {
 
 enum cvm_state
 {
-    DESTROYED,
-    INVALID ,
-    FRESH ,
-    RUNNING,
-    STOPPED,
+    // DESTROYED,
+    // INVALID ,
+    // FRESH ,
+    // RUNNING,
+    // STOPPED,
     INITIALIZING,	
     READY,		
 };
@@ -46,6 +48,17 @@ struct sbi_cvm {
 	struct cvm_vcpu_node *cvm_vcpu_list_head;
 	uint32_t cmode;
     unsigned long root_pt;
+
+	//shared memory with host
+	unsigned long untrusted_ptr;
+	unsigned long untrusted_ptr_paddr;
+	unsigned long untrusted_size;
+	// enclave measurement
+	unsigned char hash[CVM_HASH_SIZE];
+	// hash of enclave developer's public key
+	unsigned char signer[CVM_HASH_SIZE];
+
+	uintptr_t pgd_phys;
 };
 
 /* Page Global Directory entry */
@@ -53,15 +66,17 @@ typedef struct {
 	unsigned long pgd;
 } pgd_t;
 
-typedef struct {
-	unsigned long pte;
-} pte_t;
+// typedef struct {
+// 	unsigned long pte;
+// } pte_t;
 
 struct iie_cvm_sbi_params {
 	/* G-stage vmid */
 	struct kvm_vmid *vmid_ptr;
 	int *vcpu_id_ptr;	/* id given by userspace at creation */
-
+	/* G-stage page table */
+	uintptr_t *pgd_phys_ptr;
+	
 	unsigned long gpa;
 };
 
@@ -84,6 +99,17 @@ struct iie_cvm_sbi_params_load {
 	unsigned long count;
 };
 
+struct multi_key_manage_t {
+	uint8_t key_id;
+	uint8_t mode;
+	bool tweak_flag;
+	bool random_ready_flag;
+	bool key_expansion_idle;
+	bool last_req_accepted;
+	bool key_init_req;
+	/* if mode == 1, ie. key managed by software, then generate two 64-bit random numbers. */
+	uint64_t rnum1, rnum2;
+};
 
 /* get vmid, generate keyID */
 int sbi_cvm_create(struct iie_cvm_sbi_params * cvm_sbi_params);
@@ -92,7 +118,10 @@ int sbi_cvm_create(struct iie_cvm_sbi_params * cvm_sbi_params);
 int sbi_cvm_create_memory_region(struct iie_cvm_sbi_params * cvm_sbi_params);
 
 /* measure confidential memory pages */
-int sbi_cvm_create_measured_pages(struct iie_cvm_sbi_params * cvm_sbi_params);
+int sbi_cvm_hash_image(struct iie_cvm_sbi_params * cvm_sbi_params);
+
+/* attest cvm and generate attestation report */
+int sbi_cvm_attest(struct iie_cvm_sbi_params * cvm_sbi_params);
 
 /* get vcpu id, and initialize related CSRs */
 int sbi_cvm_create_vcpu(struct iie_cvm_sbi_params * cvm_sbi_params);
@@ -104,13 +133,19 @@ int sbi_cvm_create_finalize(struct iie_cvm_sbi_params * cvm_sbi_params);
 int sbi_cvm_init_mem_pool(struct iie_cvm_sbi_params * cvm_sbi_params);
 
 /* Convert Normal page into Confidential page */
-int sbi_cvm_convert_page(pte_t *pte);
+// int sbi_cvm_convert_page(pte_t *pte);
 
 /* Load Kernel Image into Confidential Memory Region From Normal Region */
 int sbi_cvm_load_kernel_image(phys_addr_t to, phys_addr_t from, unsigned int image_size);
 
 /* Check vcpu states  */
 int sbi_cvm_run_vcpu(struct sbi_trap_regs *regs, struct iie_cvm_sbi_params * cvm_sbi_params, uint64_t kvm_vcpu_context, uint64_t kvm_vcpu_csr);
+
+/* Destroy CVM, clean and reclaim vcpus, memory and registers. */
+int sbi_cvm_destroy(struct iie_cvm_sbi_params * cvm_sbi_params);
+
+/* Test functions */
+int sbi_cvm_test(struct iie_cvm_sbi_params * cvm_sbi_params);
 
 struct cvm_node {
 	struct sbi_cvm cvm;
@@ -177,15 +212,15 @@ typedef struct page_own_table{
 #define PAGE_PFN_SHIFT  10
 
 //PTE fields
-#define PTE_V       0x001
-#define PTE_R       0x002
-#define PTE_W       0x004
-#define PTE_X       0x008
-#define PTE_U       0x010
-#define PTE_G       0x020
-#define PTE_A       0x040
-#define PTE_D       0x080
-#define PTE_SOFT    0x300
+// #define PTE_V       0x001
+// #define PTE_R       0x002
+// #define PTE_W       0x004
+// #define PTE_X       0x008
+// #define PTE_U       0x010
+// #define PTE_G       0x020
+// #define PTE_A       0x040
+// #define PTE_D       0x080
+// #define PTE_SOFT    0x300
 
 
 union mcvm

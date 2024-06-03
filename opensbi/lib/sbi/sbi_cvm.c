@@ -5,6 +5,9 @@
 #include <sbi/sbi_string.h>
 #include <sbi/sbi_heap.h>
 #include <sbi/sbi_tlb.h>
+#include <sm/attest.h>
+#include <sm/gm/SM2_sv.h>
+
 
 spinlock_t spin_lock_cm_list;
 spinlock_t spin_lock_bitmap;
@@ -94,6 +97,123 @@ static void cvm_insert_vcpu_node(struct cvm_vcpu_node *list_head, struct cvm_vcp
 	list_head->next = node;
 }
 
+static int cvm_delete_all_vcpu_node(struct cvm_vcpu_node *list_head);
+static int cvm_delete_node(struct cvm_node *node)
+{
+    if(!iie_cvm_list_head)
+    {
+        sbi_printf("[IIE CVM Monitor@%s] CVM List is Empty.\n", __func__);
+        return -1;
+    }
+    bool node_exist = false;
+    if(node)
+    {
+        for(struct cvm_node *cur = iie_cvm_list_head; cur; cur = cur->next)
+        {
+            struct cvm_node *nxt = cur->next;
+            if(nxt == node) 
+            {
+                node_exist = true;
+                /* 1. delete logically, maintain cvm list and vcpu list. */ 
+                cur->next = nxt->next;
+                nxt->next = NULL;
+                cvm_delete_all_vcpu_node(nxt->cvm.cvm_vcpu_list_head);
+                break;
+            }
+        }
+        if(node_exist)
+        {
+            /* 2. reclaim resources, vcpu and memory. Clean memory and registers. */
+            sbi_free(&node->cvm);
+            sbi_free(node);
+        }
+        else 
+        {
+            sbi_printf("[IIE CVM Monitor@%s] This cvm does not exist.\n", __func__);
+            return -1;
+        }
+    }
+    else
+    {
+        sbi_printf("[IIE CVM Monitor@%s] Empty cvm parameters.\n", __func__);
+        return -1;
+    }
+    sbi_printf("[IIE CVM Monitor@%s] Delete CVM Successfully.\n", __func__);
+    return 0;
+}
+
+static int cvm_delete_vcpu_node(struct cvm_vcpu_node *list_head, struct cvm_vcpu_node *node)
+{
+    /* TODO 
+        1. free single vcpu: 
+            1.1 logically delete from vcpu list
+            1.2 free memory and register resources
+        2. free all vcpus recursively
+    */
+    if(!list_head)
+    {
+        sbi_printf("[IIE CVM Monitor@%s] CVM vcpu list_head is Empty.\n", __func__);
+        return -1;
+    }
+    bool node_exist = false;
+    if(!node)
+    {
+        sbi_printf("[IIE CVM Monitor@%s] Empty vcpu parameters.\n", __func__);
+        return -2;
+    }
+    int i = 0;
+    for(struct cvm_vcpu_node* cur = list_head; cur; cur = cur->next)
+    {
+        struct cvm_vcpu_node* nxt = cur->next;
+        if(nxt == node)
+        {
+            node_exist = true;
+            /* 1. delete logically, maintain cvm list and vcpu list. */ 
+            cur->next = nxt->next;
+            nxt->next = NULL;
+            sbi_printf("[IIE CVM Monitor@%s] deleting vcpu %d\n", __func__, *nxt->vcpu.vcpu_id);
+            break;
+        }
+    }
+    if(node_exist)
+    {
+        /* 2. reclaim resources, vcpu context. Clean memory and registers. */
+        sbi_free(&node->vcpu);
+        sbi_free(node);
+    }
+    else 
+    {
+        sbi_printf("[IIE CVM Monitor@%s] This vcpu does not exist.\n", __func__);
+        return -3;
+    }
+    sbi_printf("[IIE CVM Monitor@%s] Delete VCPU Successfully.\n", __func__);
+    return 0;
+}
+
+static int cvm_delete_all_vcpu_node(struct cvm_vcpu_node *list_head)
+{
+    if(!list_head)
+    {
+        sbi_printf("[IIE CVM Monitor@%s] CVM vcpu list_head is Empty.\n", __func__);
+        return -1;
+    }
+
+    // for(struct cvm_vcpu_node* cur = list_head; cur; cur = cur->next)
+    while(list_head->next)
+    {
+        struct cvm_vcpu_node* cur = list_head->next;
+        int ret = cvm_delete_vcpu_node(list_head, cur);
+        
+        if(ret)
+        {
+            sbi_printf("[IIE CVM Monitor@%s] Vcpu delete failed with error %d, Continue deleting...\n", __func__, ret);
+            continue;
+        }
+    }
+    return 0;
+}
+
+
 static uint32_t get_cmode(int vcpu_id)
 {
 	if(vcpu_id < 0 || vcpu_id >= MAX_HARTS) return 0;
@@ -105,7 +225,7 @@ struct cvm_node *get_cvm(unsigned long vmid)
 {
 	if(iie_cvm_list_head == NULL) 
     {
-        sbi_printf("[IIE CVM Monitor@%s] cvm list is empty.\n", __func__);
+        sbi_printf("[IIE CVM Monitor@%s] CVM list is empty.\n", __func__);
         return NULL;
     }
     // acquire_big_metadata_lock(__func__);
@@ -119,6 +239,7 @@ struct cvm_node *get_cvm(unsigned long vmid)
 	}
 
     // release_big_metadata_lock(__func__);
+    sbi_printf("[IIE CVM Monitor@%s] CVM %d does not exist.\n", __func__, vmid);
 	return NULL;
 }
 
@@ -128,13 +249,13 @@ struct cvm_vcpu_node *get_cvm_vcpu_node(unsigned long vmid, int vcpu_id)
 	if(!cvm_node)
 	{
 		sbi_printf("[IIE CVM Monitor@%s] cvm_node is NULL!\n", __func__);
-		return -1;
+		return NULL;
 	}
 	struct cvm_vcpu_node *vcpu_list_head = cvm_node->cvm.cvm_vcpu_list_head;
     if(!vcpu_list_head)
 	{
 		sbi_printf("[IIE CVM Monitor@%s] vcpu_list_head is NULL!\n", __func__);
-		return -1;
+		return NULL;
 	}
 
 	// acquire_big_metadata_lock(__func__);
@@ -429,7 +550,7 @@ int cvm_vcpu_exit(struct sbi_trap_regs* host_regs)
 
 int sbi_cvm_create(struct iie_cvm_sbi_params *cvm_sbi_params)
 {
-	sbi_printf("[IIE CVM Monitor@%s] vmid = %d\n", __func__,cvm_sbi_params->vmid_ptr->vmid);
+	sbi_printf("[IIE CVM Monitor@%s] vmid = %ld\n", __func__,cvm_sbi_params->vmid_ptr->vmid);
 	sbi_printf("[IIE CVM Monitor@%s] vcpu_id = %d\n", __func__,*cvm_sbi_params->vcpu_id_ptr);
 	//sbi_printf("[IIE CVM Monitor@%s] pgd_ptr = %lx\n", __func__,cvm_sbi_params->pgd_ptr);
 	//sbi_printf("[IIE CVM Monitor@%s] pgd_phys_ptr = %lx\n", __func__,cvm_sbi_params->pgd_phys_ptr);
@@ -464,6 +585,14 @@ int sbi_cvm_create(struct iie_cvm_sbi_params *cvm_sbi_params)
 	cvm_node->cvm.cvm_vcpu_list_head = alloc_cvm_vcpu_node();
 	cvm_node->cvm.cvm_vcpu_list_head->next = NULL;
 	cvm_node->cvm.cmode = 1;
+    sbi_memset(cvm_node->cvm.hash, 0, sizeof(cvm_node->cvm.hash));
+    
+    cvm_node->cvm.pgd_phys = *cvm_sbi_params->pgd_phys_ptr;
+	// sbi_printf("[IIE CVM Monitor@%s] pgd_phys_ptr = %lx, pgd_phys = %lx. \r\n", 
+    //     __func__, cvm_sbi_params->pgd_phys_ptr, cvm_node->cvm.pgd_phys);
+    // hash_cvm(&cvm_node->cvm, (void *)cvm_node->cvm.hash, 0);
+    // sbi_printf("[IIE CVM Monitor@%s] hash value = %s. \r\n", __func__, cvm_node->cvm.hash);
+
 	cvm_node->next = NULL;
 
 #ifdef PROG_LBL
@@ -525,19 +654,27 @@ int sbi_cvm_create_vcpu(struct iie_cvm_sbi_params * cvm_sbi_params)
 		return -1;
 	}
 	struct cvm_vcpu_node *vcpu_list_head = cvm_node->cvm.cvm_vcpu_list_head;
-	struct cvm_vcpu_node *vcpu_node = alloc_cvm_vcpu_node();
+	struct cvm_vcpu_node *vcpu_node = get_cvm_vcpu_node(vmid_ptr->vmid, *vcpu_id_ptr);
+    if(!vcpu_node)
+    {
+        vcpu_node = alloc_cvm_vcpu_node();
+        sbi_printf("[IIE CVM Monitor@%s] CVM %d vcpu allocating... \r\n", __func__, vmid_ptr->vmid);
+    }
+    else return 0;
+    
 	if(!vcpu_node)
 	{
-		sbi_printf("[IIE CVM Monitor@%s] CVM vcpu Node allocated failed!\n", __func__);
-		return -1;
+		sbi_printf("[IIE CVM Monitor@%s] CVM %d vcpu Node allocation is failed!\n", __func__, vmid_ptr->vmid);
+		return TEE_NO_MEMORY;
 	}
+    sbi_printf("[IIE CVM Monitor@%s] CVM %d vcpu Node allocation is successfull!\n", __func__, vmid_ptr->vmid);
 	vcpu_node->vcpu.vcpu_id = vcpu_id_ptr;
 	vcpu_node->vcpu.cvm = &cvm_node->cvm;
 
     // init vcpu ctx
     init_cvm_vcpu(&vcpu_node->vcpu);
 
-	sbi_printf("[IIE CVM Monitor@%s] vmid = %d\n", __func__,vmid_ptr->vmid);
+	sbi_printf("[IIE CVM Monitor@%s] vmid = %ld\n", __func__,vmid_ptr->vmid);
 	sbi_printf("[IIE CVM Monitor@%s] vcpu_id = %d\n", __func__,*vcpu_id_ptr);
 	
 
@@ -617,7 +754,6 @@ int sbi_cvm_create_finalize(struct iie_cvm_sbi_params * cvm_sbi_params)
     /* #define SBI_TLB_INFO_INIT(__p, __start, __size, __asid, __vmid, __type, __src) */
     SBI_TLB_INFO_INIT(&tlb_info, 0, 0, 0, 0, SBI_TLB_HFENCE_GVMA, source_hart);
     /* int sbi_tlb_request(ulong hmask, ulong hbase, struct sbi_tlb_info *tinfo); */            
-
 	int ret = sbi_tlb_request(0, -1UL, &tlb_info);
 
 	return ret;
@@ -629,16 +765,79 @@ int sbi_cvm_create_memory_region(struct iie_cvm_sbi_params * cvm_sbi_params)
 	return 0;
 }
 
-int sbi_cvm_create_measured_pages(struct iie_cvm_sbi_params * cvm_sbi_params)
+int sbi_cvm_hash_image(struct iie_cvm_sbi_params * cvm_sbi_params)
 {
 	/* TODO */
+	struct cvm_node* cvm_node = get_cvm(cvm_sbi_params->vmid_ptr->vmid);
+    cvm_node->cvm.pgd_phys = *cvm_sbi_params->pgd_phys_ptr;
+	// sbi_printf("[IIE CVM Monitor@%s] pgd_phys_ptr = %lx, pgd_phys = %lx. \r\n", 
+    //     __func__, cvm_sbi_params->pgd_phys_ptr, cvm_node->cvm.pgd_phys);
+    hash_cvm(&cvm_node->cvm, (void *)cvm_node->cvm.hash, 0);
+    sbi_printf("[IIE CVM Monitor@%s] hash value = %s. \r\n", __func__, cvm_node->cvm.hash);
+
 	return 0;
 }
+
+int sbi_cvm_attest(struct iie_cvm_sbi_params * cvm_sbi_params)
+{
+    struct report_t report;
+    attest_cvm(cvm_sbi_params->vmid_ptr->vmid, (uintptr_t)&report, 0);
+    sbi_printf("[IIE CVM Monitor@%s] sm_report hash = %s\nsm_report signature = %s\nsm_report pub_key = %s\nenclave hash = %s\nenclave signature = %s\ndev_pub_key = %s\n", 
+    __func__, 
+    report.sm.hash,
+    report.sm.signature,
+    report.sm.sm_pub_key,
+    report.enclave.hash,
+    report.enclave.signature,
+    report.dev_pub_key);
+    // sbi_cvm_gen_mem_enc_key();
+    return 0;
+}
+
+int sbi_cvm_gen_mem_enc_key()
+{
+    const int len = 16;
+    unsigned char rand[len];
+    sbi_memset(rand, 0, sizeof(rand));
+    SM2_Gen_Random(rand);
+    // sbi_printf("[IIE CVM Monitor@%s] rand = ", __func__);
+    // for(int i = 0; i < len; ++ i) sbi_printf("%d", rand[i]);
+    // sbi_printf("\n");
+
+    return 0;
+}
+
+int sbi_cvm_test(struct iie_cvm_sbi_params * cvm_sbi_params)
+{
+    sbi_printf("[IIE CVM Monitor@%s] ------ Begin CVM Test ------. \r\n", __func__);
+
+	struct cvm_node* cvm_node = get_cvm(cvm_sbi_params->vmid_ptr->vmid);
+    cvm_delete_node(cvm_node);
+   	cvm_node = get_cvm(cvm_sbi_params->vmid_ptr->vmid);
+
+    // sbi_cvm_create(cvm_sbi_params);
+    // cvm_node = get_cvm(cvm_sbi_params->vmid_ptr->vmid);
+    // sbi_cvm_create_vcpu(cvm_sbi_params);
+    // cvm_node = get_cvm(cvm_sbi_params->vmid_ptr->vmid);
+    // sbi_cvm_create_vcpu(cvm_sbi_params);
+    // cvm_node = get_cvm(cvm_sbi_params->vmid_ptr->vmid);
+    // cvm_delete_vcpu_node();
+
+    sbi_printf("[IIE CVM Monitor@%s] ------ End CVM Test ------. \r\n", __func__);
+
+    return 0;
+}
+
 
 int sbi_cvm_init_mem_pool(struct iie_cvm_sbi_params * cvm_sbi_params)
 {
 	/* TODO */
 	return 0;
+}
+
+int sbi_cvm_destroy(struct iie_cvm_sbi_params * cvm_sbi_params)
+{
+
 }
 
 inline void print_cvm_list()
@@ -647,7 +846,7 @@ inline void print_cvm_list()
 	for(struct cvm_node *cur = iie_cvm_list_head; cur->next; cur = cur->next)
 	{
 		struct cvm_node *node = cur->next;
-		sbi_printf("[IIE CVM DEBUG@%s] vmid = %d\tKeyID = %d\tcount = %d\n", __func__, node->cvm.vmid->vmid, node->cvm.KeyID, i ++);
+		sbi_printf("[IIE CVM DEBUG@%s] vmid = %ld\tKeyID = %d\tcount = %d\n", __func__, node->cvm.vmid->vmid, node->cvm.KeyID, i ++);
 	}
 }
 
@@ -657,7 +856,7 @@ inline void print_vcpu_list(struct cvm_node *cvm_node)
 	for(struct cvm_vcpu_node *cur = cvm_node->cvm.cvm_vcpu_list_head; cur->next; cur = cur->next)
 	{
 		struct cvm_vcpu_node *node = cur->next;
-		sbi_printf("[IIE CVM DEBUG@%s] vcpuid = %d\n", __func__, *node->vcpu.vcpu_id, i ++);
+		sbi_printf("[IIE CVM DEBUG@%s] vcpuid = %ld\n", __func__, *node->vcpu.vcpu_id);
 	}
 }
 
@@ -978,10 +1177,6 @@ int add_cvm_share_pages(struct sbi_cvm* cvm, struct iie_cvm_sbi_params_shared *s
     return 1;
 }
 
-//todo : modify it to riscv H extension
-void flush_tlb(){
-    asm volatile("sfence.vma");
-}
 
 //paddr_t narmal_address[count] = {paddr1, paddr2 ,...}
 int convert_cvm_pages(paddr_t* normal_address, int count){

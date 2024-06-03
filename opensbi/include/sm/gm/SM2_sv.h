@@ -60,3 +60,4 @@ int SM2_KeyGeneration(unsigned char PriKey[], unsigned char Px[], unsigned char 
 int SM2_Sign(unsigned char *message, int len, unsigned char d[], unsigned char R[], unsigned char S[]);
 int SM2_Verify(unsigned char *message, int len, unsigned char Px[], unsigned char Py[], unsigned char R[], unsigned char S[]);
 int SM2_SelfCheck();
+void SM2_Gen_Random(unsigned char rand[]);

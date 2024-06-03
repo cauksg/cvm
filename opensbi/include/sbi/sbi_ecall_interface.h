@@ -129,6 +129,11 @@
 #define SBI_EXT_CVM_LOAD_FILE				0x7
 #define SBI_EXT_CVM_ENTER					0x8
 #define SBI_EXT_CVM_INIT_PAGE_LIST			0x9
+#define SBI_EXT_CVM_HASH_IMAGE				0xa
+#define SBI_EXT_CVM_ATTEST					0xb
+/* define for function test */
+#define SBI_EXT_CVM_TEST					0xffff
+
 
 /** General pmu event codes specified in SBI PMU extension */
 enum sbi_pmu_hw_generic_events_t {

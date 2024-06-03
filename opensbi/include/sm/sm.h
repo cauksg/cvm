@@ -63,39 +63,39 @@ extern uintptr_t _fw_start[], _fw_end[];
 
 void sm_init();
 
-uintptr_t sm_mm_init(uintptr_t paddr, unsigned long size);
+// uintptr_t sm_mm_init(uintptr_t paddr, unsigned long size);
 
-uintptr_t sm_mm_extend(uintptr_t paddr, unsigned long size);
+// uintptr_t sm_mm_extend(uintptr_t paddr, unsigned long size);
 
-uintptr_t sm_alloc_enclave_mem(uintptr_t mm_alloc_arg);
+// uintptr_t sm_alloc_enclave_mem(uintptr_t mm_alloc_arg);
 
-uintptr_t sm_free_enclave_mem(uintptr_t size_ptr,unsigned long flag);
+// uintptr_t sm_free_enclave_mem(uintptr_t size_ptr,unsigned long flag);
 
-uintptr_t sm_memory_reclaim(uintptr_t enclave_id, unsigned long eid);
+// uintptr_t sm_memory_reclaim(uintptr_t enclave_id, unsigned long eid);
 
-uintptr_t sm_create_enclave(uintptr_t enclave_create_args, bool retry);
+// uintptr_t sm_create_enclave(uintptr_t enclave_create_args, bool retry);
 
-uintptr_t sm_attest_enclave(uintptr_t enclave_id, uintptr_t report, uintptr_t nonce);
+// uintptr_t sm_attest_enclave(uintptr_t enclave_id, uintptr_t report, uintptr_t nonce);
 
-uintptr_t sm_run_enclave(uintptr_t *regs, uintptr_t enclave_id);
+// uintptr_t sm_run_enclave(uintptr_t *regs, uintptr_t enclave_id);
 
-uintptr_t sm_debug_print(uintptr_t *regs, uintptr_t enclave_id);
+// uintptr_t sm_debug_print(uintptr_t *regs, uintptr_t enclave_id);
 
-uintptr_t sm_stop_enclave(uintptr_t *regs, uintptr_t enclave_id);
+// uintptr_t sm_stop_enclave(uintptr_t *regs, uintptr_t enclave_id);
 
-uintptr_t sm_resume_enclave(uintptr_t *regs, uintptr_t enclave_id);
+// uintptr_t sm_resume_enclave(uintptr_t *regs, uintptr_t enclave_id);
 
-uintptr_t sm_destroy_enclave(uintptr_t *regs, uintptr_t enclave_id);
+// uintptr_t sm_destroy_enclave(uintptr_t *regs, uintptr_t enclave_id);
 
-uintptr_t sm_enclave_ocall(uintptr_t *regs, uintptr_t ocall_func_id, uintptr_t arg0, uintptr_t arg1);
+// uintptr_t sm_enclave_ocall(uintptr_t *regs, uintptr_t ocall_func_id, uintptr_t arg0, uintptr_t arg1);
 
-uintptr_t sm_enclave_get_key(uintptr_t* regs, uintptr_t salt_va, uintptr_t salt_len,
-                        uintptr_t key_buf_va, uintptr_t key_buf_len);
+// uintptr_t sm_enclave_get_key(uintptr_t* regs, uintptr_t salt_va, uintptr_t salt_len,
+//                         uintptr_t key_buf_va, uintptr_t key_buf_len);
 
-uintptr_t sm_exit_enclave(uintptr_t *regs, unsigned long retval);
+// uintptr_t sm_exit_enclave(uintptr_t *regs, unsigned long retval);
 
-uintptr_t sm_do_timer_irq(uintptr_t *regs, uintptr_t mcause, uintptr_t mepc);
+// uintptr_t sm_do_timer_irq(uintptr_t *regs, uintptr_t mcause, uintptr_t mepc);
 
-int check_in_enclave_world();
+// int check_in_enclave_world();
 
 #endif /* _SM_H */

@@ -151,9 +151,12 @@ int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 	struct iie_cvm_sbi_params *cvm_sbi_params = kmalloc(sizeof(struct iie_cvm_sbi_params), GFP_KERNEL);
 	cvm_sbi_params->vmid_ptr = __pa(&vcpu->kvm->arch.vmid);
 	cvm_sbi_params->vcpu_id_ptr = __pa(&vcpu->vcpu_id);
-	cvm_sbi_params->pgd = __pa(vcpu->kvm->arch.pgd);
-	cvm_sbi_params->pgd_phys = __pa(&vcpu->kvm->arch.pgd_phys);
-	
+	// cvm_sbi_params->pgd = __pa(vcpu->kvm->arch.pgd);
+	cvm_sbi_params->pgd_phys_ptr = __pa(&vcpu->kvm->arch.pgd_phys);
+	/* __pa(vcpu->kvm->arch.pgd) == vcpu->kvm->arch.pgd_phys */
+	// printk("pgd_phys_ptr = %lx, pgd_phys = %lx\n", 
+	// 	cvm_sbi_params->pgd_phys_ptr, vcpu->kvm->arch.pgd_phys);
+
 
 	uintptr_t pa_cvm = __pa(cvm_sbi_params);
 	// printk("pa_cvm = %ld\n", pa_cvm);
@@ -653,6 +656,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 	cvm_sbi_params->vcpu_id_ptr = __pa(&vcpu->vcpu_id);
 	cvm_sbi_params->pgd = __pa(vcpu->kvm->arch.pgd);
 	cvm_sbi_params->pgd_phys = __pa(&vcpu->kvm->arch.pgd_phys);
+	
 
 	// if (!vcpu->arch.ran_atleast_once)
 	// {		
