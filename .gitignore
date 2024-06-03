@@ -1,8 +1,9 @@
 #ignore busybox 
-busybox/
+busybox-1.33.1/
 
 #ignore build-riscv64
 build-riscv64/
 
 *.bz2
 *.tar
+*.img

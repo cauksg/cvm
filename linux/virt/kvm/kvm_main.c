@@ -5015,7 +5015,7 @@ static long kvm_vm_ioctl(struct file *filp,
 			printk("Copy iotcl parameters failed!\n");
             return 0;
         }
-		printk("kernel image size is %lx byte\n", load_file_t.file_size);
+		printk("file size is %lx byte\n", load_file_t.file_size);
         unsigned long pages_num = (load_file_t.file_size % PAGE_SIZE) ? (load_file_t.file_size/PAGE_SIZE+1) : (load_file_t.file_size/PAGE_SIZE);
 		// if(load_file_t.file_size % PAGE_SIZE){
 		// 	printk("----------------------------------\n");

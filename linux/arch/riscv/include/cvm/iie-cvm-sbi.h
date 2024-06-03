@@ -22,8 +22,8 @@
 #define SBI_EXT_CVM_TEST					0xffff
 
 
-// #define PROG_BYK
-// #define PROG_LBL
+#define PROG_BYK
+#define PROG_LBL
 #define PROG_WSW
 
 struct iie_cvm_vcpu_sbi_params {

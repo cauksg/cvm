@@ -139,7 +139,7 @@ int sbi_cvm_init_mem_pool(struct iie_cvm_sbi_params * cvm_sbi_params);
 int sbi_cvm_load_kernel_image(phys_addr_t to, phys_addr_t from, unsigned int image_size);
 
 /* Check vcpu states  */
-int sbi_cvm_run_vcpu(struct sbi_trap_regs *regs, struct iie_cvm_sbi_params * cvm_sbi_params, uint64_t kvm_vcpu_context, uint64_t kvm_vcpu_csr);
+int sbi_cvm_run_vcpu(struct sbi_trap_regs *regs, struct iie_cvm_sbi_params * cvm_sbi_params, uint64_t kvm_vcpu_context, uint64_t kvm_vcpu_csr, uint64_t kvm_trap);
 
 /* Destroy CVM, clean and reclaim vcpus, memory and registers. */
 int sbi_cvm_destroy(struct iie_cvm_sbi_params * cvm_sbi_params);
@@ -198,7 +198,9 @@ typedef struct page_own_table{
 //gpa to hpa transfer 
 #define PGLEVEL_BITS    9
 #define PAGE_PFN_MASK   ((1 << PGLEVEL_BITS) - 1)
-#define PGDIR_SHIFT     30
+#define PGDIR_SHIFT     48
+#define PUDIR_SHIFT     39
+#define P4DIR_SHIFT     30
 #define PMD_SHIFT       21
 #ifndef PAGE_SHIFT
 #define PAGE_SHIFT      12
@@ -207,6 +209,8 @@ typedef struct page_own_table{
 #define PAGE_SIZE      (1UL << PAGE_SHIFT)
 #endif
 #define pgd_index(a)    (((a) >> PGDIR_SHIFT) & PAGE_PFN_MASK)
+#define pud_index(a)    (((a) >> PUDIR_SHIFT) & PAGE_PFN_MASK)
+#define p4d_index(a)    (((a) >> P4DIR_SHIFT) & PAGE_PFN_MASK)
 #define pmd_index(a)    (((a) >> PMD_SHIFT) & PAGE_PFN_MASK)
 #define pte_index(a)    (((a) >> PAGE_SHIFT) & PAGE_PFN_MASK)
 #define PAGE_PFN_SHIFT  10
@@ -270,7 +274,7 @@ void init_cpus();
 void init_cvm_vcpu(struct cvm_vcpu* cvm_vcpu);
 int check_in_cmode();
 int sbi_cvm_print(unsigned long keyID);
-int cvm_vcpu_enter(struct sbi_trap_regs* host_regs, struct cvm_vcpu* cvm_vcpu, uint64_t kvm_vcpu_context, uint64_t kvm_vcpu_csr);
+int cvm_vcpu_enter(struct sbi_trap_regs* host_regs, struct cvm_vcpu* cvm_vcpu, uint64_t kvm_vcpu_context, uint64_t kvm_vcpu_csr, uint64_t kvm_trap);
 int cvm_vcpu_exit(struct sbi_trap_regs* host_regs);
 int cvm_trap_redirect_to_hs(struct sbi_trap_regs* host_regs);
 int cvm_trap_virtual_inst(struct sbi_trap_regs* host_regs);
