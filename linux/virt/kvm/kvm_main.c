@@ -4045,10 +4045,10 @@ static int kvm_vm_ioctl_create_vcpu(struct kvm *kvm, u32 id)
 	uintptr_t pa_cvm = __pa(cvm_sbi_params);
 
 	// printk("pgd_phys_ptr = %lx, pgd_phys = %lx\n", 	cvm_sbi_params->pgd_phys_ptr, vcpu->kvm->arch.pgd_phys);
-	sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_HASH_IMAGE, pa_cvm, 0, 0, 0, 0, 0);
-	sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_ATTEST, pa_cvm, 0, 0, 0, 0, 0);
-	if(vcpu->vcpu_id == 1)
-		sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_TEST, pa_cvm, 0, 0, 0, 0, 0);
+	// sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_HASH_IMAGE, pa_cvm, 0, 0, 0, 0, 0);
+	// sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_ATTEST, pa_cvm, 0, 0, 0, 0, 0); 
+	// if(vcpu->vcpu_id == 1) 
+	// 	sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_TEST, pa_cvm, 0, 0, 0, 0, 0);
 
 	#endif
 

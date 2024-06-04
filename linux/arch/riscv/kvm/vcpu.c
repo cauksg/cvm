@@ -783,11 +783,13 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		 * get an interrupt between __kvm_riscv_switch_to() and
 		 * local_irq_enable() which can potentially change CSRs.
 		 */
-		// trap->sepc = vcpu->arch.guest_context.sepc;
-		// trap->scause = csr_read(CSR_SCAUSE);
-		// trap->stval = csr_read(CSR_STVAL);
-		// trap->htval = csr_read(CSR_HTVAL);
-		// trap->htinst = csr_read(CSR_HTINST);
+		#ifndef PROG_BYK
+		trap->sepc = vcpu->arch.guest_context.sepc;
+		trap->scause = csr_read(CSR_SCAUSE);
+		trap->stval = csr_read(CSR_STVAL);
+		trap->htval = csr_read(CSR_HTVAL);
+		trap->htinst = csr_read(CSR_HTINST);
+		#endif
 
 		/* Syncup interrupts state with HW */
 		kvm_riscv_vcpu_sync_interrupts(vcpu);
