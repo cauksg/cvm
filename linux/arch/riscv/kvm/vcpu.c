@@ -162,11 +162,20 @@ int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 	// printk("pa_cvm = %ld\n", pa_cvm);
 	sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_CREATE,
 		  pa_cvm, 0, 0, 0, 0, 0);
+
+
+	#ifdef PROG_LBL
+	sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_ALLOC_ROOT_PT,
+		  pa_cvm, 0, 0, 0, 0, 0);
+	#endif
+	
 	struct sbiret retval = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_CREATE_VCPU,
 		  pa_cvm, 0, 0, 0, 0, 0);
 	// retval = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_RUN_VCPU,
 	// 	  pa_cvm, 0, 0, 0, 0, 0);
 	#endif
+
+	
 
 	return 0;
 }

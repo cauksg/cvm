@@ -49,6 +49,9 @@ static int sbi_ecall_cvm_handler(unsigned long extid, unsigned long funcid,
 	case SBI_EXT_CVM_TEST:
 		ret = sbi_cvm_test((void *)regs->a0);
 		break;
+	case SBI_EXT_CVM_ALLOC_ROOT_PT:
+		ret = init_cvm_vcpu_root_pt((void *)regs->a0);
+		break;
 	default:
 		break;
 	}

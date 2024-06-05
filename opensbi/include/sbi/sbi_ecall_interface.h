@@ -131,6 +131,7 @@
 #define SBI_EXT_CVM_INIT_PAGE_LIST			0x9
 #define SBI_EXT_CVM_HASH_IMAGE				0xa
 #define SBI_EXT_CVM_ATTEST					0xb
+#define SBI_EXT_CVM_ALLOC_ROOT_PT			0xc
 /* define for function test */
 #define SBI_EXT_CVM_TEST					0xffff
 

@@ -254,7 +254,7 @@ union mcvm
 
 
 //function
-int malloc_cvm_empty_page(struct sbi_cvm* cvm, vaddr_t gpa);
+paddr_t malloc_cvm_empty_page(struct sbi_cvm* cvm, vaddr_t gpa);
 int mfree_cvm_page(struct sbi_cvm* cvm, struct iie_cvm_sbi_params *cvm_sbi_params);
 paddr_t mreclaim_cvm_page(struct sbi_cvm* cvm, struct iie_cvm_sbi_params *cvm_sbi_params);
 int add_cvm_share_pages(struct sbi_cvm* cvm, struct iie_cvm_sbi_params_shared *shared_pages);
@@ -266,8 +266,8 @@ paddr_t* init_bitmap();
 int set_page_own_table(paddr_t page_address, uint64_t id);
 int reset_page_own_table(paddr_t page_address, uint64_t id);
 page_own_table_t* init_page_own_table();
-
-
+paddr_t malloc_cvm_empty_page_only(unsigned long vmid);
+int mfree_cvm_page_only(paddr_t paddr, unsigned long vmid);
 
 // /** cvm functions */
 void init_cpus();
