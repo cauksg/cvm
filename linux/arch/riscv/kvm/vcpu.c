@@ -165,8 +165,8 @@ int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 
 
 	#ifdef PROG_LBL
-	sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_ALLOC_ROOT_PT,
-		  pa_cvm, 0, 0, 0, 0, 0);
+	if(vcpu->vcpu_id == 0)
+		sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_ALLOC_ROOT_PT, pa_cvm, 0, 0, 0, 0, 0);
 	#endif
 	
 	struct sbiret retval = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_CREATE_VCPU,
