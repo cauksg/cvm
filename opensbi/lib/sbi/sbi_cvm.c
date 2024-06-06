@@ -7,6 +7,7 @@
 #include <sbi/sbi_tlb.h>
 #include <sm/attest.h>
 #include <sm/gm/SM2_sv.h>
+#include <mkey/multi_key.h>
 
 
 spinlock_t spin_lock_cm_list;
@@ -113,10 +114,12 @@ static int cvm_delete_node(struct cvm_node *node)
             struct cvm_node *nxt = cur->next;
             if(nxt == node) 
             {
+                sbi_printf("[IIE CVM Monitor@%s] deleting CVM %ld\n", __func__, *nxt->cvm.vmid);
                 node_exist = true;
                 /* 1. delete logically, maintain cvm list and vcpu list. */ 
                 cur->next = nxt->next;
                 nxt->next = NULL;
+                release_key_id(nxt->cvm.KeyID);
                 cvm_delete_all_vcpu_node(nxt->cvm.cvm_vcpu_list_head);
                 break;
             }
@@ -602,6 +605,7 @@ int sbi_cvm_create(struct iie_cvm_sbi_params *cvm_sbi_params)
 	cvm_node->cvm.cvm_vcpu_list_head = alloc_cvm_vcpu_node(cvm_sbi_params->vmid_ptr->vmid);
 	cvm_node->cvm.cvm_vcpu_list_head->next = NULL;
 	cvm_node->cvm.cmode = 1;
+    cvm_node->cvm.KeyID = gen_key_id();
     sbi_memset(cvm_node->cvm.hash, 0, sizeof(cvm_node->cvm.hash));
     
     cvm_node->cvm.pgd_phys = *cvm_sbi_params->pgd_phys_ptr;
@@ -828,9 +832,9 @@ int sbi_cvm_test(struct iie_cvm_sbi_params * cvm_sbi_params)
 {
     sbi_printf("[IIE CVM Monitor@%s] ------ Begin CVM Test ------. \r\n", __func__);
 
-	struct cvm_node* cvm_node = get_cvm(cvm_sbi_params->vmid_ptr->vmid);
-    cvm_delete_node(cvm_node);
-   	cvm_node = get_cvm(cvm_sbi_params->vmid_ptr->vmid);
+	// struct cvm_node* cvm_node = get_cvm(cvm_sbi_params->vmid_ptr->vmid);
+    // cvm_delete_node(cvm_node);
+   	// cvm_node = get_cvm(cvm_sbi_params->vmid_ptr->vmid);
 
     // sbi_cvm_create(cvm_sbi_params);
     // cvm_node = get_cvm(cvm_sbi_params->vmid_ptr->vmid);
@@ -840,6 +844,28 @@ int sbi_cvm_test(struct iie_cvm_sbi_params * cvm_sbi_params)
     // cvm_node = get_cvm(cvm_sbi_params->vmid_ptr->vmid);
     // cvm_delete_vcpu_node();
 
+    // /* 1010 .... 0 10 10100*/
+    // uint64_t key_CSR = 0xa00000054UL;
+    // sbi_printf("[IIE CVM Monitor@%s] key_id = %lx. \r\n", __func__, read_key_id(&key_CSR));
+    // sbi_printf("[IIE CVM Monitor@%s] mode = %lx. \r\n", __func__, read_mode(&key_CSR));
+    // sbi_printf("[IIE CVM Monitor@%s] tweak_flag = %lx. \r\n", __func__, read_tweak_flag(&key_CSR));
+    // sbi_printf("[IIE CVM Monitor@%s] random_ready_flag = %lx. \r\n", __func__, read_random_ready_flag(&key_CSR));
+    // sbi_printf("[IIE CVM Monitor@%s] key_expansion_idle = %lx. \r\n", __func__, read_key_expansion_idle(&key_CSR));
+    // sbi_printf("[IIE CVM Monitor@%s] last_req_accepted = %lx. \r\n", __func__, read_last_req_accepted(&key_CSR));
+    // sbi_printf("[IIE CVM Monitor@%s] cfg_succesd = %lx. \r\n", __func__, read_cfg_succesd(&key_CSR));
+
+    // /* write: 0110 .... 1 1 11 01101*/
+    // write_key_id(&key_CSR, 0b01101);
+    // write_mode(&key_CSR, 0b11);
+    // write_tweak_flag(&key_CSR, 0b1);
+    // write_memenc_enable(&key_CSR, 0b1);
+    // write_key_init_req(&key_CSR, 0b1);
+    // sbi_printf("[IIE CVM Monitor@%s] key_CSR = %lx. \r\n", __func__, key_CSR);
+    int VCPU_ID = *cvm_sbi_params->vcpu_id_ptr;
+    multi_key_sys_init(true);
+    // if(VCPU_ID) config_tweak_key();
+    // else test_cfg();
+    // test_cfg(); 
     sbi_printf("[IIE CVM Monitor@%s] ------ End CVM Test ------. \r\n", __func__);
 
     return 0;
@@ -854,7 +880,21 @@ int sbi_cvm_init_mem_pool(struct iie_cvm_sbi_params * cvm_sbi_params)
 
 int sbi_cvm_destroy(struct iie_cvm_sbi_params * cvm_sbi_params)
 {
-
+    struct kvm_vmid *vmid_ptr = cvm_sbi_params->vmid_ptr;
+	int *vcpu_id_ptr = cvm_sbi_params->vcpu_id_ptr;
+	struct cvm_node *cvm_node = get_cvm(vmid_ptr->vmid);
+    if(!cvm_node)
+    {
+        sbi_printf("[IIE CVM Monitor@%s] CVM %ld does not exist. \r\n", __func__, vmid_ptr->vmid);
+        return -1;
+    }
+    int ret = cvm_delete_node(cvm_node);
+    if(ret)
+    {
+        sbi_printf("[IIE CVM Monitor@%s] Error %d, CVM %ld destroy failed. \r\n", __func__, ret, vmid_ptr->vmid);
+        return -1;
+    }
+    return 0;
 }
 
 inline void print_cvm_list()

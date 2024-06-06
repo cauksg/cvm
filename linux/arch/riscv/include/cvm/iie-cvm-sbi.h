@@ -19,6 +19,7 @@
 #define SBI_EXT_CVM_HASH_IMAGE				0xa
 #define SBI_EXT_CVM_ATTEST					0xb
 #define SBI_EXT_CVM_ALLOC_ROOT_PT			0xc
+#define SBI_EXT_CVM_DESTROY					0xd
 /* define for function test */
 #define SBI_EXT_CVM_TEST					0xffff
 

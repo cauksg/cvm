@@ -46,6 +46,9 @@ static int sbi_ecall_cvm_handler(unsigned long extid, unsigned long funcid,
 	case SBI_EXT_CVM_ATTEST:
 		ret = sbi_cvm_attest((void *)regs->a0);
 		break;
+	case SBI_EXT_CVM_DESTROY:
+		ret = sbi_cvm_destroy((void *)regs->a0);
+		break;
 	case SBI_EXT_CVM_TEST:
 		ret = sbi_cvm_test((void *)regs->a0);
 		break;
