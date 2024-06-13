@@ -296,7 +296,11 @@ void init_cvm_vcpu(struct cvm_vcpu* cvm_vcpu)
 {
     // reset guest_context and guest_csr values
     cvm_vcpu->guest_csr.scounteren = 0x7;
-    cvm_vcpu->guest_mie = MIP_VSTIP | MIP_MTIP | MIP_VSSIP | MIP_MSIP | MIP_SEIP | MIP_VSEIP;
+
+    cvm_vcpu->guest_mie = 0;
+    cvm_vcpu->guest_mie |= MIP_VSTIP | MIP_MTIP | MIP_VSSIP | MIP_MSIP | MIP_SEIP | MIP_VSEIP;
+    
+    cvm_vcpu->guest_mstatus = 0;
     cvm_vcpu->guest_mstatus |= MSTATUS_MPIE | MSTATUS_SPIE | MSTATUS_FS;
     cvm_vcpu->guest_mstatus |= PRV_S << MSTATUS_MPP_SHIFT;
     cvm_vcpu->guest_mstatus |= MSTATUS_MPV | _ULL(0xa00000000);
@@ -438,6 +442,7 @@ static void context_switch_to_host(struct sbi_trap_regs* host_regs, struct cvm_v
     swap_in_mepc(&cvm_vcpu->host_mepc, &cvm_vcpu->guest_context.sepc, host_regs);
     swap_in_scounteren(&cvm_vcpu->host_scounteren, &cvm_vcpu->guest_csr.scounteren);
     // swap_in_sscratch(&cvm_vcpu->host_sscratch, &cvm_vcpu->guest_context.a0);
+    cvm_vcpu->host_mie |= cvm_vcpu->guest_mie & (MIP_VSTIP | MIP_VSSIP | MIP_VSEIP);
     swap_in_mie(&cvm_vcpu->host_mie, &cvm_vcpu->guest_mie);
     swap_in_mstatus(&cvm_vcpu->host_mstatus, &cvm_vcpu->guest_mstatus, host_regs);
     swap_in_mideleg(&cvm_vcpu->host_mideleg, &cvm_vcpu->guest_mideleg);
