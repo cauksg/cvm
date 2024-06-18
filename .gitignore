@@ -7,3 +7,5 @@ build-riscv64/
 *.bz2
 *.tar
 *.img
+*.cpio
+.vscode/
