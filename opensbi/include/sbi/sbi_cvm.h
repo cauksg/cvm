@@ -70,26 +70,24 @@ typedef struct {
 // 	unsigned long pte;
 // } pte_t;
 
+
 struct iie_cvm_sbi_params {
 	/* G-stage vmid */
 	struct kvm_vmid *vmid_ptr;
 	int *vcpu_id_ptr;	/* id given by userspace at creation */
+
 	/* G-stage page table */
 	uintptr_t *pgd_phys_ptr;
-	
+	pgd_t *pgd;
+	phys_addr_t pgd_phys;
+
+	/* SWIOTLB */
 	unsigned long gpa;
+	unsigned long hpa;	
+	// struct kvm_vcpu *vcpu;
+	// struct iie_cvm_vcpu_sbi_params cvm_vcpu_sbi_params;
 };
 
-//for share 
-struct iie_cvm_sbi_params_shared {
-	/* G-stage vmid */
-	struct kvm_vmid *vmid_ptr;
-	int *vcpu_id_ptr;	/* id given by userspace at creation */
-
-	unsigned long *gpa;
-	unsigned long *hpa;
-	unsigned long count;
-};
 
 struct iie_cvm_sbi_params_load {
 	/* G-stage vmid */
@@ -252,12 +250,17 @@ union mcvm
 //need 128MB space for 64GB
 #define PAGE_NUM                (MAX_MEM_SPACE / PAGE_SIZE)
 
+#define SWIOTLB_ADDR 0x82c00000
+#define SWIOTLB_SIZE 0x200000
+
+//vcpu exit reason
+#define SWIOTLB			14
 
 //function
 paddr_t malloc_cvm_empty_page(struct sbi_cvm* cvm, vaddr_t gpa);
 int mfree_cvm_page(struct sbi_cvm* cvm, struct iie_cvm_sbi_params *cvm_sbi_params);
 paddr_t mreclaim_cvm_page(struct sbi_cvm* cvm, struct iie_cvm_sbi_params *cvm_sbi_params);
-int add_cvm_share_pages(struct sbi_cvm* cvm, struct iie_cvm_sbi_params_shared *shared_pages);
+int add_cvm_share_pages(paddr_t root_pt, paddr_t gpa, paddr_t hpa);
 int convert_cvm_pages(paddr_t* normal_address, int count);
 int load_file(struct iie_cvm_sbi_params_load *load_file);
 void set_bitmap(paddr_t page_address);

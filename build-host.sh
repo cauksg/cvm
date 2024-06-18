@@ -4,8 +4,19 @@ export ARCH=riscv
 export CROSS_COMPILE=riscv64-linux-gnu-
 export LIBFDT_DIR=`pwd`/dtc/lib64/lp64d
 
+cd build-riscv64
+#make clean
+cd ..
+make -C linux O=`pwd`/build-riscv64 defconfig
+sed -i 's|.*CONFIG_INITRAMFS_SOURCE.*$|CONFIG_IiNITRAMFS_SOURCE=""|' ./build-riscv64/.config
+sed -i 's|.*CONFIG_NET_9P_VIRTIO.*$|CONFIG_NET_9P_VIRTIO=y|' ./build-riscv64/.config
+sed -i 's|.*CONFIG_VIRTIO_NET.*$|CONFIG_VIRTIO_NET=y|' ./build-riscv64/.config
+sed -i 's|.*CONFIG_DMA_RESTRICTED_POOL.*$|CONFIG_DMA_RESTRICTED_POOL=y|' ./build-riscv64/.config
+make -C linux O=`pwd`/build-riscv64 -j $(nproc)
+
 #compile kvmtool
 cd kvmtool
+make clean
 make lkvm-static -j $(nproc)
 ${CROSS_COMPILE}strip lkvm-static
 cd ..
@@ -33,7 +44,7 @@ cp -f ./run-guest-os.sh busybox-1.33.1/_install
 cd busybox-1.33.1/_install; find ./ | cpio -o -H newc > ../../rootfs_kvm_riscv64.img | fakeroot; cd -
 
 #compile Linux with RISC-V KVM support
-sed -i 's|^CONFIG_INITRAMFS_SOURCE=.*$|CONFIG_INITRAMFS_SOURCE=""|' ./build-riscv64/.config
+sed -i 's|.*CONFIG_INITRAMFS_SOURCE=.*$|CONFIG_INITRAMFS_SOURCE=""|' ./build-riscv64/.config
 make -C linux O=`pwd`/build-riscv64 -j $(nproc)
 
 

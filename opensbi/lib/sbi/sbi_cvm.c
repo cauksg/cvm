@@ -712,7 +712,7 @@ int sbi_cvm_create_vcpu(struct iie_cvm_sbi_params * cvm_sbi_params)
 }
 
 int sbi_cvm_run_vcpu(struct sbi_trap_regs *regs, struct iie_cvm_sbi_params * cvm_sbi_params, uint64_t kvm_vcpu_context, uint64_t kvm_vcpu_csr, uint64_t kvm_trap)
-{
+{   
 	struct cvm_vcpu_node *vcpu_node = get_cvm_vcpu_node(cvm_sbi_params->vmid_ptr->vmid, *cvm_sbi_params->vcpu_id_ptr);	
     if(!vcpu_node)
 	{
@@ -744,6 +744,22 @@ int sbi_cvm_run_vcpu(struct sbi_trap_regs *regs, struct iie_cvm_sbi_params * cvm
         /* Here should terminate, do not delete!!! */
 		// return 0xff;
 	}
+
+    // TODO 
+// if(exit_reason == swiotlb_pf)
+// cvm_sbi_params.hpa
+// kvm_trap.htval(GPA)
+// create_gpa_hpa mapping 
+    if(vcpu->exit_reason == SWIOTLB){
+        int ret;
+        paddr_t gpa = cvm_sbi_params->gpa;
+        paddr_t hpa = cvm_sbi_params->hpa;
+        ret = add_cvm_share_pages(cvm->root_pt, gpa, hpa);
+        if(ret == 1 || ret == 2){
+            sbi_printf("[IIE CVM Monitor@%s] SWIOTLB PF failed!\n", __func__);
+        }
+        vcpu->exit_reason = 0UL;
+    }
 
     // enter cvm vcpu ctx
     cvm_vcpu_enter(regs, vcpu, kvm_vcpu_context, kvm_vcpu_csr, kvm_trap);
@@ -1070,16 +1086,9 @@ paddr_t malloc_cvm_empty_page_only(unsigned long vmid){
     return free_page;
 }
 
-
-
-//build the mapping between GPA and HPA
-paddr_t malloc_cvm_empty_page(struct sbi_cvm* cvm, vaddr_t gpa){
-    paddr_t root_pt = cvm->root_pt;
-    //sbi_printf("root_pt is %lx\n", root_pt);
+static paddr_t find_pte(paddr_t root_pt, paddr_t gpa){
     pt_entry_t *pgd, *pmd, *pte, *pud, *p4d;
     pgd = (pt_entry_t*)(root_pt) + pgd_index(gpa);
-    //sbi_printf("pgd %lx\r\n", pgd);
-    //sbi_printf("*pgd %lx\r\n", *pgd);
     if(!((*pgd) & PTE_V)){
         spin_lock(&spin_lock_cm_list);
         paddr_t free_page_pgd = get_free_mem(free_mem_list_head);
@@ -1094,7 +1103,6 @@ paddr_t malloc_cvm_empty_page(struct sbi_cvm* cvm, vaddr_t gpa){
     if(!((*pud) & PTE_V)){
         spin_lock(&spin_lock_cm_list);
         paddr_t free_page_pud = get_free_mem(free_mem_list_head);
-        //sbi_printf("free_page_pgd is %lx\n",free_page_pud);
         spin_unlock(&spin_lock_cm_list);
         if(free_page_pud == 0){
             sbi_printf("no empty confidential memory\n");
@@ -1102,8 +1110,6 @@ paddr_t malloc_cvm_empty_page(struct sbi_cvm* cvm, vaddr_t gpa){
         }
         *pud = (free_page_pud >> PAGE_SHIFT << PAGE_PFN_SHIFT) | PTE_V;
     }
-    //sbi_printf("pud %lx\r\n", pud);
-    //sbi_printf("*pud %lx\r\n", *pud);
     p4d = (pt_entry_t*)((*pud) >> PAGE_PFN_SHIFT << PAGE_SHIFT) + p4d_index(gpa);
     if(!((*p4d) & PTE_V)){
         spin_lock(&spin_lock_cm_list);
@@ -1116,10 +1122,7 @@ paddr_t malloc_cvm_empty_page(struct sbi_cvm* cvm, vaddr_t gpa){
         }
         *p4d = (free_page_p4d >> PAGE_SHIFT << PAGE_PFN_SHIFT) | PTE_V;
     }
-    //sbi_printf("p4d %lx\r\n", p4d);
-    //sbi_printf("*p4d %lx\r\n", *p4d);
     pmd = (pt_entry_t*)((*p4d) >> PAGE_PFN_SHIFT << PAGE_SHIFT) + pmd_index(gpa);
-    
     if(!((*pmd) & PTE_V)){
         spin_lock(&spin_lock_cm_list);
         paddr_t free_page_pmd = get_free_mem(free_mem_list_head);
@@ -1130,14 +1133,21 @@ paddr_t malloc_cvm_empty_page(struct sbi_cvm* cvm, vaddr_t gpa){
         }
         *pmd = (free_page_pmd >> PAGE_SHIFT << PAGE_PFN_SHIFT) | PTE_V;
     }
-    //sbi_printf("pmd %lx\r\n", pmd);
-    //sbi_printf("*pmd %lx\r\n", *pmd);
     pte = (pt_entry_t*)((*pmd) >> PAGE_PFN_SHIFT << PAGE_SHIFT) + pte_index(gpa);
-    //sbi_printf("pte %lx\r\n", pte);
-    //sbi_printf("*pte %lx\r\n", *pte);
     if((*pte) & PTE_V){
-        sbi_printf("address %lx already has physical page\n", gpa);
-        return 2;
+        sbi_printf("[IIE CVM DEBUG@%s] address 0x%lx already has physical page 0x%lx\n",  __func__, gpa, (*pte>>PAGE_PFN_SHIFT));
+    }
+    return (unsigned long)pte;
+}
+
+
+//build the mapping between GPA and HPA
+paddr_t malloc_cvm_empty_page(struct sbi_cvm* cvm, vaddr_t gpa){
+    paddr_t root_pt = cvm->root_pt;
+    paddr_t pte = find_pte(root_pt, gpa);
+    if(pte == 1 || pte == 2){
+        sbi_printf("[IIE CVM DEBUG@%s] find pte fault.", __func__);
+        return pte;
     }else{
         spin_lock(&spin_lock_cm_list);
         paddr_t free_page = get_free_mem(free_mem_list_head);
@@ -1149,48 +1159,48 @@ paddr_t malloc_cvm_empty_page(struct sbi_cvm* cvm, vaddr_t gpa){
         //set page own table
         set_page_own_table(free_page, cvm->vmid->vmid);
         uint64_t ppn = free_page >> PAGE_SHIFT;
-        //set KeyID and prot.
+        //set KeyID and prot
         uint64_t keyid_ppn = (cvm->KeyID << KEYID_OFFSET) | ppn;
-        *pte = (keyid_ppn << PAGE_PFN_SHIFT) | PTE_X | PTE_U | PTE_R | PTE_W | PTE_A | PTE_D | PTE_V;
+        *(pt_entry_t *)pte = (keyid_ppn << PAGE_PFN_SHIFT) | PTE_X | PTE_U | PTE_R | PTE_W | PTE_A | PTE_D | PTE_V;
     }
-    return (unsigned long)*pte;
+    return (unsigned long)*(pt_entry_t *)pte;
 }
 
 
 //remove the mapping between GPA and HPA, then put HPA into cm free page list.
-int mfree_cvm_page(struct sbi_cvm* cvm, struct iie_cvm_sbi_params *cvm_sbi_params){
-    paddr_t root_pt = cvm->root_pt;
-    vaddr_t gpa = cvm_sbi_params->gpa;
-    pt_entry_t *pgd, *pmd, *pte;
-    pgd = (pt_entry_t*)(root_pt) + pgd_index(gpa);
-    if(!(*pgd | PTE_V)){
-        sbi_printf("Invalid pgd\n");
-        return 0;
-    }
-    pmd = (pt_entry_t*)(*pgd >> PAGE_PFN_SHIFT) + pmd_index(gpa);
-    if(!(*pmd | PTE_V)){
-        sbi_printf("Invalid pmd\n");
-        return 0;
-    }
-    pte = (pt_entry_t*)(*pmd >> PAGE_PFN_SHIFT) + pte_index(gpa);
-    if(!(*pte | PTE_V)){
-        sbi_printf("Invalid pte\n");
-        return 0;
-    }
-    //invalidate pte
-    *pte = (*pte) & (~PTE_V);
-    //mask keyid and prot
-    uint64_t keyid_ppn = (*pte) >> PAGE_PFN_SHIFT;
-    uint64_t ppn = keyid_ppn & (~KEYID_MASK);
-    paddr_t paddr = ppn << PAGE_SHIFT;
-    //reset page own table
-    reset_page_own_table(paddr, cvm->vmid->vmid);
-    //reclaim
-    spin_lock(&spin_lock_cm_list);
-    put_free_page(free_mem_list_head, paddr);
-    spin_unlock(&spin_lock_cm_list);
-    return 1;
-}
+// int mfree_cvm_page(struct sbi_cvm* cvm, struct iie_cvm_sbi_params *cvm_sbi_params){
+//     paddr_t root_pt = cvm->root_pt;
+//     vaddr_t gpa = cvm_sbi_params->gpa;
+//     pt_entry_t *pgd, *pmd, *pte;
+//     pgd = (pt_entry_t*)(root_pt) + pgd_index(gpa);
+//     if(!(*pgd | PTE_V)){
+//         sbi_printf("Invalid pgd\n");
+//         return 0;
+//     }
+//     pmd = (pt_entry_t*)(*pgd >> PAGE_PFN_SHIFT) + pmd_index(gpa);
+//     if(!(*pmd | PTE_V)){
+//         sbi_printf("Invalid pmd\n");
+//         return 0;
+//     }
+//     pte = (pt_entry_t*)(*pmd >> PAGE_PFN_SHIFT) + pte_index(gpa);
+//     if(!(*pte | PTE_V)){
+//         sbi_printf("Invalid pte\n");
+//         return 0;
+//     }
+//     //invalidate pte
+//     *pte = (*pte) & (~PTE_V);
+//     //mask keyid and prot
+//     uint64_t keyid_ppn = (*pte) >> PAGE_PFN_SHIFT;
+//     uint64_t ppn = keyid_ppn & (~KEYID_MASK);
+//     paddr_t paddr = ppn << PAGE_SHIFT;
+//     //reset page own table
+//     reset_page_own_table(paddr, cvm->vmid->vmid);
+//     //reclaim
+//     spin_lock(&spin_lock_cm_list);
+//     put_free_page(free_mem_list_head, paddr);
+//     spin_unlock(&spin_lock_cm_list);
+//     return 1;
+// }
 
 int mfree_cvm_page_only(paddr_t paddr, unsigned long vmid){
     put_free_page(free_mem_list_head, paddr);
@@ -1200,82 +1210,64 @@ int mfree_cvm_page_only(paddr_t paddr, unsigned long vmid){
 }
 
 //remove the mapping between GPA and HPA, then reclaim HPA and allocate it for normal world.
-paddr_t mreclaim_cvm_page(struct sbi_cvm* cvm, struct iie_cvm_sbi_params *cvm_sbi_params){
-    paddr_t root_pt = cvm->root_pt;
-    vaddr_t gpa = cvm_sbi_params->gpa;
-    //gpa->hpa
-    pt_entry_t *pgd, *pmd, *pte;
-    pgd = (pt_entry_t*)(root_pt) + pgd_index(gpa);
-    if(!(*pgd | PTE_V)){
-        sbi_printf("Invalid pgd\n");
-        return 0;
-    }
-    pmd = (pt_entry_t*)(*pgd >> PAGE_PFN_SHIFT) + pmd_index(gpa);
-    if(!(*pmd | PTE_V)){
-        sbi_printf("Invalid pmd\n");
-        return 0;
-    }
-    pte = (pt_entry_t*)(*pmd >> PAGE_PFN_SHIFT) + pte_index(gpa);
-    if(!(*pte | PTE_V)){
-        sbi_printf("Invalid pte\n");
-        return 0;
-    }
-    //invalidate pte
-    *pte = (*pte) & (~PTE_V);
-    //return paddr_t
-    uint64_t keyid_ppn = (*pte) >> PAGE_PFN_SHIFT;
-    uint64_t ppn = keyid_ppn & (~KEYID_MASK);
-    paddr_t paddr = ppn << PAGE_SHIFT;
-    reset_page_own_table(paddr, cvm->vmid->vmid);
-    reset_bitmap(paddr);
-    return paddr;
-}
+// paddr_t mreclaim_cvm_page(struct sbi_cvm* cvm, struct iie_cvm_sbi_params *cvm_sbi_params){
+//     paddr_t root_pt = cvm->root_pt;
+//     vaddr_t gpa = cvm_sbi_params->gpa;
+//     //gpa->hpa
+//     pt_entry_t *pgd, *pmd, *pte;
+//     pgd = (pt_entry_t*)(root_pt) + pgd_index(gpa);
+//     if(!(*pgd | PTE_V)){
+//         sbi_printf("Invalid pgd\n");
+//         return 0;
+//     }
+//     pmd = (pt_entry_t*)(*pgd >> PAGE_PFN_SHIFT) + pmd_index(gpa);
+//     if(!(*pmd | PTE_V)){
+//         sbi_printf("Invalid pmd\n");
+//         return 0;
+//     }
+//     pte = (pt_entry_t*)(*pmd >> PAGE_PFN_SHIFT) + pte_index(gpa);
+//     if(!(*pte | PTE_V)){
+//         sbi_printf("Invalid pte\n");
+//         return 0;
+//     }
+//     //invalidate pte
+//     *pte = (*pte) & (~PTE_V);
+//     //return paddr_t
+//     uint64_t keyid_ppn = (*pte) >> PAGE_PFN_SHIFT;
+//     uint64_t ppn = keyid_ppn & (~KEYID_MASK);
+//     paddr_t paddr = ppn << PAGE_SHIFT;
+//     reset_page_own_table(paddr, cvm->vmid->vmid);
+//     reset_bitmap(paddr);
+//     return paddr;
+// }
 
 //vaddr_t normal_gpa[count] = {vaddr1, vaddr2 ,...}
 //paddr_t narmal_hpa[count] = {paddr1, paddr2 ,...}
-int add_cvm_share_pages(struct sbi_cvm* cvm, struct iie_cvm_sbi_params_shared *shared_pages){
-    unsigned long count = shared_pages->count;
-    paddr_t root_pt = cvm->root_pt;
-    vaddr_t *gpa = shared_pages->gpa;
-    paddr_t *hpa = shared_pages->hpa;
-    if(count<=0){
-        return 0;
+int add_cvm_share_pages(paddr_t root_pt, paddr_t gpa, paddr_t hpa){
+    //struct cvm_node *cvm = get_cvm(cvm_sbi_params_shared->vmid_ptr->vmid);
+    pt_entry_t *pte;
+    //unsigned long gpa = cvm_sbi_params_shared->gpa;
+    //paddr_t root_pt = cvm->cvm.root_pt;
+    if(hpa <= 0){
+        //sbi_printf("[IIE CVM DEBUG@%s] shared page addr error.\n", __func__);
+        return 2;
     }
-    pt_entry_t *pgd, *pmd, *pte;
-    for(int i=0; i<count; i++){
-        pgd = (pt_entry_t*)(root_pt) + pgd_index(*(gpa+i));
-        if(!(*pgd | PTE_V)){
-            spin_lock(&spin_lock_cm_list);
-            paddr_t free_page_pgd = get_free_mem(free_mem_list_head);
-            spin_unlock(&spin_lock_cm_list);
-            if(free_page_pgd == 0){
-                sbi_printf("no empty confidential memory\n");
-                return 0;
-            }
-            *pgd = (free_page_pgd >> PAGE_SHIFT << PAGE_PFN_SHIFT) | PTE_V;
-        }
-        pmd = (pt_entry_t*)(*pgd >> PAGE_PFN_SHIFT) + pmd_index(*(gpa+i));
-        if(!(*pmd | PTE_V)){
-            spin_lock(&spin_lock_cm_list);
-            paddr_t free_page_pmd = get_free_mem(free_mem_list_head);
-            spin_unlock(&spin_lock_cm_list);
-            if(free_page_pmd == 0){
-                sbi_printf("no empty confidential memory\n");
-                return 0;
-            }
-            *pgd = (free_page_pmd >> PAGE_SHIFT << PAGE_PFN_SHIFT) | PTE_V;
-        }
-        pte = (pt_entry_t*)(*pmd >> PAGE_PFN_SHIFT) + pte_index(*(gpa+i));
-        if(*pte | PTE_V){
-            sbi_printf("address %ld already has physical page\n", *(gpa+i));
-            return 0;
-        }
-        uint64_t keyid_ppn = (cvm->KeyID << KEYID_OFFSET) | (*(hpa+i) >> PAGE_SHIFT);
-        *pte = (keyid_ppn << PAGE_PFN_SHIFT) | PTE_R | PTE_W | PTE_A | PTE_D | PTE_V;
-        set_bitmap(*(hpa+i));
-        set_page_own_table(*(hpa+i), cvm->vmid->vmid);
+    //we don't set keyid, bitmap, page own table because the page is shared between host and guest;
+    //sbi_printf("[IIE CVM DEBUG@%s] root pt is 0x%lx.\n", __func__, root_pt);
+    pte = (pt_entry_t *)find_pte(root_pt, gpa);
+    if(pte == 1 || pte == 2){
+        //sbi_printf("[IIE CVM DEBUG@%s] find pte fault.\n", __func__);
+        return pte;
     }
-    return 1;
+    uint64_t ppn = hpa >> PAGE_SHIFT;
+    uint64_t keyid_ppn = ppn;
+    *pte = (keyid_ppn << PAGE_PFN_SHIFT) | PTE_X | PTE_U | PTE_R | PTE_W | PTE_A | PTE_D | PTE_V;
+    // set_bitmap(*(hpa+i));
+    // set_page_own_table(*(hpa+i), cvm->vmid->vmid);
+    //pte = (pt_entry_t *)find_pte(root_pt, gpa);
+    //sbi_printf("[IIE CVM DEBUG@%s] gpa is 0x%lx, hpa is 0x%lx.\n", __func__, gpa, *pte >> PAGE_PFN_SHIFT);
+    //sbi_printf("\n");
+    return 0;
 }
 
 
@@ -1344,6 +1336,8 @@ int cvm_trap_virtual_inst(struct sbi_trap_regs* host_regs)
     return cvm_vcpu_exit(host_regs);
 }
 
+unsigned long i=0;
+
 int cvm_trap_gstage_page_fault(struct sbi_trap_regs* host_regs)
 {
     // TODO 处理CVM 内存的PF, 分配内存页, 标记bitmap, 创建页表
@@ -1351,20 +1345,43 @@ int cvm_trap_gstage_page_fault(struct sbi_trap_regs* host_regs)
     unsigned long addr = (csr_read(CSR_MTVAL2) << 2) | (csr_read(CSR_MTVAL) & 0x3);
 	struct sbi_trap_info uptrap;
     ulong insn;
+    
     // sbi_printf("addr gpa: %lx mtval %lx mtval2 %lx mtinst %lx mepc %lx\r\n", addr, csr_read(CSR_MTVAL), csr_read(CSR_MTVAL2), csr_read(CSR_MTINST), csr_read(CSR_MEPC));
     // sbi_printf("regs t0 %lx a1 %lx\r\n", host_regs->t0, host_regs->a1);
-    if(addr){
-        if(addr >= 0x80000000){
-            struct kvm_vmid kvm_id;
-            kvm_id.vmid = get_cvm_id();
-            struct cvm_node *cvm = get_cvm(kvm_id.vmid);
-            ret = malloc_cvm_empty_page(&cvm->cvm, addr);
-            // TODO resume cvm ctx
-            if(ret != 1 && ret != 2)
-                return 0;
-            else
-                return ret;
-        }
+//TODO
+//if addr< 0x8000000 || addr in swiotlb
+// set exit reason;
+// return cvm_exit()；
+//else
+// malloc——cvm
+    if(!addr){
+        return CVM_ERROR;
+    }
+    else if(addr < 0x80000000){
+        cvm_vcpu_exit(host_regs);
+        return ret;
+    }
+    else if(addr >= SWIOTLB_ADDR && addr < SWIOTLB_ADDR + SWIOTLB_SIZE){
+        //sbi_printf("[IIE CVM DEBUG@%s] 0x%lxth gpa is 0x%lx\n", __func__, i, addr);
+        i++;
+        uint32_t vmid = get_cvm_id();
+        uint32_t vcpuid = get_cvm_vcpu_id();
+        struct cvm_vcpu_node *vcpu = get_cvm_vcpu_node(vmid, vcpuid);
+        vcpu->vcpu.exit_reason = SWIOTLB;
+        //sbi_printf("-------------swiotlb-pf, addr is 0x%lx------\n", addr);
+        cvm_vcpu_exit(host_regs);
+        return ret;
+    }
+    else{
+        struct kvm_vmid kvm_id;
+        kvm_id.vmid = get_cvm_id();
+        struct cvm_node *cvm = get_cvm(kvm_id.vmid);
+        ret = malloc_cvm_empty_page(&cvm->cvm, addr);
+        // TODO resume cvm ctx
+        if(ret != 1 && ret != 2)
+            return 0;
+        else
+            return ret;
     }
     // 传递trap 同步上下文
     // sbi_printf("CSR_MTINST %lx\r\n", csr_read(CSR_MTINST));
@@ -1386,9 +1403,6 @@ int cvm_trap_gstage_page_fault(struct sbi_trap_regs* host_regs)
     // }
     // csr_write(CSR_HTINST, insn);
     // sbi_printf("CSR_HTINST %lx\r\n", csr_read(CSR_HTINST));
-    cvm_vcpu_exit(host_regs);
-
-    return ret;
 }
 
 int cvm_trap_sbi_ecall(struct sbi_trap_regs* host_regs)

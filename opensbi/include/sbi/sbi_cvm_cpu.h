@@ -95,6 +95,7 @@ struct cvm_vcpu {
 	//TODO: delete it because root_pt is for each cvm rather than each vcpu
 	unsigned long root_pt;
 	struct vcpu_csr* kvm_vcpu_csr;
+	unsigned long exit_reason;
 };
 
 typedef struct

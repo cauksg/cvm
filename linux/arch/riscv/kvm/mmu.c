@@ -18,7 +18,7 @@
 #include <asm/csr.h>
 #include <asm/page.h>
 #include <asm/pgtable.h>
-
+#include <cvm/iie-cvm-sbi.h>
 #ifdef CONFIG_64BIT
 static unsigned long gstage_mode __ro_after_init = (HGATP_MODE_SV39X4 << HGATP_MODE_SHIFT);
 static unsigned long gstage_pgd_levels __ro_after_init = 3;
@@ -94,7 +94,7 @@ static int gstage_level_to_page_size(u32 level, unsigned long *out_pgsize)
 	return 0;
 }
 
-static bool gstage_get_leaf_entry(struct kvm *kvm, gpa_t addr,
+bool gstage_get_leaf_entry(struct kvm *kvm, gpa_t addr,
 				  pte_t **ptepp, u32 *ptep_level)
 {
 	pte_t *ptep;
@@ -122,6 +122,7 @@ static bool gstage_get_leaf_entry(struct kvm *kvm, gpa_t addr,
 
 	return false;
 }
+
 
 static void gstage_remote_tlb_flush(struct kvm *kvm, u32 level, gpa_t addr)
 {
@@ -668,6 +669,7 @@ int kvm_riscv_gstage_map(struct kvm_vcpu *vcpu,
 	}
 
 	hfn = gfn_to_pfn_prot(kvm, gfn, is_write, &writable);
+
 	if (hfn == KVM_PFN_ERR_HWPOISON) {
 		send_sig_mceerr(BUS_MCEERR_AR, (void __user *)hva,
 				vma_pageshift, current);
@@ -700,6 +702,7 @@ int kvm_riscv_gstage_map(struct kvm_vcpu *vcpu,
 
 	if (ret)
 		kvm_err("Failed to map in G-stage\n");
+	
 
 out_unlock:
 	spin_unlock(&kvm->mmu_lock);

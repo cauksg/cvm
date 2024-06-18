@@ -43,12 +43,16 @@ struct iie_cvm_sbi_params {
 	uintptr_t *pgd_phys_ptr;
 	pgd_t *pgd;
 	phys_addr_t pgd_phys;
-
+	
+	/* SWIOTLB */
+	unsigned long gpa;
+	unsigned long hpa;
 	// struct kvm_vcpu *vcpu;
 	// struct iie_cvm_vcpu_sbi_params cvm_vcpu_sbi_params;
-
 };
 
+#define SWIOTLB_ADDR 0x82c00000
+#define SWIOTLB_SIZE 0x200000
 
 int create_sbi_param(struct kvm *kvm, struct iie_cvm_sbi_params * cvm_sbi_params);
 

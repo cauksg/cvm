@@ -21,7 +21,8 @@
 #include <asm/cacheflush.h>
 #include <asm/kvm_vcpu_vector.h>
 #include <cvm/iie-cvm-sbi.h>
-
+#include <asm/pgtable-bits.h>
+#include <asm/page.h>
 
 const struct _kvm_stats_desc kvm_vcpu_stats_desc[] = {
 	KVM_GENERIC_VCPU_STATS(),
@@ -776,7 +777,20 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 
 		guest_timing_enter_irqoff();
 
-		
+		#ifdef PROG_LBL
+		cvm_sbi_params->gpa = (trap->htval << 2) | (trap->stval & 0x3);
+		if(cvm_sbi_params->gpa >= SWIOTLB_ADDR && cvm_sbi_params->gpa < SWIOTLB_ADDR+SWIOTLB_SIZE){
+			pte_t *ptep;
+			u32 ptep_level;
+			bool found_leaf;
+			found_leaf = gstage_get_leaf_entry(vcpu->kvm, cvm_sbi_params->gpa, &ptep, &ptep_level);
+			if(found_leaf){
+				cvm_sbi_params->hpa = (unsigned long)(pte_val(*ptep) >> 10 << PAGE_SHIFT);
+				//printk("cvm_sbi_params hpa is 0x%lx\n", cvm_sbi_params->hpa);
+			}
+		}
+		#endif
+
 		#ifdef PROG_BYK
 		sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_RUN_VCPU, __pa(cvm_sbi_params),
 			__pa(&vcpu->arch.guest_context), __pa(&vcpu->arch.guest_csr), __pa(trap), 0, 0);
@@ -825,6 +839,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		kvm_vcpu_srcu_read_lock(vcpu);
 
 		ret = kvm_riscv_vcpu_exit(vcpu, run, trap);
+
 	}
 
 	kvm_sigset_deactivate(vcpu);
