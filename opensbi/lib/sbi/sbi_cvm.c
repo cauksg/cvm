@@ -13,8 +13,10 @@
 spinlock_t spin_lock_cm_list;
 spinlock_t spin_lock_bitmap;
 spinlock_t spin_lock_page_own_table;
+spinlock_t spin_lock_root_pt_list;
 
-struct list_head* free_mem_list_head;
+struct list_head *free_mem_list_head;
+struct list_head *free_root_pt_list_head;
 //page_own_table_t *page_own_table = (page_own_table_t*)sbi_calloc(1, 4);
 
 
@@ -1063,9 +1065,9 @@ void clean_free_mem(struct list_head* free_mem){
 
 //when we create cvm vcpu, we allocate a free cm page as it's root_pt. 
 int init_cvm_vcpu_root_pt(struct iie_cvm_sbi_params *cvm_sbi_params){
-    spin_lock(&spin_lock_cm_list);
-    paddr_t free_page = get_free_mem(free_mem_list_head);
-    spin_unlock(&spin_lock_cm_list);
+    spin_lock(&spin_lock_root_pt_list);
+    paddr_t free_page = get_free_mem(free_root_pt_list_head);
+    spin_unlock(&spin_lock_root_pt_list);
     if(free_page == 0){
         sbi_printf("no empty confidential memory\n");
         return 1;
@@ -1260,7 +1262,7 @@ int add_cvm_share_pages(paddr_t root_pt, paddr_t gpa, paddr_t hpa){
     //we don't set keyid, bitmap, page own table because the page is shared between host and guest;
     //sbi_printf("[IIE CVM DEBUG@%s] root pt is 0x%lx.\n", __func__, root_pt);
     pte = (pt_entry_t *)find_pte(root_pt, gpa);
-    if(pte == 1 || pte == 2){
+    if(pte == 1){
         //sbi_printf("[IIE CVM DEBUG@%s] find pte fault.\n", __func__);
         return pte;
     }
@@ -1277,23 +1279,40 @@ int add_cvm_share_pages(paddr_t root_pt, paddr_t gpa, paddr_t hpa){
 
 
 //paddr_t narmal_address[count] = {paddr1, paddr2 ,...}
-int convert_cvm_pages(paddr_t* normal_address, int count){
-    //sbi_printf("--------------------sbi convert_cvm_pages begin!-------------------------\n");
-    if(count<=0){
-        return 0;
+int convert_cvm_pages(paddr_t* cm_pool_list, unsigned long cm_count, paddr_t *root_pt_list, unsigned long root_pt_num){
+    int i,j;
+    if(cm_count <= 0 || root_pt_num <= 0){
+        return 1;
     }
-    free_mem_list_head = (struct list_head *)*(normal_address);
-    free_mem_list_head->next = free_mem_list_head;
-    int i;
-    for(i=1; i<count; i++){
+    
+    for(i=0; i<cm_count; i++){
         //sbi_printf("sbi function convert_cvm_pages accepted physical address %lx\n", *(normal_address+i));
-        set_bitmap((unsigned long)*(normal_address+i));
-        spin_lock(&spin_lock_cm_list);
-
-        //convert normal_address to CM pool rather than CVM memory 
-        put_free_page(free_mem_list_head, (unsigned long)*(normal_address+i));
-        spin_unlock(&spin_lock_cm_list);
+        set_bitmap((unsigned long)*(cm_pool_list+i));
+        if(i==0){
+            free_mem_list_head = (struct list_head *)*(cm_pool_list);
+            free_mem_list_head->next = free_mem_list_head;
+        }else{
+            spin_lock(&spin_lock_cm_list);
+            //convert normal_address to CM pool rather than CVM memory 
+            put_free_page(free_mem_list_head, (unsigned long)*(cm_pool_list+i));
+            spin_unlock(&spin_lock_cm_list);
+        }  
     }
+    for(i=0; i<root_pt_num; i++){
+        for(j=0;j<4;j++){
+            set_bitmap(((unsigned long)*(cm_pool_list+i))+j*PAGE_SIZE);
+        }
+        if(i==0){
+            spin_lock(&spin_lock_cm_list);
+            free_root_pt_list_head = (struct list_head *)get_free_mem(free_mem_list_head);
+            spin_unlock(&spin_lock_cm_list);
+            free_root_pt_list_head->next = free_root_pt_list_head;
+        }
+        spin_lock(&spin_lock_root_pt_list);
+        put_free_page(free_root_pt_list_head, (unsigned long)*(root_pt_list+i));
+        spin_unlock(&spin_lock_root_pt_list);
+    }
+
     return 0;
 }
 
@@ -1341,7 +1360,6 @@ int cvm_trap_virtual_inst(struct sbi_trap_regs* host_regs)
     return cvm_vcpu_exit(host_regs);
 }
 
-unsigned long i=0;
 
 int cvm_trap_gstage_page_fault(struct sbi_trap_regs* host_regs)
 {
@@ -1367,8 +1385,6 @@ int cvm_trap_gstage_page_fault(struct sbi_trap_regs* host_regs)
         return ret;
     }
     else if(addr >= SWIOTLB_ADDR && addr < SWIOTLB_ADDR + SWIOTLB_SIZE){
-        //sbi_printf("[IIE CVM DEBUG@%s] 0x%lxth gpa is 0x%lx\n", __func__, i, addr);
-        i++;
         uint32_t vmid = get_cvm_id();
         uint32_t vcpuid = get_cvm_vcpu_id();
         struct cvm_vcpu_node *vcpu = get_cvm_vcpu_node(vmid, vcpuid);

@@ -195,6 +195,7 @@ typedef struct page_own_table{
 
 //gpa to hpa transfer 
 #define PGLEVEL_BITS    9
+#define PAGE_VPN_FIRST_LEVEL	11
 #define PAGE_PFN_MASK   ((1 << PGLEVEL_BITS) - 1)
 #define PGDIR_SHIFT     48
 #define PUDIR_SHIFT     39
@@ -206,23 +207,12 @@ typedef struct page_own_table{
 #ifndef PAGE_SIZE
 #define PAGE_SIZE      (1UL << PAGE_SHIFT)
 #endif
-#define pgd_index(a)    (((a) >> PGDIR_SHIFT) & PAGE_PFN_MASK)
+#define pgd_index(a)    (((a) >> PGDIR_SHIFT) & PAGE_VPN_FIRST_LEVEL)
 #define pud_index(a)    (((a) >> PUDIR_SHIFT) & PAGE_PFN_MASK)
 #define p4d_index(a)    (((a) >> P4DIR_SHIFT) & PAGE_PFN_MASK)
 #define pmd_index(a)    (((a) >> PMD_SHIFT) & PAGE_PFN_MASK)
 #define pte_index(a)    (((a) >> PAGE_SHIFT) & PAGE_PFN_MASK)
 #define PAGE_PFN_SHIFT  10
-
-//PTE fields
-// #define PTE_V       0x001
-// #define PTE_R       0x002
-// #define PTE_W       0x004
-// #define PTE_X       0x008
-// #define PTE_U       0x010
-// #define PTE_G       0x020
-// #define PTE_A       0x040
-// #define PTE_D       0x080
-// #define PTE_SOFT    0x300
 
 
 union mcvm
@@ -261,7 +251,7 @@ paddr_t malloc_cvm_empty_page(struct sbi_cvm* cvm, vaddr_t gpa);
 int mfree_cvm_page(struct sbi_cvm* cvm, struct iie_cvm_sbi_params *cvm_sbi_params);
 paddr_t mreclaim_cvm_page(struct sbi_cvm* cvm, struct iie_cvm_sbi_params *cvm_sbi_params);
 int add_cvm_share_pages(paddr_t root_pt, paddr_t gpa, paddr_t hpa);
-int convert_cvm_pages(paddr_t* normal_address, int count);
+int convert_cvm_pages(paddr_t* cm_pool_list, unsigned long cm_count, paddr_t *root_pt_list, unsigned long root_pt_num);
 int load_file(struct iie_cvm_sbi_params_load *load_file);
 void set_bitmap(paddr_t page_address);
 void reset_bitmap(paddr_t page_address);

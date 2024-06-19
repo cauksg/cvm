@@ -105,32 +105,51 @@ unsigned long kernel_page_translate(unsigned long addr){
 static int __init riscv_kvm_init(void)
 {
 	#ifdef PROG_LBL
-	
+	int i;
 	struct sbiret ret;
-	//apply for free memory and translation their hva to hpa
-	unsigned long *hva = vmalloc(PAGE_SIZE << 14);
-	unsigned long *list_va = (unsigned long *)__get_free_pages(GFP_KERNEL, 5);
+	//apply for free memory and translation their hva to hpa.
+	//allocate 2^14 pages(64MB) for confidential memory.
+	//each page addr is 8B, so we need 2^14 * 8 / 4K = 2^5 pages to record .
+	unsigned long *cm_pool = vmalloc(PAGE_SIZE << INITIAL_PAGE_NUM);
 
+	unsigned long cm_list_page_num = (1UL << INITIAL_PAGE_NUM) * sizeof(unsigned long) / (1UL << PAGE_SHIFT);
+	unsigned long cm_list_page_num_log = 0;
+	while ( cm_list_page_num > 1){
+		    cm_list_page_num /= 2;
+		    cm_list_page_num_log++;
+	}
+	//printk("--------cm_list_page_num_log is %lx\n---------", cm_list_page_num_log);
+	unsigned long *cm_addr_list = (unsigned long *)__get_free_pages(GFP_KERNEL, cm_list_page_num_log);
 	
-	if (!hva){
+	unsigned long root_pt_va;
+	//we already known the max number of cvm is 32
+	unsigned long *root_pt_list = (unsigned long *)__get_free_pages(GFP_KERNEL, 0);
+	for(i=0; i<(1<<MAX_CVM_NUM); i++){
+		root_pt_va = __get_free_pages(GFP_KERNEL, 2);
+		if(!root_pt_va){
+			printk("----------------------------------\n");
+			printk("root pt mmap failed!\n");
+			printk("----------------------------------\n");
+		}else{
+			*(root_pt_list+i) = __pa(root_pt_va);
+		}
+	}
+	if (!cm_pool){
 		printk("----------------------------------\n");
 		printk("memory mmap failed!\n");
 		printk("----------------------------------\n");
 	}else{
 		printk("----------------------------------\n");
 		printk("memory mmap successed!\n");
-		printk("virtual address begin at %lx\n", (unsigned long)hva);
+		printk("virtual address begin at %lx\n", (unsigned long)cm_pool);
 		printk("----------------------------------\n");
-		for(int i=0;i<(1<<14);i++){
-			*(list_va+i) = kernel_page_translate((unsigned long)hva + i*PAGE_SIZE) << PAGE_SHIFT;
+		for(i=0;i<(1<<INITIAL_PAGE_NUM);i++){
+			*(cm_addr_list+i) = kernel_page_translate((unsigned long)cm_pool + i*PAGE_SIZE) << PAGE_SHIFT;
 			//printk("virtual address %lx is translated to pfn %lx\n", (unsigned long)hva + i*PAGE_SIZE, *(list_va+i));
 		}
-		ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_INIT_PAGE_LIST, __pa((unsigned long)list_va), (1<<14), 0, 0, 0, 0);
+		ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_INIT_PAGE_LIST, __pa((unsigned long)cm_addr_list), (1UL<<INITIAL_PAGE_NUM), 
+			__pa((unsigned long)root_pt_list), (1UL<<MAX_CVM_NUM), 0, 0);
 	}
-	//ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_INIT_PAGE_LIST, __pa((unsigned long)list_va), 14, 0, 0, 0, 0);
-	// int r;
-	// r = ret.error;
-
 	#endif
 
 	int rc;

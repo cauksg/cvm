@@ -69,7 +69,6 @@
 
 #include <linux/kvm_dirty_ring.h>
 
-#include "enclave-driver.h"
 #include <cvm/iie-cvm-sbi.h>
 
 /* Worst case buffer size needed for holding an integer. */
@@ -5060,7 +5059,7 @@ static long kvm_vm_ioctl(struct file *filp,
 		sbi_load_params->src_hpa_array = (unsigned long*)file_paddr_array;
 		sbi_load_params->vmid_ptr = __pa(&kvm->arch.vmid);
 		printk("file physical address  array is placed at %lx\n", file_paddr_array);
-        ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_LOAD, __pa(va_sbi_params), 0, 0, 0, 0, 0);
+        ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_LOAD_FILE, __pa(va_sbi_params), 0, 0, 0, 0, 0);
 		r = ret.error;
 		//free_pages(unsigned long addr, unsigned int order);
 		printk("----------------linux vm ioctl end to load kernel-------------------\n");
