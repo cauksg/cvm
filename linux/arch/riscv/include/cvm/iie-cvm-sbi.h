@@ -51,6 +51,12 @@ struct iie_cvm_sbi_params {
 	// struct iie_cvm_vcpu_sbi_params cvm_vcpu_sbi_params;
 };
 
+struct cvm_list_params {
+	unsigned long addr;
+	unsigned long ele_num;
+	unsigned long page_num;
+};
+
 //use for SWIOTLB address range
 #define SWIOTLB_ADDR 0x82c00000
 #define SWIOTLB_SIZE 0x200000
@@ -58,6 +64,9 @@ struct iie_cvm_sbi_params {
 //use for allocating confidential memory
 #define INITIAL_PAGE_NUM 	14 		//so we allocate 2^14 pages for confidential memory.
 #define MAX_CVM_NUM			5		//we have 2^5 confidential virtual machines at most.
+#ifndef K(x)
+#define K(x) ((x) << (PAGE_SHIFT-10))
+#endif
 
 int create_sbi_param(struct kvm *kvm, struct iie_cvm_sbi_params * cvm_sbi_params);
 

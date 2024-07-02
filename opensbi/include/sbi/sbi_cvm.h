@@ -225,6 +225,12 @@ union mcvm
     uint64_t bits;
 };
 
+struct cvm_list_params {
+	unsigned long addr;
+	unsigned long ele_num;
+	unsigned long page_num;
+};
+
 //KeyID 
 #define KEYID_OFFSET    24
 #define KEYID_MASK      ((0x1FUL<<KEYID_OFFSET))
@@ -246,21 +252,21 @@ union mcvm
 //vcpu exit reason
 #define SWIOTLB			14
 
-//function
+//memory manage function
 paddr_t malloc_cvm_empty_page(struct sbi_cvm* cvm, vaddr_t gpa);
-int mfree_cvm_page(struct sbi_cvm* cvm, struct iie_cvm_sbi_params *cvm_sbi_params);
 paddr_t mreclaim_cvm_page(struct sbi_cvm* cvm, struct iie_cvm_sbi_params *cvm_sbi_params);
 int add_cvm_share_pages(paddr_t root_pt, paddr_t gpa, paddr_t hpa);
-int convert_cvm_pages(paddr_t* cm_pool_list, unsigned long cm_count, paddr_t *root_pt_list, unsigned long root_pt_num);
+int convert_cvm_pages(struct cvm_list_params* cm_pool_list, struct cvm_list_params* root_pt_list, struct cvm_list_params* bitmap, struct cvm_list_params* page_own_table);
 int load_file(struct iie_cvm_sbi_params_load *load_file);
 void set_bitmap(paddr_t page_address);
 void reset_bitmap(paddr_t page_address);
-paddr_t* init_bitmap();
+paddr_t* init_bitmap(struct cvm_list_params* bmp);
 int set_page_own_table(paddr_t page_address, uint64_t id);
 int reset_page_own_table(paddr_t page_address, uint64_t id);
-page_own_table_t* init_page_own_table();
+page_own_table_t* init_page_own_table(struct cvm_list_params* own_table);
 paddr_t malloc_cvm_empty_page_only(unsigned long vmid);
 int mfree_cvm_page_only(paddr_t paddr, unsigned long vmid);
+void mfree_cvm_page(struct sbi_cvm* cvm);
 
 // /** cvm functions */
 void init_cpus();

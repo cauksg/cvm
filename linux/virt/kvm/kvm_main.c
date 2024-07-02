@@ -5006,7 +5006,7 @@ static long kvm_vm_ioctl(struct file *filp,
 		break;
 	case KVM_LOAD_FILE:
 	#ifdef PROG_LBL
-		printk("----------------linux vm ioctl begin to load kernel-------------------\n");
+		//printk("----------------linux vm ioctl begin to load kernel-------------------\n");
 		struct sbiret ret;
 		unsigned long file_paddr_array;
         struct load_file load_file_t;
@@ -5014,7 +5014,7 @@ static long kvm_vm_ioctl(struct file *filp,
 			printk("Copy iotcl parameters failed!\n");
             return 0;
         }
-		printk("file size is %lx byte\n", load_file_t.file_size);
+		//printk("file size is %lx byte\n", load_file_t.file_size);
         unsigned long pages_num = (load_file_t.file_size % PAGE_SIZE) ? (load_file_t.file_size/PAGE_SIZE+1) : (load_file_t.file_size/PAGE_SIZE);
 		// if(load_file_t.file_size % PAGE_SIZE){
 		// 	printk("----------------------------------\n");
@@ -5058,13 +5058,12 @@ static long kvm_vm_ioctl(struct file *filp,
 		sbi_load_params->count = pages_num;
 		sbi_load_params->src_hpa_array = (unsigned long*)file_paddr_array;
 		sbi_load_params->vmid_ptr = __pa(&kvm->arch.vmid);
-		printk("file physical address  array is placed at %lx\n", file_paddr_array);
+		//printk("file physical address  array is placed at %lx\n", file_paddr_array);
         ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_LOAD_FILE, __pa(va_sbi_params), 0, 0, 0, 0, 0);
 		r = ret.error;
 		//free_pages(unsigned long addr, unsigned int order);
-		printk("----------------linux vm ioctl end to load kernel-------------------\n");
+		//printk("----------------linux vm ioctl end to load kernel-------------------\n");
 	#endif
-
 		break;
 	default:
 		r = kvm_arch_vm_ioctl(filp, ioctl, arg);

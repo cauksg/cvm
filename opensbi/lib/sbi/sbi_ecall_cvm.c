@@ -38,7 +38,7 @@ static int sbi_ecall_cvm_handler(unsigned long extid, unsigned long funcid,
 		ret = load_file((void *)regs->a0);
 		break;
 	case SBI_EXT_CVM_INIT_PAGE_LIST:
-		ret = convert_cvm_pages((void *)regs->a0, regs->a1, (void *)regs->a2, regs->a3);
+		ret = convert_cvm_pages((void *)regs->a0, (void *)regs->a1, (void *)regs->a2, (void *)regs->a3);
 		break;
 	case SBI_EXT_CVM_HASH_IMAGE:
 		ret = sbi_cvm_hash_image((void *)regs->a0);
