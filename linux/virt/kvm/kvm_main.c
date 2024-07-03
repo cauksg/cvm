@@ -1164,6 +1164,8 @@ static struct kvm *kvm_create_vm(unsigned long type, const char *fdname)
 	KVM_MMU_LOCK_INIT(kvm);
 	mmgrab(current->mm);
 	kvm->mm = current->mm;
+	kvm->cmode = type == SBI_EXT_CVM ? 1 : 0;
+	if(kvm->cmode) printk("------ %s: cmode activate. --------\n", __func__);
 	kvm_eventfd_init(kvm);
 	mutex_init(&kvm->lock);
 	mutex_init(&kvm->irq_lock);
