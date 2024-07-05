@@ -1,6 +1,6 @@
 1、首先，下载本项目
 
-`git clone http://192.168.104.44/lubailong/riscv-kvm.git`
+`git clone https://gitee.com/lubailong/riscv-kvm.git`
 
 2、之后，执行build-tool.sh脚本，安装riscv-gnu-toolchain、QEMU、kvmtool等工具，搭建riscv kvm所需要的环境
 
