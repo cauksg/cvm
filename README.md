@@ -4,7 +4,7 @@
 
 2、之后，执行build-tool.sh脚本，安装riscv-gnu-toolchain、QEMU、kvmtool等工具，搭建riscv kvm所需要的环境
 
-`./build-kvm.sh`
+`./build-tool.sh`
 
 3、若上述步骤成功，执行build-host.sh脚本，编译guest os，host os，opensbi，kvmtool等
 
