@@ -23,6 +23,8 @@
 #include <cvm/iie-cvm-sbi.h>
 #include <asm/pgtable-bits.h>
 #include <asm/page.h>
+#include <linux/of.h>
+#include <linux/uaccess.h>
 
 const struct _kvm_stats_desc kvm_vcpu_stats_desc[] = {
 	KVM_GENERIC_VCPU_STATS(),
@@ -166,8 +168,10 @@ int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 
 
 	#ifdef PROG_LBL
-	if(vcpu->vcpu_id == 0)
+	unsigned int ret, addr, size;
+	if(vcpu->vcpu_id == 0){
 		sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_ALLOC_ROOT_PT, pa_cvm, 0, 0, 0, 0, 0);
+	}
 	#endif
 	
 	struct sbiret retval = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_CREATE_VCPU,
@@ -655,6 +659,11 @@ static void noinstr kvm_riscv_vcpu_enter_exit(struct kvm_vcpu *vcpu)
 	guest_state_exit_irqoff();
 }
 
+#ifdef PROG_LBL
+unsigned long swiotlb_addr;
+unsigned long swiotlb_size;
+#endif
+
 int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 {
 	int ret;
@@ -678,6 +687,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 
 	/* Mark this VCPU ran at least once */
 	vcpu->arch.ran_atleast_once = true;
+
 
 	kvm_vcpu_srcu_read_lock(vcpu);
 
@@ -779,11 +789,11 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 
 		#ifdef PROG_LBL
 		cvm_sbi_params->gpa = (trap->htval << 2) | (trap->stval & 0x3);
-		if(cvm_sbi_params->gpa >= SWIOTLB_ADDR && cvm_sbi_params->gpa < SWIOTLB_ADDR+SWIOTLB_SIZE){
+		if(cvm_sbi_params->gpa >= swiotlb_addr && cvm_sbi_params->gpa < swiotlb_addr + swiotlb_size){
 			pte_t *ptep;
 			u32 ptep_level;
 			bool found_leaf;
-			found_leaf = gstage_get_leaf_entry(vcpu->kvm, cvm_sbi_params->gpa, &ptep, &ptep_level);
+			found_leaf = iie_gstage_get_leaf_entry(vcpu->kvm, cvm_sbi_params->gpa, &ptep, &ptep_level);
 			if(found_leaf){
 				cvm_sbi_params->hpa = (unsigned long)(pte_val(*ptep) >> 10 << PAGE_SHIFT);
 				//printk("cvm_sbi_params hpa is 0x%lx\n", cvm_sbi_params->hpa);
@@ -849,4 +859,18 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 	kvm_vcpu_srcu_read_unlock(vcpu);
 
 	return ret;
+}
+
+
+int kvm_vm_ioctl_swiotlb(struct kvm *kvm, void *argp){
+	struct swiotlb *sw = kmalloc(sizeof(struct swiotlb), GFP_KERNEL);
+	if (copy_from_user(sw, argp, sizeof(struct swiotlb))){
+		printk("kvm_vm_ioctl_swiotlb copy iotcl parameters failed!\n");
+        return -1;
+    }
+	swiotlb_addr = (unsigned long)sw->addr;
+	swiotlb_size = (unsigned long)sw->size;
+	//printk("----------------------swiotlb_addr is 0x%lx, swiotlb_size is 0x%lx------\n", swiotlb_addr, swiotlb_size);
+	sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_INIT_SWIOTLB, __pa(sw), 0, 0, 0, 0, 0);
+	return 0;
 }

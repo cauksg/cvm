@@ -1479,9 +1479,12 @@ struct load_file{
 	unsigned long des_gpa;
 	unsigned long file_size;
 };
-
+struct swiotlb{
+	unsigned long addr;
+	unsigned long size;
+};
 #define KVM_LOAD_FILE		  	_IOWR(KVMIO, 0x49, struct load_file)
-
+#define KVM_SET_SWIOTLB		  	_IOWR(KVMIO, 0x53, struct swiotlb)
 /* enable ucontrol for s390 */
 struct kvm_s390_ucas_mapping {
 	__u64 user_addr;

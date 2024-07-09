@@ -94,7 +94,7 @@ static int gstage_level_to_page_size(u32 level, unsigned long *out_pgsize)
 	return 0;
 }
 
-bool gstage_get_leaf_entry(struct kvm *kvm, gpa_t addr,
+static bool gstage_get_leaf_entry(struct kvm *kvm, gpa_t addr,
 				  pte_t **ptepp, u32 *ptep_level)
 {
 	pte_t *ptep;
@@ -123,7 +123,36 @@ bool gstage_get_leaf_entry(struct kvm *kvm, gpa_t addr,
 	return false;
 }
 
+#ifdef PROG_LBL
+bool iie_gstage_get_leaf_entry(struct kvm *kvm, gpa_t addr,
+				  pte_t **ptepp, u32 *ptep_level)
+{
+	pte_t *ptep;
+	u32 current_level = gstage_pgd_levels - 1;
 
+	*ptep_level = current_level;
+	ptep = (pte_t *)kvm->arch.pgd;
+	ptep = &ptep[gstage_pte_index(addr, current_level)];
+	while (ptep && pte_val(*ptep)) {
+		if (gstage_pte_leaf(ptep)) {
+			*ptep_level = current_level;
+			*ptepp = ptep;
+			return true;
+		}
+
+		if (current_level) {
+			current_level--;
+			*ptep_level = current_level;
+			ptep = (pte_t *)gstage_pte_page_vaddr(*ptep);
+			ptep = &ptep[gstage_pte_index(addr, current_level)];
+		} else {
+			ptep = NULL;
+		}
+	}
+
+	return false;
+}
+#endif
 static void gstage_remote_tlb_flush(struct kvm *kvm, u32 level, gpa_t addr)
 {
 	unsigned long order = PAGE_SHIFT;

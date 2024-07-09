@@ -4812,14 +4812,46 @@ static int kvm_vm_ioctl_get_stats_fd(struct kvm *kvm)
 	return fd;
 }
 
-//load file physical address array
-struct iie_cvm_sbi_params_load {
-	/* G-stage vmid */
-	struct kvm_vmid *vmid_ptr;
-	unsigned long *src_hpa_array;
-	unsigned long des_gpa;
-	unsigned long count;
-};
+static int kvm_vm_ioctl_load_file(struct kvm *kvm, void *argp){
+	//printk("----------------linux vm ioctl begin to load kernel-------------------\n");
+	struct sbiret ret;
+	unsigned long file_paddr_array;
+	struct load_file load_file_t;
+	if (copy_from_user(&load_file_t, argp, sizeof(struct load_file))){
+		printk("Copy iotcl parameters failed!\n");
+		return 0;
+	}
+	unsigned long pages_num = (load_file_t.file_size % PAGE_SIZE) ? (load_file_t.file_size/PAGE_SIZE+1) : (load_file_t.file_size/PAGE_SIZE);
+	unsigned long addr_entry_num = (pages_num % 512) ? (pages_num / 512 + 1) : (pages_num / 512);
+	unsigned int log_addr_entry_num = 0;
+	while ( addr_entry_num > 1){
+		addr_entry_num /= 2;
+		log_addr_entry_num ++;
+	}
+	unsigned long virt_address = __get_free_pages(GFP_KERNEL, log_addr_entry_num);
+	unsigned long *src_hpa_array = (unsigned long *)virt_address;
+	for(int i=0;i<pages_num;i++){
+		unsigned long va = __get_free_pages(GFP_KERNEL, 0);
+		if(copy_from_user((void *)va, (void *)(load_file_t.src_hva+i*PAGE_SIZE), PAGE_SIZE)){
+			printk("copy_from_user failed!\n");
+			return 0;
+		}else{
+			*(src_hpa_array+i) = __pa(va);
+		}
+	}
+
+	file_paddr_array = __pa(virt_address);
+	unsigned long va_sbi_params = __get_free_pages(GFP_KERNEL, 0);
+	struct iie_cvm_sbi_params_load *sbi_load_params = (struct iie_cvm_sbi_params_load *)va_sbi_params;
+	sbi_load_params->des_gpa = load_file_t.des_gpa;
+	sbi_load_params->count = pages_num;
+	sbi_load_params->src_hpa_array = (unsigned long*)file_paddr_array;
+	sbi_load_params->vmid_ptr = __pa(&kvm->arch.vmid);
+	ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_LOAD_FILE, __pa(va_sbi_params), 0, 0, 0, 0, 0);
+
+	return ret.error;
+	//printk("----------------linux vm ioctl end to load kernel-------------------\n");
+}
 
 static long kvm_vm_ioctl(struct file *filp,
 			   unsigned int ioctl, unsigned long arg)
@@ -5007,65 +5039,14 @@ static long kvm_vm_ioctl(struct file *filp,
 		r = kvm_vm_ioctl_get_stats_fd(kvm);
 		break;
 	case KVM_LOAD_FILE:
-	#ifdef PROG_LBL
-		//printk("----------------linux vm ioctl begin to load kernel-------------------\n");
-		struct sbiret ret;
-		unsigned long file_paddr_array;
-        struct load_file load_file_t;
-        if (copy_from_user(&load_file_t, argp, sizeof(struct load_file))){
-			printk("Copy iotcl parameters failed!\n");
-            return 0;
-        }
-		//printk("file size is %lx byte\n", load_file_t.file_size);
-        unsigned long pages_num = (load_file_t.file_size % PAGE_SIZE) ? (load_file_t.file_size/PAGE_SIZE+1) : (load_file_t.file_size/PAGE_SIZE);
-		// if(load_file_t.file_size % PAGE_SIZE){
-		// 	printk("----------------------------------\n");
-		// }else{
-		// 	printk("++++++++++++++++++++++++++++++++++\n");
-		// }
-        //file_vaddr = mmap(NULL, load_file_t.file_size, PROT_READ, MAP_PRIVATE, load_file_t.fd, 0);
-        unsigned long addr_entry_num = (pages_num % 512) ? (pages_num / 512 + 1) : (pages_num / 512);
-        unsigned int log_addr_entry_num = 0;
-        while ( addr_entry_num > 1){
-		    addr_entry_num /= 2;
-		    log_addr_entry_num ++;
-	    }
-        unsigned long virt_address = __get_free_pages(GFP_KERNEL, log_addr_entry_num);
-        unsigned long *src_hpa_array = (unsigned long *)virt_address;
-        // for(int i=0;i<pages_num;i++){
-		// 	//printk("The value of guest virtual address %lx is %lx\n", (load_file_t.src_hva+i*PAGE_SIZE), *(unsigned long*)(load_file_t.src_hva+i*PAGE_SIZE));
-        //     *(src_hpa_array+i) = hva_to_pfn((load_file_t.src_hva+i*PAGE_SIZE), false, false, NULL, true, NULL) << PAGE_SHIFT;
-		// 	printk("The %dth physical page address is %lx\n", i, hva_to_pfn((load_file_t.src_hva+i*PAGE_SIZE), false, false, NULL, true, NULL));
-        // }
-		for(int i=0;i<pages_num;i++){
-			unsigned long va = __get_free_pages(GFP_KERNEL, 0);
-			if(copy_from_user((void *)va, (void *)(load_file_t.src_hva+i*PAGE_SIZE), PAGE_SIZE)){
-				printk("copy_from_user failed!\n");
-            	return 0;
-			}else{
-				//printk("The %dth file page is mapping to 0x%lx.\n", i , __pa(va));
-				// if(i==0 || i==pages_num-1){
-				// 	for(int j=0;j<512;j++){
-				// 	printk("%lx", *((unsigned long*)va+j));
-				// 	}
-				// }
-				*(src_hpa_array+i) = __pa(va);
-			}
-		}
-
-        file_paddr_array = __pa(virt_address);
-		unsigned long va_sbi_params = __get_free_pages(GFP_KERNEL, 0);
-		struct iie_cvm_sbi_params_load *sbi_load_params = (struct iie_cvm_sbi_params_load *)va_sbi_params;
-		sbi_load_params->des_gpa = load_file_t.des_gpa;
-		sbi_load_params->count = pages_num;
-		sbi_load_params->src_hpa_array = (unsigned long*)file_paddr_array;
-		sbi_load_params->vmid_ptr = __pa(&kvm->arch.vmid);
-		//printk("file physical address  array is placed at %lx\n", file_paddr_array);
-        ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_LOAD_FILE, __pa(va_sbi_params), 0, 0, 0, 0, 0);
-		r = ret.error;
-		//free_pages(unsigned long addr, unsigned int order);
-		//printk("----------------linux vm ioctl end to load kernel-------------------\n");
-	#endif
+		#ifdef PROG_LBL
+		r = kvm_vm_ioctl_load_file(kvm, argp);
+		#endif
+		break;
+	case KVM_SET_SWIOTLB:
+		#ifdef PROG_LBL
+		r = kvm_vm_ioctl_swiotlb(kvm, argp);
+		#endif
 		break;
 	default:
 		r = kvm_arch_vm_ioctl(filp, ioctl, arg);

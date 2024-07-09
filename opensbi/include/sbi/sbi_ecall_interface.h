@@ -133,6 +133,7 @@
 #define SBI_EXT_CVM_ATTEST					0xb
 #define SBI_EXT_CVM_ALLOC_ROOT_PT			0xc
 #define SBI_EXT_CVM_DESTROY					0xd
+#define SBI_EXT_CVM_INIT_SWIOTLB			0xe
 /* define for function test */
 #define SBI_EXT_CVM_TEST					0xffff
 

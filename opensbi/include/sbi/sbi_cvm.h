@@ -246,8 +246,10 @@ struct cvm_list_params {
 //need 128MB space for 64GB
 #define PAGE_NUM                (MAX_MEM_SPACE / PAGE_SIZE)
 
-#define SWIOTLB_ADDR 0x82c00000
-#define SWIOTLB_SIZE 0x200000
+struct iie_cvm_sbi_params_swiotlb{
+	unsigned long addr;
+	unsigned long size;
+};
 
 //vcpu exit reason
 #define SWIOTLB			14
@@ -267,6 +269,7 @@ page_own_table_t* init_page_own_table(struct cvm_list_params* own_table);
 paddr_t malloc_cvm_empty_page_only(paddr_t* vmid_addr);
 void mfree_cvm_page_only(paddr_t paddr, paddr_t* vmid_addrs);
 void mfree_cvm_page(struct sbi_cvm* cvm);
+int init_swiotlb_params(struct iie_cvm_sbi_params_swiotlb *swiotlb);
 
 // /** cvm functions */
 void init_cpus();

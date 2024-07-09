@@ -17,12 +17,12 @@ spinlock_t spin_lock_root_pt_list;
 
 struct list_head* free_mem_list_head;
 struct list_head* free_root_pt_list_head;
-//page_own_table_t *page_own_table = (page_own_table_t*)sbi_calloc(1, 4);
 
-
-//todo: array is too big !
 page_own_table_t *page_own_table;
 unsigned long *bitmap;
+
+unsigned long swiotlb_addr;
+unsigned long swiotlb_size;
 
 int sbi_cvm_print(unsigned long reg){
     sbi_printf("cvm_print %ld!\n", reg);
@@ -1273,7 +1273,7 @@ void mfree_cvm_page(struct sbi_cvm* cvm){
 void mfree_cvm_page_only(paddr_t paddr, paddr_t* vmid_addr){
     //sbi_printf("[IIE CVM DEBUG@%s] mfree cvm page 0x%lx\n", __func__, paddr);
     reset_page_own_table(paddr, vmid_addr);
-    if(paddr < SWIOTLB_ADDR && paddr >= SWIOTLB_ADDR + SWIOTLB_SIZE){
+    if(paddr < swiotlb_addr && paddr >= swiotlb_addr + swiotlb_size){
         spin_lock(&spin_lock_cm_list);
         put_free_page(free_mem_list_head, paddr);
         spin_unlock(&spin_lock_cm_list);
@@ -1379,9 +1379,8 @@ int convert_cvm_pages(struct cvm_list_params* cm_pool_list, struct cvm_list_para
 
 
 int load_file(struct iie_cvm_sbi_params_load *load_file){
-    sbi_printf("--------------------sbi load file begin!-------------------------\n");
+    //sbi_printf("--------------------sbi load file begin!-------------------------\n");
     struct cvm_node *cvm_node = get_cvm(load_file->vmid_ptr->vmid);
-    sbi_printf("function %s  id is 0x%lx\n", __func__, load_file->vmid_ptr->vmid);
     if(!cvm_node){
         sbi_printf("function %s get_cvm by id 0x%lx failed!\n", __func__, load_file->vmid_ptr->vmid);
     }
@@ -1405,11 +1404,21 @@ int load_file(struct iie_cvm_sbi_params_load *load_file){
             return 1;
         }
     }
-    sbi_printf("--------------------sbi load file end!-------------------------\n");
+    //sbi_printf("--------------------sbi load file end!-------------------------\n");
     return 0;
 }
 
 
+int init_swiotlb_params(struct iie_cvm_sbi_params_swiotlb* swiotlb){
+    if(swiotlb->addr> 0 && swiotlb->size > 0){
+        swiotlb_addr = swiotlb->addr;
+        swiotlb_size = swiotlb->size;
+        return 0;
+    }else{
+
+        return 1;
+    }
+}
 
 /*-------------------------------CVM trap handler----------------------------------------*/
 int cvm_trap_redirect_to_hs(struct sbi_trap_regs* host_regs)
@@ -1449,12 +1458,11 @@ int cvm_trap_gstage_page_fault(struct sbi_trap_regs* host_regs)
         cvm_vcpu_exit(host_regs);
         return ret;
     }
-    else if(addr >= SWIOTLB_ADDR && addr < SWIOTLB_ADDR + SWIOTLB_SIZE){
+    else if(addr >= swiotlb_addr && addr < swiotlb_addr + swiotlb_size){
         uint32_t vmid = get_cvm_id();
         uint32_t vcpuid = get_cvm_vcpu_id();
         struct cvm_vcpu_node *vcpu = get_cvm_vcpu_node(vmid, vcpuid);
         vcpu->vcpu.exit_reason = SWIOTLB;
-        //sbi_printf("-------------swiotlb-pf, addr is 0x%lx------\n", addr);
         cvm_vcpu_exit(host_regs);
         return ret;
     }

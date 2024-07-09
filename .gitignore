@@ -9,3 +9,5 @@ build-riscv64/
 *.img
 *.cpio
 .vscode/
+dump*
+.*

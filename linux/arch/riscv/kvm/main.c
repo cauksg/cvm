@@ -103,10 +103,8 @@ unsigned long kernel_page_translate(unsigned long addr){
 	return (pte_val(*pte) >> _PAGE_PFN_SHIFT);
 }
 
-static int __init riscv_kvm_init(void)
-{
-	#ifdef PROG_LBL
-	unsigned long host_page_num, bitmap_page_num, page_own_table_num;
+int cvm_mem_manege_init(){
+    unsigned long host_page_num, bitmap_page_num, page_own_table_num;
 	unsigned long bitmap_page_num_log=0;
 	unsigned long page_own_table_num_log=0;
 	unsigned long *bitmap_addr, *page_own_table_addr;
@@ -203,6 +201,14 @@ static int __init riscv_kvm_init(void)
 		ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_INIT_PAGE_LIST, __pa((unsigned long)cm_addr_l), 
 			__pa((unsigned long)root_pt_l), __pa((unsigned long)bitmap), __pa((unsigned long)page_own_table), 0, 0);
 	}
+    
+	return ret.error;
+}
+
+static int __init riscv_kvm_init(void)
+{
+	#ifdef PROG_LBL
+	cvm_mem_manege_init();
 	#endif
 
 	int rc;
