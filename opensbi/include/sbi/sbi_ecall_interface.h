@@ -34,7 +34,7 @@
 #define SBI_EXT_CPPC				0x43505043
 #define SBI_EXT_DBTR				0x44425452
 #define SBI_EXT_SSE				0x535345
-#define SBI_EXT_CVM 				0x20002217
+#define SBI_EXT_CVM 				0x20000217
 
 /* SBI function IDs for BASE extension*/
 #define SBI_EXT_BASE_GET_SPEC_VERSION		0x0

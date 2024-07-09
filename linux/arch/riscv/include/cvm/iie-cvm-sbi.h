@@ -5,7 +5,7 @@
 // #include <sbi/sbi_types.h>
 #include <linux/kvm_host.h>
 
-#define SBI_EXT_CVM				0x20002217
+#define SBI_EXT_CVM				0x20000217
 #define SBI_EXT_CVM_CREATE 					0x0
 #define SBI_EXT_CVM_CREATE_MEMORY_REGION	0x1			
 #define SBI_EXT_CVM_MEASURED_PAGES			0x2	

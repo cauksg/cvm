@@ -14,6 +14,8 @@ export CROSS_COMPILE=riscv64-linux-gnu-
 #                 libncurses5-dev libncursesw5-dev git
 ##git clone https://github.com/riscv/riscv-gnu-toolchain
 #cd riscv-gnu-toolchain
+#git submodule init
+#git submodule update
 #./configure --prefix=$RISCV --enable-multilib
 #make -j $(nproc)
 #make -j $(nproc) linux

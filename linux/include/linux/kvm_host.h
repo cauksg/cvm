@@ -804,6 +804,8 @@ struct kvm {
 	bool vm_bugged;
 	bool vm_dead;
 
+	bool cmode;
+
 #ifdef CONFIG_HAVE_KVM_PM_NOTIFIER
 	struct notifier_block pm_notifier;
 #endif
