@@ -14,6 +14,7 @@ spinlock_t spin_lock_cm_list;
 spinlock_t spin_lock_bitmap;
 spinlock_t spin_lock_page_own_table;
 spinlock_t spin_lock_root_pt_list;
+spinlock_t spin_lock_get_cvm_vcpu_node;
 
 struct list_head* free_mem_list_head;
 struct list_head* free_root_pt_list_head;
@@ -71,13 +72,15 @@ static spinlock_t cvm_metadata_lock = SPIN_LOCK_INITIALIZER;
 /* TODO: memory allocated should be in confidential memory region */
 static struct cvm_node* alloc_cvm_node(paddr_t* vmid_addr)
 {
-	return (struct cvm_node *)malloc_cvm_empty_page_only(vmid_addr);
+    return (struct cvm_node *)sbi_malloc(sizeof (struct cvm_node));
+	// return (struct cvm_node *)malloc_cvm_empty_page_only(vmid_addr);
 }
 
 /* TODO: memory allocated should be in confidential memory region */
 static struct cvm_vcpu_node* alloc_cvm_vcpu_node(paddr_t* vmid_addr)
 {
-	return (struct cvm_vcpu_node *)malloc_cvm_empty_page_only(vmid_addr);
+    return (struct cvm_vcpu_node *)sbi_malloc(sizeof (struct cvm_vcpu_node));
+	// return (struct cvm_vcpu_node *)malloc_cvm_empty_page_only(vmid_addr);
 }
 
 static uint32_t get_keyID(struct kvm_vmid *vmid)
@@ -129,9 +132,9 @@ static int cvm_delete_node(struct cvm_node *node)
         if(node_exist)
         {
             /* 2. reclaim resources, vcpu and memory. Clean memory and registers. */
-            mfree_cvm_page_only(node, &node->cvm.vmid->vmid);
-            // sbi_free(&node->cvm);
-            // sbi_free(node);
+            // mfree_cvm_page_only(node, &node->cvm.vmid->vmid);
+            sbi_free(&node->cvm);
+            sbi_free(node);
         }
         else 
         {
@@ -184,9 +187,9 @@ static int cvm_delete_vcpu_node(struct cvm_vcpu_node *list_head, struct cvm_vcpu
     if(node_exist)
     {
         /* 2. reclaim resources, vcpu context. Clean memory and registers. */
-        mfree_cvm_page_only(node, &node->vcpu.cvm->vmid->vmid);
-        // sbi_free(&node->vcpu);
-        // sbi_free(node);
+        // mfree_cvm_page_only(node, &node->vcpu.cvm->vmid->vmid);
+        sbi_free(&node->vcpu);
+        sbi_free(node);
     }
     else 
     {
@@ -265,8 +268,7 @@ struct cvm_vcpu_node *get_cvm_vcpu_node(unsigned long vmid, int vcpu_id)
 		return NULL;
 	}
 
-	// acquire_big_metadata_lock(__func__);
-
+	// spin_lock(&spin_lock_get_cvm_vcpu_node);
 	for(struct cvm_vcpu_node *cur = vcpu_list_head; cur->next; cur = cur->next)
 	{
 		struct cvm_vcpu_node *node = cur->next;
@@ -275,7 +277,7 @@ struct cvm_vcpu_node *get_cvm_vcpu_node(unsigned long vmid, int vcpu_id)
 			return node;
 	}
 
-    // release_big_metadata_lock(__func__);
+    // spin_unlock(&spin_lock_get_cvm_vcpu_node);
 	return NULL;
 }
 
@@ -578,14 +580,7 @@ int cvm_vcpu_exit(struct sbi_trap_regs* host_regs)
 int sbi_cvm_create(struct iie_cvm_sbi_params *cvm_sbi_params)
 {
 	sbi_printf("[IIE CVM Monitor@%s] vmid = %ld\n", __func__,cvm_sbi_params->vmid_ptr->vmid);
-	sbi_printf("[IIE CVM Monitor@%s] vcpu_id = %d\n", __func__,*cvm_sbi_params->vcpu_id_ptr);
-	//sbi_printf("[IIE CVM Monitor@%s] pgd_ptr = %lx\n", __func__,cvm_sbi_params->pgd_ptr);
-	//sbi_printf("[IIE CVM Monitor@%s] pgd_phys_ptr = %lx\n", __func__,cvm_sbi_params->pgd_phys_ptr);
-	//sbi_printf("[IIE CVM Monitor@%s] pgd = %lx\n", __func__,*cvm_sbi_params->pgd_ptr);
-	//sbi_printf("[IIE CVM Monitor@%s] pgd_phys = %lx\n", __func__,*cvm_sbi_params->pgd_phys_ptr);
-
     
-
 	/* alloc a memory block for cvm struct */
 	struct cvm_node* cvm_node = get_cvm(cvm_sbi_params->vmid_ptr->vmid);
     if(!cvm_node)
@@ -605,7 +600,6 @@ int sbi_cvm_create(struct iie_cvm_sbi_params *cvm_sbi_params)
 
 
 	/* Initialize cvm structure*/
-	// sbi_printf("[IIE CVM Monitor@%s] CVM initializing. \r\n", __func__);
 	cvm_node->cvm.vmid = cvm_sbi_params->vmid_ptr;
 	cvm_node->cvm.KeyID = get_keyID(cvm_node->cvm.vmid);
 	cvm_node->cvm.state = INITIALIZING;
@@ -615,17 +609,8 @@ int sbi_cvm_create(struct iie_cvm_sbi_params *cvm_sbi_params)
     cvm_node->cvm.KeyID = gen_key_id();
     sbi_memset(cvm_node->cvm.hash, 0, sizeof(cvm_node->cvm.hash));
     
-    cvm_node->cvm.pgd_phys = *cvm_sbi_params->pgd_phys_ptr;
-	// sbi_printf("[IIE CVM Monitor@%s] pgd_phys_ptr = %lx, pgd_phys = %lx. \r\n", 
-    //     __func__, cvm_sbi_params->pgd_phys_ptr, cvm_node->cvm.pgd_phys);
-    // hash_cvm(&cvm_node->cvm, (void *)cvm_node->cvm.hash, 0);
-    // sbi_printf("[IIE CVM Monitor@%s] hash value = %s. \r\n", __func__, cvm_node->cvm.hash);
-
 	cvm_node->next = NULL;
 
-#ifdef PROG_LBL
-    init_cvm_vcpu_root_pt(&cvm_node->cvm);
-#endif
 
 	/* maintain the cvm List */
 	// sbi_printf("[IIE CVM Monitor@%s] CVM List. \r\n", __func__);
@@ -813,9 +798,6 @@ int sbi_cvm_hash_image(struct iie_cvm_sbi_params * cvm_sbi_params)
 {
 	/* TODO */
 	struct cvm_node* cvm_node = get_cvm(cvm_sbi_params->vmid_ptr->vmid);
-    cvm_node->cvm.pgd_phys = *cvm_sbi_params->pgd_phys_ptr;
-	// sbi_printf("[IIE CVM Monitor@%s] pgd_phys_ptr = %lx, pgd_phys = %lx. \r\n", 
-    //     __func__, cvm_sbi_params->pgd_phys_ptr, cvm_node->cvm.pgd_phys);
     hash_cvm(&cvm_node->cvm, (void *)cvm_node->cvm.hash, 0);
     sbi_printf("[IIE CVM Monitor@%s] hash value = %s. \r\n", __func__, cvm_node->cvm.hash);
 

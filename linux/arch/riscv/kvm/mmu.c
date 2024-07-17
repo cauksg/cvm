@@ -123,7 +123,6 @@ static bool gstage_get_leaf_entry(struct kvm *kvm, gpa_t addr,
 	return false;
 }
 
-#ifdef PROG_LBL
 bool iie_gstage_get_leaf_entry(struct kvm *kvm, gpa_t addr,
 				  pte_t **ptepp, u32 *ptep_level)
 {
@@ -152,7 +151,7 @@ bool iie_gstage_get_leaf_entry(struct kvm *kvm, gpa_t addr,
 
 	return false;
 }
-#endif
+
 static void gstage_remote_tlb_flush(struct kvm *kvm, u32 level, gpa_t addr)
 {
 	unsigned long order = PAGE_SHIFT;

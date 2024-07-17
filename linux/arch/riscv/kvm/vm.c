@@ -52,11 +52,15 @@ int kvm_arch_init_vm(struct kvm *kvm, unsigned long type)
 
 void kvm_arch_destroy_vm(struct kvm *kvm)
 {
-	struct iie_cvm_sbi_params *cvm_sbi_params = kmalloc(sizeof(struct iie_cvm_sbi_params), GFP_KERNEL);
-	cvm_sbi_params->vmid_ptr = __pa(&kvm->arch.vmid);
-	uintptr_t pa_cvm = __pa(cvm_sbi_params);
-	sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_DESTROY, pa_cvm, 0, 0, 0, 0, 0);
-
+	if(kvm->cmode)
+	{
+		// #ifdef PROG_WSW
+		struct iie_cvm_sbi_params *cvm_sbi_params = kmalloc(sizeof(struct iie_cvm_sbi_params), GFP_KERNEL);
+		cvm_sbi_params->vmid_ptr = __pa(&kvm->arch.vmid);
+		uintptr_t pa_cvm = __pa(cvm_sbi_params);
+		sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_DESTROY, pa_cvm, 0, 0, 0, 0, 0);
+		// #endif
+	}
 	kvm_destroy_vcpus(kvm);
 
 	kvm_riscv_aia_destroy_vm(kvm);

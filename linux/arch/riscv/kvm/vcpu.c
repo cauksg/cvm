@@ -149,36 +149,18 @@ int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 	/* Reset VCPU */
 	kvm_riscv_reset_vcpu(vcpu);
 
-	#ifdef PROG_WSW
+	if(vcpu->kvm->cmode)
+	{
+		// #ifdef PROG_WSW
 
-	struct iie_cvm_sbi_params *cvm_sbi_params = kmalloc(sizeof(struct iie_cvm_sbi_params), GFP_KERNEL);
-	cvm_sbi_params->vmid_ptr = __pa(&vcpu->kvm->arch.vmid);
-	cvm_sbi_params->vcpu_id_ptr = __pa(&vcpu->vcpu_id);
-	// cvm_sbi_params->pgd = __pa(vcpu->kvm->arch.pgd);
-	cvm_sbi_params->pgd_phys_ptr = __pa(&vcpu->kvm->arch.pgd_phys);
-	/* __pa(vcpu->kvm->arch.pgd) == vcpu->kvm->arch.pgd_phys */
-	// printk("pgd_phys_ptr = %lx, pgd_phys = %lx\n", 
-	// 	cvm_sbi_params->pgd_phys_ptr, vcpu->kvm->arch.pgd_phys);
+		struct iie_cvm_sbi_params *cvm_sbi_params = kmalloc(sizeof(struct iie_cvm_sbi_params), GFP_KERNEL);
+		cvm_sbi_params->vmid_ptr = __pa(&vcpu->kvm->arch.vmid);
+		cvm_sbi_params->vcpu_id_ptr = __pa(&vcpu->vcpu_id);
+		uintptr_t pa_cvm = __pa(cvm_sbi_params);
 
-
-	uintptr_t pa_cvm = __pa(cvm_sbi_params);
-	// printk("pa_cvm = %ld\n", pa_cvm);
-	sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_CREATE,
-		  pa_cvm, 0, 0, 0, 0, 0);
-
-
-	#ifdef PROG_LBL
-	unsigned int ret, addr, size;
-	if(vcpu->vcpu_id == 0){
-		sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_ALLOC_ROOT_PT, pa_cvm, 0, 0, 0, 0, 0);
+		struct sbiret retval = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_CREATE_VCPU, pa_cvm, 0, 0, 0, 0, 0);
+		// #endif
 	}
-	#endif
-	
-	struct sbiret retval = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_CREATE_VCPU,
-		  pa_cvm, 0, 0, 0, 0, 0);
-	// retval = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_RUN_VCPU,
-	// 	  pa_cvm, 0, 0, 0, 0, 0);
-	#endif
 
 	
 
@@ -659,10 +641,8 @@ static void noinstr kvm_riscv_vcpu_enter_exit(struct kvm_vcpu *vcpu)
 	guest_state_exit_irqoff();
 }
 
-#ifdef PROG_LBL
 unsigned long swiotlb_addr;
 unsigned long swiotlb_size;
-#endif
 
 int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 {
@@ -673,17 +653,6 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 
 	cvm_sbi_params->vmid_ptr = __pa(&vcpu->kvm->arch.vmid);
 	cvm_sbi_params->vcpu_id_ptr = __pa(&vcpu->vcpu_id);
-	cvm_sbi_params->pgd = __pa(vcpu->kvm->arch.pgd);
-	cvm_sbi_params->pgd_phys = __pa(&vcpu->kvm->arch.pgd_phys);
-	
-
-	// if (!vcpu->arch.ran_atleast_once)
-	// {		
-	// 	struct sbiret retval = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_RUN_VCPU,
-	// 	  pa_cvm, __pa(&vcpu->arch.guest_context), __pa(&vcpu->arch.guest_csr), 0, 0, 0);
-	// 	// retval = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_FINALIZE, 0, 0, 0, 0, 0, 0);
-	// 	// printk("Kernel: RUN retval.value = %d\tretval.error = %d\n", retval.value, retval.error);
-	// }
 
 	/* Mark this VCPU ran at least once */
 	vcpu->arch.ran_atleast_once = true;
@@ -787,26 +756,34 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 
 		guest_timing_enter_irqoff();
 
-		#ifdef PROG_LBL
-		cvm_sbi_params->gpa = (trap->htval << 2) | (trap->stval & 0x3);
-		if(cvm_sbi_params->gpa >= swiotlb_addr && cvm_sbi_params->gpa < swiotlb_addr + swiotlb_size){
-			pte_t *ptep;
-			u32 ptep_level;
-			bool found_leaf;
-			found_leaf = iie_gstage_get_leaf_entry(vcpu->kvm, cvm_sbi_params->gpa, &ptep, &ptep_level);
-			if(found_leaf){
-				cvm_sbi_params->hpa = (unsigned long)(pte_val(*ptep) >> 10 << PAGE_SHIFT);
-				//printk("cvm_sbi_params hpa is 0x%lx\n", cvm_sbi_params->hpa);
+		if(vcpu->kvm->cmode)
+		{
+			// #ifdef PROG_LBL
+			cvm_sbi_params->gpa = (trap->htval << 2) | (trap->stval & 0x3);
+			if(cvm_sbi_params->gpa >= swiotlb_addr && cvm_sbi_params->gpa < swiotlb_addr + swiotlb_size){
+				pte_t *ptep;
+				u32 ptep_level;
+				bool found_leaf;
+				found_leaf = iie_gstage_get_leaf_entry(vcpu->kvm, cvm_sbi_params->gpa, &ptep, &ptep_level);
+				if(found_leaf){
+					cvm_sbi_params->hpa = (unsigned long)(pte_val(*ptep) >> 10 << PAGE_SHIFT);
+					//printk("cvm_sbi_params hpa is 0x%lx\n", cvm_sbi_params->hpa);
+				}
 			}
-		}
-		#endif
+			// #endif
 
-		#ifdef PROG_BYK
-		sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_RUN_VCPU, __pa(cvm_sbi_params),
-			__pa(&vcpu->arch.guest_context), __pa(&vcpu->arch.guest_csr), __pa(trap), 0, 0);
-		#else
-		kvm_riscv_vcpu_enter_exit(vcpu);
-		#endif
+			// #ifdef PROG_BYK
+			sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_RUN_VCPU, __pa(cvm_sbi_params),
+				__pa(&vcpu->arch.guest_context), __pa(&vcpu->arch.guest_csr), __pa(trap), 0, 0);
+			// #endif
+		}
+		
+		if(!vcpu->kvm->cmode)
+		{
+			// #ifndef PROG_BYK
+			kvm_riscv_vcpu_enter_exit(vcpu);
+			// #endif
+		}
 
 		vcpu->mode = OUTSIDE_GUEST_MODE;
 		vcpu->stat.exits++;
@@ -816,13 +793,16 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		 * get an interrupt between __kvm_riscv_switch_to() and
 		 * local_irq_enable() which can potentially change CSRs.
 		 */
-		#ifndef PROG_BYK
-		trap->sepc = vcpu->arch.guest_context.sepc;
-		trap->scause = csr_read(CSR_SCAUSE);
-		trap->stval = csr_read(CSR_STVAL);
-		trap->htval = csr_read(CSR_HTVAL);
-		trap->htinst = csr_read(CSR_HTINST);
-		#endif
+		if(!vcpu->kvm->cmode)
+		{
+			// #ifndef PROG_BYK
+			trap->sepc = vcpu->arch.guest_context.sepc;
+			trap->scause = csr_read(CSR_SCAUSE);
+			trap->stval = csr_read(CSR_STVAL);
+			trap->htval = csr_read(CSR_HTVAL);
+			trap->htinst = csr_read(CSR_HTINST);
+			// #endif
+		}
 
 		/* Syncup interrupts state with HW */
 		kvm_riscv_vcpu_sync_interrupts(vcpu);

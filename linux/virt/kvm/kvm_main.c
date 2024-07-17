@@ -1165,7 +1165,6 @@ static struct kvm *kvm_create_vm(unsigned long type, const char *fdname)
 	mmgrab(current->mm);
 	kvm->mm = current->mm;
 	kvm->cmode = type == SBI_EXT_CVM ? 1 : 0;
-	if(kvm->cmode) printk("------ %s: cmode activate. --------\n", __func__);
 	kvm_eventfd_init(kvm);
 	mutex_init(&kvm->lock);
 	mutex_init(&kvm->irq_lock);
@@ -1256,6 +1255,30 @@ static struct kvm *kvm_create_vm(unsigned long type, const char *fdname)
 
 	preempt_notifier_inc();
 	kvm_init_pm_notifier(kvm);
+
+	if(kvm->cmode) 
+	{
+		printk("------ %s: cmode activate. --------\n", __func__);
+		static bool cvm_mem_inited = false;
+		if(!cvm_mem_inited)
+		{
+			// #ifdef PROG_LBL
+			cvm_mem_manege_init();
+			cvm_mem_inited = true;
+			// #endif
+		}
+		struct iie_cvm_sbi_params *cvm_sbi_params = kmalloc(sizeof(struct iie_cvm_sbi_params), GFP_KERNEL);
+		cvm_sbi_params->vmid_ptr = __pa(&kvm->arch.vmid);
+		uintptr_t pa_cvm = __pa(cvm_sbi_params);
+
+		// #ifdef PROG_WSW
+		sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_CREATE, pa_cvm, 0, 0, 0, 0, 0);
+		// #endif
+
+		// #ifdef PROG_LBL
+		sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_ALLOC_ROOT_PT, pa_cvm, 0, 0, 0, 0, 0);
+		// #endif
+	}
 
 	return kvm;
 
@@ -4034,25 +4057,22 @@ static int kvm_vm_ioctl_create_vcpu(struct kvm *kvm, u32 id)
 	kvm_arch_vcpu_postcreate(vcpu);
 	kvm_create_vcpu_debugfs(vcpu);
 
-	
-	#ifdef PROG_WSW
+	if(vcpu->kvm->cmode)
+	{
+		// #ifdef PROG_WSW
 
-	struct iie_cvm_sbi_params *cvm_sbi_params = kmalloc(sizeof(struct iie_cvm_sbi_params), GFP_KERNEL);
-	cvm_sbi_params->vmid_ptr = __pa(&vcpu->kvm->arch.vmid);
-	cvm_sbi_params->vcpu_id_ptr = __pa(&vcpu->vcpu_id);
-	cvm_sbi_params->pgd = __pa(vcpu->kvm->arch.pgd);
-	cvm_sbi_params->pgd_phys = __pa(&vcpu->kvm->arch.pgd_phys);
-	cvm_sbi_params->pgd_phys_ptr = __pa(&vcpu->kvm->arch.pgd_phys);
-	uintptr_t pa_cvm = __pa(cvm_sbi_params);
+		struct iie_cvm_sbi_params *cvm_sbi_params = kmalloc(sizeof(struct iie_cvm_sbi_params), GFP_KERNEL);
+		cvm_sbi_params->vmid_ptr = __pa(&vcpu->kvm->arch.vmid);
+		cvm_sbi_params->vcpu_id_ptr = __pa(&vcpu->vcpu_id);
+		cvm_sbi_params->pgd = __pa(vcpu->kvm->arch.pgd);
+		cvm_sbi_params->pgd_phys = __pa(&vcpu->kvm->arch.pgd_phys);
+		uintptr_t pa_cvm = __pa(cvm_sbi_params);
 
-	// printk("pgd_phys_ptr = %lx, pgd_phys = %lx\n", 	cvm_sbi_params->pgd_phys_ptr, vcpu->kvm->arch.pgd_phys);
-	// sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_HASH_IMAGE, pa_cvm, 0, 0, 0, 0, 0);
-	// sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_ATTEST, pa_cvm, 0, 0, 0, 0, 0); 
-	if(vcpu->vcpu_id == 1) 
-		sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_TEST, pa_cvm, 0, 0, 0, 0, 0);
+		if(vcpu->vcpu_id == 1) 
+			sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_TEST, pa_cvm, 0, 0, 0, 0, 0);
 
-	#endif
-
+		// #endif
+	}
 
 	return r;
 
@@ -5039,14 +5059,10 @@ static long kvm_vm_ioctl(struct file *filp,
 		r = kvm_vm_ioctl_get_stats_fd(kvm);
 		break;
 	case KVM_LOAD_FILE:
-		#ifdef PROG_LBL
 		r = kvm_vm_ioctl_load_file(kvm, argp);
-		#endif
 		break;
 	case KVM_SET_SWIOTLB:
-		#ifdef PROG_LBL
 		r = kvm_vm_ioctl_swiotlb(kvm, argp);
-		#endif
 		break;
 	default:
 		r = kvm_arch_vm_ioctl(filp, ioctl, arg);
@@ -6338,4 +6354,142 @@ int kvm_vm_create_worker_thread(struct kvm *kvm, kvm_vm_thread_fn_t thread_fn,
 		*thread_ptr = thread;
 
 	return init_context.err;
+}
+
+
+unsigned long iie_kernel_page_translate(unsigned long addr){
+	pgd_t *pgd;
+	pud_t *pud;
+	p4d_t *p4d;
+	pmd_t *pmd;
+	pte_t *pte;
+
+	pgd = pgd_offset_k(addr);
+	if (!pgd_present(*pgd))
+		return false;
+	if (pgd_leaf(*pgd))
+		return true;
+
+	p4d = p4d_offset(pgd, addr);
+	if (!p4d_present(*p4d))
+		return false;
+	if (p4d_leaf(*p4d))
+		return true;
+
+	pud = pud_offset(p4d, addr);
+	if (!pud_present(*pud))
+		return false;
+	if (pud_leaf(*pud))
+		return true;
+
+	pmd = pmd_offset(pud, addr);
+	if (!pmd_present(*pmd))
+		return false;
+	if (pmd_leaf(*pmd))
+		return true;
+
+	pte = pte_offset_kernel(pmd, addr);
+	return (pte_val(*pte) >> _PAGE_PFN_SHIFT);
+}
+
+int cvm_mem_manege_init(){
+    unsigned long host_page_num, bitmap_page_num, page_own_table_num;
+	unsigned long bitmap_page_num_log=0;
+	unsigned long page_own_table_num_log=0;
+	unsigned long *bitmap_addr, *page_own_table_addr;
+	struct cvm_list_params *bitmap = (struct cvm_list_params *)__get_free_pages(GFP_KERNEL, 0);
+	struct cvm_list_params *page_own_table = (struct cvm_list_params *)__get_free_pages(GFP_KERNEL, 0);
+	int i;
+	struct sbiret ret;
+
+	host_page_num = K(get_num_physpages()) / 4;
+	//each host memory page corresponds to 1 bit bitmap.
+	bitmap_page_num = (host_page_num / 8 % (1UL<<PAGE_SHIFT)) ? 
+							(host_page_num / 8 / (1UL<<PAGE_SHIFT) + 1) :
+							(host_page_num / 8 / (1UL<<PAGE_SHIFT));
+	//each host memory page corresponds to 8 byte page own table.
+	page_own_table_num = (host_page_num * 8 % (1UL<<PAGE_SHIFT)) ?
+							(host_page_num * 8 / (1UL<<PAGE_SHIFT) + 1) :
+							(host_page_num * 8 / (1UL<<PAGE_SHIFT));
+	bitmap->page_num = bitmap_page_num;
+	page_own_table->page_num = page_own_table_num;
+	while ( bitmap_page_num > 1){
+		    bitmap_page_num /= 2;
+		    bitmap_page_num_log++;
+	}
+	while ( page_own_table_num > 1){
+		    page_own_table_num /= 2;
+		    page_own_table_num_log++;
+	}
+	bitmap_addr = (unsigned long *)__get_free_pages(GFP_KERNEL, bitmap_page_num_log);
+	page_own_table_addr = (unsigned long *)__get_free_pages(GFP_KERNEL, page_own_table_num_log);
+	if(!bitmap_addr){
+		printk("----------------------------------\n");
+		printk("bitmap alloc failed!\n");
+		printk("----------------------------------\n");
+	}
+	if(!page_own_table_addr){
+		printk("----------------------------------\n");
+		printk("page_own_table alloc failed!\n");
+		printk("----------------------------------\n");
+	}
+	bitmap->addr = __pa((unsigned long)bitmap_addr);
+	//bitmap element is unsigned long type.
+	bitmap->ele_num = host_page_num / 64;
+	page_own_table->addr = __pa((unsigned long)page_own_table_addr);
+	//bitmap element is unsigned long type.
+	page_own_table->ele_num = host_page_num;
+	
+
+	//apply for free memory and translation their hva to hpa.
+	//allocate 2^14 pages(64MB) for confidential memory.
+	//each page addr is 8B, so we need 2^14 * 8 / 4K = 2^5 pages to record .
+	unsigned long *cm_pool = vmalloc(PAGE_SIZE << INITIAL_PAGE_NUM);
+
+	unsigned long cm_list_page_num = (1UL << INITIAL_PAGE_NUM) * sizeof(unsigned long) / (1UL << PAGE_SHIFT);
+	unsigned long cm_list_page_num_log = 0;
+	while ( cm_list_page_num > 1){
+		    cm_list_page_num /= 2;
+		    cm_list_page_num_log++;
+	}
+	//printk("--------cm_list_page_num_log is %lx\n---------", cm_list_page_num_log);
+	unsigned long *cm_addr_list = (unsigned long *)__get_free_pages(GFP_KERNEL, cm_list_page_num_log);
+	
+	unsigned long root_pt_va;
+	//we already known the max number of cvm is 32
+	unsigned long *root_pt_list = (unsigned long *)__get_free_pages(GFP_KERNEL, 0);
+	for(i=0; i<(1<<MAX_CVM_NUM); i++){
+		root_pt_va = __get_free_pages(GFP_KERNEL, 2);
+		if(!root_pt_va){
+			printk("----------------------------------\n");
+			printk("root pt mmap failed!\n");
+			printk("----------------------------------\n");
+		}else{
+			*(root_pt_list+i) = __pa(root_pt_va);
+		}
+	}
+	if (!cm_pool){
+		printk("----------------------------------\n");
+		printk("memory mmap failed!\n");
+		printk("----------------------------------\n");
+	}else{
+		printk("----------------------------------\n");
+		printk("memory mmap successed!\n");
+		printk("virtual address begin at %lx\n", (unsigned long)cm_pool);
+		printk("----------------------------------\n");
+		for(i=0;i<(1<<INITIAL_PAGE_NUM);i++){
+			*(cm_addr_list+i) = iie_kernel_page_translate((unsigned long)cm_pool + i*PAGE_SIZE) << PAGE_SHIFT;
+			//printk("virtual address %lx is translated to pfn %lx\n", (unsigned long)hva + i*PAGE_SIZE, *(list_va+i));
+		}
+		struct cvm_list_params *cm_addr_l = (struct cvm_list_params *)__get_free_pages(GFP_KERNEL, 0);
+		cm_addr_l->addr = __pa((unsigned long)cm_addr_list);
+		cm_addr_l->ele_num = (1UL<<INITIAL_PAGE_NUM);
+		struct cvm_list_params *root_pt_l = (struct cvm_list_params *)__get_free_pages(GFP_KERNEL, 0);
+		root_pt_l->addr = __pa((unsigned long)root_pt_list);
+		root_pt_l->ele_num = (1UL<<MAX_CVM_NUM);
+		ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_INIT_PAGE_LIST, __pa((unsigned long)cm_addr_l), 
+			__pa((unsigned long)root_pt_l), __pa((unsigned long)bitmap), __pa((unsigned long)page_own_table), 0, 0);
+	}
+    
+	return ret.error;
 }
