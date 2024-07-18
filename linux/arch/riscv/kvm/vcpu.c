@@ -641,8 +641,10 @@ static void noinstr kvm_riscv_vcpu_enter_exit(struct kvm_vcpu *vcpu)
 	guest_state_exit_irqoff();
 }
 
-unsigned long swiotlb_addr;
-unsigned long swiotlb_size;
+
+struct swiotlb_node *sw_list_head;
+static DEFINE_SPINLOCK(sw_list);
+
 
 int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 {
@@ -759,8 +761,17 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		if(vcpu->kvm->cmode)
 		{
 			// #ifdef PROG_LBL
+			struct swiotlb_node *node;
+			spin_lock(&sw_list);
+			for(struct swiotlb_node *cur = sw_list_head; cur->next; cur = cur->next){
+                node = cur->next;
+                if(node->vmid == &vcpu->kvm->arch.vmid.vmid){
+                break;
+            	}
+            }
+			spin_unlock(&sw_list);
 			cvm_sbi_params->gpa = (trap->htval << 2) | (trap->stval & 0x3);
-			if(cvm_sbi_params->gpa >= swiotlb_addr && cvm_sbi_params->gpa < swiotlb_addr + swiotlb_size){
+			if(cvm_sbi_params->gpa >= node->sw.addr && cvm_sbi_params->gpa < node->sw.addr + node->sw.size){
 				pte_t *ptep;
 				u32 ptep_level;
 				bool found_leaf;
@@ -841,16 +852,42 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 	return ret;
 }
 
-
 int kvm_vm_ioctl_swiotlb(struct kvm *kvm, void *argp){
-	struct swiotlb *sw = kmalloc(sizeof(struct swiotlb), GFP_KERNEL);
-	if (copy_from_user(sw, argp, sizeof(struct swiotlb))){
+	if(!sw_list_head){
+		sw_list_head = kmalloc(sizeof(struct swiotlb_node), GFP_KERNEL);
+		sw_list_head->next = NULL;
+	}
+	struct swiotlb_node *sw_node = kmalloc(sizeof(struct swiotlb_node), GFP_KERNEL);
+	if (copy_from_user(&sw_node->sw, argp, sizeof(struct swiotlb))){
 		printk("kvm_vm_ioctl_swiotlb copy iotcl parameters failed!\n");
         return -1;
     }
-	swiotlb_addr = (unsigned long)sw->addr;
-	swiotlb_size = (unsigned long)sw->size;
-	//printk("----------------------swiotlb_addr is 0x%lx, swiotlb_size is 0x%lx------\n", swiotlb_addr, swiotlb_size);
-	sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_INIT_SWIOTLB, __pa(sw), 0, 0, 0, 0, 0);
+	sw_node->vmid = &kvm->arch.vmid.vmid;
+	spin_lock(&sw_list);
+	sw_node->next = sw_list_head->next;
+	sw_list_head->next = sw_node;
+	spin_unlock(&sw_list);
+	sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_INIT_SWIOTLB, __pa(&sw_node->sw), __pa(&kvm->arch.vmid), 0, 0, 0, 0);
 	return 0;
+}
+
+int kvm_riscv_destroy_sw_node(struct kvm *kvm){
+	if(!sw_list_head){
+		return 0;
+	}
+	struct swiotlb_node *node, *cur;
+	spin_lock(&sw_list);
+	for(cur = sw_list_head; cur->next; cur = cur->next){
+		node = cur->next;
+		// sbi_printf("[IIE CVM Monitor@%s] node vmid id = %d\tvmid = %d\n", __func__, node->cvm.vmid->vmid, vmid);
+		if(node->vmid == &kvm->arch.vmid.vmid){
+			cur->next = node->next;
+			spin_unlock(&sw_list);
+			//printk("HOST OS DESTROY CVM SW NODE!\n");
+			kfree(node);
+			return 0;
+		}
+	}
+	spin_unlock(&sw_list);
+	return 1;
 }

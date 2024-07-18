@@ -13,7 +13,6 @@
 #include <linux/kvm_host.h>
 #include <cvm/iie-cvm-sbi.h>
 
-
 const struct _kvm_stats_desc kvm_vm_stats_desc[] = {
 	KVM_GENERIC_VM_STATS()
 };
@@ -60,6 +59,10 @@ void kvm_arch_destroy_vm(struct kvm *kvm)
 		uintptr_t pa_cvm = __pa(cvm_sbi_params);
 		sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_DESTROY, pa_cvm, 0, 0, 0, 0, 0);
 		// #endif
+		
+		//#ifdef PROG_LBL
+		kvm_riscv_destroy_sw_node(kvm);
+		//#endif
 	}
 	kvm_destroy_vcpus(kvm);
 

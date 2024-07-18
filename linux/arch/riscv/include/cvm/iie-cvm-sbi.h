@@ -4,6 +4,7 @@
 
 // #include <sbi/sbi_types.h>
 #include <linux/kvm_host.h>
+#include <../uapi/linux/kvm.h>
 
 #define SBI_EXT_CVM				0x20000217
 #define SBI_EXT_CVM_CREATE 					0x0
@@ -68,9 +69,10 @@ struct iie_cvm_sbi_params_load {
 	unsigned long count;
 };
 
-struct iie_cvm_sbi_params_swiotlb{
-	unsigned long addr;
-	unsigned long size;
+struct swiotlb_node {
+	struct swiotlb sw;
+	unsigned long *vmid;
+	struct swiotlb_node *next;
 };
 
 
@@ -80,6 +82,7 @@ struct iie_cvm_sbi_params_swiotlb{
 #ifndef K
 #define K(x) ((x) << (PAGE_SHIFT-10))
 #endif
+
 
 int create_sbi_param(struct kvm *kvm, struct iie_cvm_sbi_params * cvm_sbi_params);
 int cvm_mem_manege_init(void);

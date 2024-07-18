@@ -48,7 +48,8 @@ struct sbi_cvm {
 	struct cvm_vcpu_node *cvm_vcpu_list_head;
 	uint32_t cmode;
     unsigned long root_pt;
-
+	unsigned long swiotlb_addr;
+	unsigned long swiotlb_size;
 	//shared memory with host
 	unsigned long untrusted_ptr;
 	unsigned long untrusted_ptr_paddr;
@@ -187,11 +188,20 @@ typedef struct cvm_lifecycle{
 
 
 typedef struct page_own_table{
-    // uint64_t id     : 63 ;
-    // uint64_t share  : 1  ;
-    paddr_t* id_addr;
+    paddr_t* vmid;
 }page_own_table_t;
 
+union shrd_entry{
+	struct{
+		uint64_t  shared       	:   1; 		//low
+        uint64_t  keyID     	:   5;
+		uint64_t  reserved		:	58;		//high
+	}fields;
+	unsigned long bits;
+};
+struct shared_pages_table {
+	union shrd_entry s_entry;
+};
 
 //gpa to hpa transfer 
 #define PGLEVEL_BITS    9
@@ -226,9 +236,9 @@ union mcvm
 };
 
 struct cvm_list_params {
-	unsigned long addr;
-	unsigned long ele_num;
-	unsigned long page_num;
+	unsigned long addr;			//the begin paddr of list.
+	unsigned long ele_num;		//the number of element in list.
+	unsigned long page_num;		//Number of pages occupied by all elements in the list.
 };
 
 //KeyID 
@@ -257,7 +267,7 @@ struct iie_cvm_sbi_params_swiotlb{
 //memory manage function
 paddr_t malloc_cvm_empty_page(struct sbi_cvm* cvm, vaddr_t gpa);
 paddr_t mreclaim_cvm_page(struct sbi_cvm* cvm, struct iie_cvm_sbi_params *cvm_sbi_params);
-int add_cvm_share_pages(struct sbi_cvm* cvm, paddr_t gpa, paddr_t hpa);
+int add_cvm_share_pages(struct sbi_cvm* cvm, paddr_t gpa, paddr_t hpa, bool swiotlb, unsigned long KeyID);
 int convert_cvm_pages(struct cvm_list_params* cm_pool_list, struct cvm_list_params* root_pt_list, struct cvm_list_params* bitmap, struct cvm_list_params* page_own_table);
 int load_file(struct iie_cvm_sbi_params_load *load_file);
 void set_bitmap(paddr_t page_address);
@@ -267,9 +277,9 @@ int set_page_own_table(paddr_t page_address, paddr_t* vmid_addr);
 int reset_page_own_table(paddr_t page_address, paddr_t* vmid_addr);
 page_own_table_t* init_page_own_table(struct cvm_list_params* own_table);
 paddr_t malloc_cvm_empty_page_only(paddr_t* vmid_addr);
-void mfree_cvm_page_only(paddr_t paddr, paddr_t* vmid_addrs);
+void mfree_cvm_page_only(paddr_t paddr, paddr_t* vmid_addr);
 void mfree_cvm_page(struct sbi_cvm* cvm);
-int init_swiotlb_params(struct iie_cvm_sbi_params_swiotlb *swiotlb);
+int init_swiotlb_params(struct iie_cvm_sbi_params_swiotlb *swiotlb, struct kvm_vmid *vmid_ptr);
 
 // /** cvm functions */
 void init_cpus();

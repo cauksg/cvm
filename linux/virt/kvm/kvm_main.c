@@ -6424,14 +6424,12 @@ int cvm_mem_manege_init(){
 	bitmap_addr = (unsigned long *)__get_free_pages(GFP_KERNEL, bitmap_page_num_log);
 	page_own_table_addr = (unsigned long *)__get_free_pages(GFP_KERNEL, page_own_table_num_log);
 	if(!bitmap_addr){
-		printk("----------------------------------\n");
 		printk("bitmap alloc failed!\n");
-		printk("----------------------------------\n");
+		return -ENOMEM;
 	}
 	if(!page_own_table_addr){
-		printk("----------------------------------\n");
 		printk("page_own_table alloc failed!\n");
-		printk("----------------------------------\n");
+		return -ENOMEM;
 	}
 	bitmap->addr = __pa((unsigned long)bitmap_addr);
 	//bitmap element is unsigned long type.
@@ -6461,22 +6459,18 @@ int cvm_mem_manege_init(){
 	for(i=0; i<(1<<MAX_CVM_NUM); i++){
 		root_pt_va = __get_free_pages(GFP_KERNEL, 2);
 		if(!root_pt_va){
-			printk("----------------------------------\n");
-			printk("root pt mmap failed!\n");
-			printk("----------------------------------\n");
+			printk("root_pt_va alloc failed!\n");
+			return -ENOMEM;
 		}else{
 			*(root_pt_list+i) = __pa(root_pt_va);
 		}
 	}
 	if (!cm_pool){
-		printk("----------------------------------\n");
-		printk("memory mmap failed!\n");
-		printk("----------------------------------\n");
+		printk("cm_pool mmap failed!\n");
+		return -ENOMEM;
 	}else{
-		printk("----------------------------------\n");
 		printk("memory mmap successed!\n");
 		printk("virtual address begin at %lx\n", (unsigned long)cm_pool);
-		printk("----------------------------------\n");
 		for(i=0;i<(1<<INITIAL_PAGE_NUM);i++){
 			*(cm_addr_list+i) = iie_kernel_page_translate((unsigned long)cm_pool + i*PAGE_SIZE) << PAGE_SHIFT;
 			//printk("virtual address %lx is translated to pfn %lx\n", (unsigned long)hva + i*PAGE_SIZE, *(list_va+i));
