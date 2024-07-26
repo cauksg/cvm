@@ -41,6 +41,21 @@ cp -f ./howto/configs/busybox/motd busybox-1.33.1/_install/etc/motd
 cp -f ./kvmtool/lkvm-static busybox-1.33.1/_install/apps
 cp -f ./build-riscv64/arch/riscv/boot/Image busybox-1.33.1/_install/apps
 cp -f ./run-guest-os.sh busybox-1.33.1/_install
+
+mkdir -p busybox-1.33.1/_install/tmp
+mkdir -p busybox-1.33.1/_install/dev/pts
+mkdir -p busybox-1.33.1/_install/lib
+mkdir -p busybox-1.33.1/_install/etc/network
+mkdir -p busybox-1.33.1/_install/etc/network/if-pre-up.d
+mkdir -p busybox-1.33.1/_install/etc/network/if-up.d
+mkdir -p busybox-1.33.1/_install/etc/network/if-down.d
+mkdir -p busybox-1.33.1/_install/etc/network/if-post-down.d
+mkdir -p busybox-1.33.1/_install/var
+mkdir -p busybox-1.33.1/_install/var/run
+cp -rf dependencies/ldd busybox-1.33.1/_install/bin/
+cp -rf dependencies/db/* busybox-1.33.1/_install/bin/
+cp -rf dependencies/lib/* busybox-1.33.1/_install/lib/
+cp -rf dependencies/etc/* busybox-1.33.1/_install/etc/
 cd busybox-1.33.1/_install; find ./ | cpio -o -H newc > ../../rootfs_kvm_riscv64.img | fakeroot; cd -
 
 #compile Linux with RISC-V KVM support
