@@ -188,7 +188,7 @@ typedef struct cvm_lifecycle{
 
 
 typedef struct page_own_table{
-    paddr_t* vmid;
+    paddr_t* vmidp;
 }page_own_table_t;
 
 union shrd_entry{
@@ -264,7 +264,32 @@ struct iie_cvm_sbi_params_swiotlb{
 //vcpu exit reason
 #define SWIOTLB			14
 
+struct partner_info {
+	unsigned long *vmidp;
+	uint32_t permission;
+};
+
+struct partner_node {
+	struct partner_info partner_info;
+	struct partner_node *next;
+};
+
+struct shm_info {
+	uint32_t shm_ID;
+	uint32_t KeyID;
+	unsigned long base_addr;
+	unsigned long size;
+	unsigned long *owner_vmidp;
+	struct partner_node *partner_node;
+};
+
+struct shm_node {
+	struct shm_info shm_info;
+	struct shm_node *next;
+};
+
 //memory manage function
+paddr_t malloc_cvm_empty_page_only(paddr_t* vmidp);
 paddr_t malloc_cvm_empty_page(struct sbi_cvm* cvm, vaddr_t gpa);
 paddr_t mreclaim_cvm_page(struct sbi_cvm* cvm, struct iie_cvm_sbi_params *cvm_sbi_params);
 int add_cvm_share_pages(struct sbi_cvm* cvm, paddr_t gpa, paddr_t hpa, bool swiotlb, unsigned long KeyID);
@@ -276,7 +301,6 @@ paddr_t* init_bitmap(struct cvm_list_params* bmp);
 int set_page_own_table(paddr_t page_address, paddr_t* vmid_addr);
 int reset_page_own_table(paddr_t page_address, paddr_t* vmid_addr);
 page_own_table_t* init_page_own_table(struct cvm_list_params* own_table);
-paddr_t malloc_cvm_empty_page_only(paddr_t* vmid_addr);
 void mfree_cvm_page_only(paddr_t paddr, paddr_t* vmid_addr);
 void mfree_cvm_page(struct sbi_cvm* cvm);
 int init_swiotlb_params(struct iie_cvm_sbi_params_swiotlb *swiotlb, struct kvm_vmid *vmid_ptr);
