@@ -159,6 +159,7 @@ int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 		uintptr_t pa_cvm = __pa(cvm_sbi_params);
 
 		struct sbiret retval = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_CREATE_VCPU, pa_cvm, 0, 0, 0, 0, 0);
+		//kfree(cvm_sbi_params);
 		// #endif
 	}
 
@@ -849,6 +850,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 
 	kvm_vcpu_srcu_read_unlock(vcpu);
 
+	kfree(cvm_sbi_params);
 	return ret;
 }
 

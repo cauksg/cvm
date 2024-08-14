@@ -1277,6 +1277,7 @@ static struct kvm *kvm_create_vm(unsigned long type, const char *fdname)
 
 		// #ifdef PROG_LBL
 		sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_ALLOC_ROOT_PT, pa_cvm, 0, 0, 0, 0, 0);
+		kfree(cvm_sbi_params);
 		// #endif
 	}
 
@@ -4068,10 +4069,11 @@ static int kvm_vm_ioctl_create_vcpu(struct kvm *kvm, u32 id)
 		cvm_sbi_params->pgd_phys = __pa(&vcpu->kvm->arch.pgd_phys);
 		uintptr_t pa_cvm = __pa(cvm_sbi_params);
 
-		if(vcpu->vcpu_id == 1) 
+		if(vcpu->vcpu_id == 1){
 			sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_TEST, pa_cvm, 0, 0, 0, 0, 0);
-
+		}
 		// #endif
+		kfree(cvm_sbi_params);
 	}
 
 	return r;
@@ -4837,21 +4839,18 @@ static int kvm_vm_ioctl_load_file(struct kvm *kvm, void *argp){
 	struct sbiret ret;
 	unsigned long file_paddr_array;
 	struct load_file load_file_t;
+	unsigned long va;
 	if (copy_from_user(&load_file_t, argp, sizeof(struct load_file))){
 		printk("Copy iotcl parameters failed!\n");
 		return 0;
 	}
 	unsigned long pages_num = (load_file_t.file_size % PAGE_SIZE) ? (load_file_t.file_size/PAGE_SIZE+1) : (load_file_t.file_size/PAGE_SIZE);
 	unsigned long addr_entry_num = (pages_num % 512) ? (pages_num / 512 + 1) : (pages_num / 512);
-	unsigned int log_addr_entry_num = 0;
-	while ( addr_entry_num > 1){
-		addr_entry_num /= 2;
-		log_addr_entry_num ++;
-	}
-	unsigned long virt_address = __get_free_pages(GFP_KERNEL, log_addr_entry_num);
+	unsigned long virt_address = __get_free_pages(GFP_KERNEL, get_order(addr_entry_num * PAGE_SIZE));
 	unsigned long *src_hpa_array = (unsigned long *)virt_address;
+	
 	for(int i=0;i<pages_num;i++){
-		unsigned long va = __get_free_pages(GFP_KERNEL, 0);
+		va = __get_free_pages(GFP_KERNEL, 0);
 		if(copy_from_user((void *)va, (void *)(load_file_t.src_hva+i*PAGE_SIZE), PAGE_SIZE)){
 			printk("copy_from_user failed!\n");
 			return 0;
@@ -4868,9 +4867,14 @@ static int kvm_vm_ioctl_load_file(struct kvm *kvm, void *argp){
 	sbi_load_params->src_hpa_array = (unsigned long*)file_paddr_array;
 	sbi_load_params->vmid_ptr = __pa(&kvm->arch.vmid);
 	ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_LOAD_FILE, __pa(va_sbi_params), 0, 0, 0, 0, 0);
-
+	
+	for(int i=0;i<pages_num;i++){
+		va = __va(*(src_hpa_array+i));
+		__free_pages(virt_to_page(va), 0);
+	}
+	__free_pages(virt_to_page(virt_address), get_order(addr_entry_num * PAGE_SIZE));
+	__free_pages(virt_to_page(va_sbi_params), 0);
 	return ret.error;
-	//printk("----------------linux vm ioctl end to load kernel-------------------\n");
 }
 
 static long kvm_vm_ioctl(struct file *filp,
@@ -6394,16 +6398,15 @@ unsigned long iie_kernel_page_translate(unsigned long addr){
 
 int cvm_mem_manege_init(){
     unsigned long host_page_num, bitmap_page_num, page_own_table_num;
-	unsigned long bitmap_page_num_log=0;
-	unsigned long page_own_table_num_log=0;
 	unsigned long *bitmap_addr, *page_own_table_addr;
 	struct cvm_list_params *bitmap = (struct cvm_list_params *)__get_free_pages(GFP_KERNEL, 0);
 	struct cvm_list_params *page_own_table = (struct cvm_list_params *)__get_free_pages(GFP_KERNEL, 0);
 	int i;
 	struct sbiret ret;
 
-	host_page_num = K(get_num_physpages()) / 4;
-	//each host memory page corresponds to 1 bit bitmap.
+	host_page_num = get_num_physpages();
+
+	//each host memory page corresponds to 1 bit bitmap. so 8 bit is 1 byte.
 	bitmap_page_num = (host_page_num / 8 % (1UL<<PAGE_SHIFT)) ? 
 							(host_page_num / 8 / (1UL<<PAGE_SHIFT) + 1) :
 							(host_page_num / 8 / (1UL<<PAGE_SHIFT));
@@ -6413,16 +6416,11 @@ int cvm_mem_manege_init(){
 							(host_page_num * 8 / (1UL<<PAGE_SHIFT));
 	bitmap->page_num = bitmap_page_num;
 	page_own_table->page_num = page_own_table_num;
-	while ( bitmap_page_num > 1){
-		    bitmap_page_num /= 2;
-		    bitmap_page_num_log++;
-	}
-	while ( page_own_table_num > 1){
-		    page_own_table_num /= 2;
-		    page_own_table_num_log++;
-	}
-	bitmap_addr = (unsigned long *)__get_free_pages(GFP_KERNEL, bitmap_page_num_log);
-	page_own_table_addr = (unsigned long *)__get_free_pages(GFP_KERNEL, page_own_table_num_log);
+
+	bitmap_addr = (unsigned long *)__get_free_pages(GFP_KERNEL, get_order(host_page_num / 8));			//used for bitmap
+	
+	/* TODO __get_free_pages can allocate 2^10 pages, so there is a limit of host memory size(2GB at most). */
+	page_own_table_addr = (unsigned long *)__get_free_pages(GFP_KERNEL, get_order(host_page_num * 8));	//used for Ownership page table 
 	if(!bitmap_addr){
 		printk("bitmap alloc failed!\n");
 		return -ENOMEM;
@@ -6443,15 +6441,8 @@ int cvm_mem_manege_init(){
 	//allocate 2^14 pages(64MB) for confidential memory.
 	//each page addr is 8B, so we need 2^14 * 8 / 4K = 2^5 pages to record .
 	unsigned long *cm_pool = vmalloc(PAGE_SIZE << INITIAL_PAGE_NUM);
-
-	unsigned long cm_list_page_num = (1UL << INITIAL_PAGE_NUM) * sizeof(unsigned long) / (1UL << PAGE_SHIFT);
-	unsigned long cm_list_page_num_log = 0;
-	while ( cm_list_page_num > 1){
-		    cm_list_page_num /= 2;
-		    cm_list_page_num_log++;
-	}
-	//printk("--------cm_list_page_num_log is %lx\n---------", cm_list_page_num_log);
-	unsigned long *cm_addr_list = (unsigned long *)__get_free_pages(GFP_KERNEL, cm_list_page_num_log);
+	unsigned long cm_list_page_num = (1UL << INITIAL_PAGE_NUM) * sizeof(unsigned long) / (PAGE_SIZE);
+	unsigned long *cm_addr_list = (unsigned long *)__get_free_pages(GFP_KERNEL, get_order(cm_list_page_num * PAGE_SIZE));
 	
 	unsigned long root_pt_va;
 	//we already known the max number of cvm is 32
@@ -6483,7 +6474,16 @@ int cvm_mem_manege_init(){
 		root_pt_l->ele_num = (1UL<<MAX_CVM_NUM);
 		ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_INIT_PAGE_LIST, __pa((unsigned long)cm_addr_l), 
 			__pa((unsigned long)root_pt_l), __pa((unsigned long)bitmap), __pa((unsigned long)page_own_table), 0, 0);
+		
+		__free_pages(virt_to_page(cm_addr_l), 0);
+		__free_pages(virt_to_page(root_pt_l), 0);
 	}
     
+	__free_pages(virt_to_page(bitmap), 0);
+	__free_pages(virt_to_page(page_own_table), 0);
+	__free_pages(virt_to_page(cm_addr_list), get_order(cm_list_page_num * PAGE_SIZE));
+	__free_pages(virt_to_page(root_pt_list), 0);
+	
+
 	return ret.error;
 }
