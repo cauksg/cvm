@@ -134,6 +134,8 @@
 #define SBI_EXT_CVM_ALLOC_ROOT_PT			0xc
 #define SBI_EXT_CVM_DESTROY					0xd
 #define SBI_EXT_CVM_INIT_SWIOTLB			0xe
+#define SBI_REFILL_MEMORY_POOL				0xf
+#define SBI_EXT_CVM_RETRY_LOAD				0x10
 /* define for function test */
 #define SBI_EXT_CVM_TEST					0xffff
 

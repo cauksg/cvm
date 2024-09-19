@@ -22,6 +22,8 @@
 #define SBI_EXT_CVM_ALLOC_ROOT_PT			0xc
 #define SBI_EXT_CVM_DESTROY					0xd
 #define SBI_EXT_CVM_INIT_SWIOTLB			0xe
+#define SBI_EXT_CVM_REFILL_MEMORY_POOL 		0xf
+#define SBI_EXT_CVM_RETRY_LOAD				0x10
 /* define for function test */
 #define SBI_EXT_CVM_TEST					0xffff
 
@@ -58,6 +60,7 @@ struct cvm_list_params {
 	unsigned long addr;
 	unsigned long ele_num;
 	unsigned long page_num;
+	unsigned long level;
 };
 
 //load file physical address array
@@ -77,15 +80,20 @@ struct swiotlb_node {
 
 
 //use for allocating confidential memory
-#define INITIAL_PAGE_NUM 	14 		//so we allocate 2^14 pages for confidential memory.
-#define MAX_CVM_NUM			5		//we have 2^5 confidential virtual machines at most.
+#define INITIAL_PAGE_NUM 	14 		//we allocate 2^INITIAL_PAGE_NUM pages for confidential memory at initial time.
+#define REFILL_PAGE_NUM		14		//we allocate 2^REFILL_PAGE_NUM pages to refill the confidential memory pool when it is exhausted.
+#define MAX_CVM_NUM			5		//we have 2^MAX_CVM_NUM confidential virtual machines at most.
 #ifndef K
 #define K(x) ((x) << (PAGE_SHIFT-10))
 #endif
 
+#define TEE_NO_MEMORY 	-1
+#define CVM_ERROR		-2
 
 int create_sbi_param(struct kvm *kvm, struct iie_cvm_sbi_params * cvm_sbi_params);
 int cvm_mem_manege_init(void);
+unsigned long iie_kernel_page_translate(unsigned long addr);
+int refill_KVM_memory_pool(void);
 //int kvm_vm_ioctl_load_file(struct kvm *kvm, void *argp);
 
 #endif

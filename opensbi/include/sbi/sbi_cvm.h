@@ -239,6 +239,7 @@ struct cvm_list_params {
 	unsigned long addr;			//the begin paddr of list.
 	unsigned long ele_num;		//the number of element in list.
 	unsigned long page_num;		//Number of pages occupied by all elements in the list.
+	unsigned long level;
 };
 
 //KeyID 
