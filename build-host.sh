@@ -12,6 +12,8 @@ sed -i 's|.*CONFIG_INITRAMFS_SOURCE.*$|CONFIG_IiNITRAMFS_SOURCE=""|' ./build-ris
 sed -i 's|.*CONFIG_NET_9P_VIRTIO.*$|CONFIG_NET_9P_VIRTIO=y|' ./build-riscv64/.config
 sed -i 's|.*CONFIG_VIRTIO_NET.*$|CONFIG_VIRTIO_NET=y|' ./build-riscv64/.config
 sed -i 's|.*CONFIG_DMA_RESTRICTED_POOL.*$|CONFIG_DMA_RESTRICTED_POOL=y|' ./build-riscv64/.config
+# using rdcycle in user space
+sed -i 's|.*CONFIG_RISCV_PMU_SBI.*$|# CONFIG_RISCV_PMU_SBI is not set|' ./build-riscv64/.config
 make -C linux O=`pwd`/build-riscv64 -j $(nproc)
 
 #compile kvmtool
@@ -50,6 +52,7 @@ mkdir -p busybox-1.33.1/_install/etc/network/if-pre-up.d
 mkdir -p busybox-1.33.1/_install/etc/network/if-up.d
 mkdir -p busybox-1.33.1/_install/etc/network/if-down.d
 mkdir -p busybox-1.33.1/_install/etc/network/if-post-down.d
+mkdir -p busybox-1.33.1/_install/etc/dropbear
 mkdir -p busybox-1.33.1/_install/var
 mkdir -p busybox-1.33.1/_install/var/run
 cp -rf dependencies/ldd busybox-1.33.1/_install/bin/
@@ -60,6 +63,10 @@ cd busybox-1.33.1/_install; find ./ | cpio -o -H newc > ../../rootfs_kvm_riscv64
 
 #compile Linux with RISC-V KVM support
 sed -i 's|.*CONFIG_INITRAMFS_SOURCE=.*$|CONFIG_INITRAMFS_SOURCE=""|' ./build-riscv64/.config
+# using rdcycle in user space
+sed -i 's|.*CONFIG_RISCV_PMU_SBI.*$|# CONFIG_RISCV_PMU_SBI is not set|' ./build-riscv64/.config
+# Compile Host Kernel with TUN/TAP support for Guest virtual network
+sed -i 's|# CONFIG_TUN is not set.*$|CONFIG_TUN=y|' ./build-riscv64/.config
 make -C linux O=`pwd`/build-riscv64 -j $(nproc)
 
 
