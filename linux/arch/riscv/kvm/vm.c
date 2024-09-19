@@ -63,6 +63,7 @@ void kvm_arch_destroy_vm(struct kvm *kvm)
 		//#ifdef PROG_LBL
 		kvm_riscv_destroy_sw_node(kvm);
 		//#endif
+		kfree(cvm_sbi_params);
 	}
 	kvm_destroy_vcpus(kvm);
 

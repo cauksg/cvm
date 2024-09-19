@@ -159,6 +159,7 @@ int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 		uintptr_t pa_cvm = __pa(cvm_sbi_params);
 
 		struct sbiret retval = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_CREATE_VCPU, pa_cvm, 0, 0, 0, 0, 0);
+		//kfree(cvm_sbi_params);
 		// #endif
 	}
 
@@ -649,6 +650,7 @@ static DEFINE_SPINLOCK(sw_list);
 int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 {
 	int ret;
+	struct sbiret sbi_ret;
 	struct kvm_cpu_trap *trap = kmalloc(sizeof(struct kvm_cpu_trap), GFP_KERNEL);
 	struct kvm_run *run = vcpu->run;
 	struct iie_cvm_sbi_params *cvm_sbi_params = kmalloc(sizeof(struct iie_cvm_sbi_params), GFP_KERNEL);
@@ -659,9 +661,8 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 	/* Mark this VCPU ran at least once */
 	vcpu->arch.ran_atleast_once = true;
 
-
 	kvm_vcpu_srcu_read_lock(vcpu);
-
+	
 	switch (run->exit_reason) {
 	case KVM_EXIT_MMIO:
 		/* Process MMIO value returned from user-space */
@@ -692,7 +693,6 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 	vcpu_load(vcpu);
 
 	kvm_sigset_activate(vcpu);
-
 	ret = 1;
 	run->exit_reason = KVM_EXIT_UNKNOWN;
 	while (ret > 0) {
@@ -714,7 +714,6 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 			preempt_enable();
 			continue;
 		}
-
 		local_irq_disable();
 
 		/*
@@ -784,7 +783,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 			// #endif
 
 			// #ifdef PROG_BYK
-			sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_RUN_VCPU, __pa(cvm_sbi_params),
+			sbi_ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_RUN_VCPU, __pa(cvm_sbi_params),
 				__pa(&vcpu->arch.guest_context), __pa(&vcpu->arch.guest_csr), __pa(trap), 0, 0);
 			// #endif
 		}
@@ -829,6 +828,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		 * interrupts between the enable and disable.
 		 */
 		local_irq_enable();
+
 		local_irq_disable();
 
 		guest_timing_exit_irqoff();
@@ -836,11 +836,17 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		local_irq_enable();
 
 		preempt_enable();
+		
+		if(sbi_ret.error == TEE_NO_MEMORY){
+			printk("execute refill_KVM_memory_pool function here!\n");
+			refill_KVM_memory_pool();
+			/* If we got host interrupt then do nothing */
+			trap->scause = CAUSE_IRQ_FLAG;
+		}
 
 		kvm_vcpu_srcu_read_lock(vcpu);
 
 		ret = kvm_riscv_vcpu_exit(vcpu, run, trap);
-
 	}
 
 	kvm_sigset_deactivate(vcpu);
@@ -849,6 +855,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 
 	kvm_vcpu_srcu_read_unlock(vcpu);
 
+	kfree(cvm_sbi_params);
 	return ret;
 }
 
@@ -891,3 +898,5 @@ int kvm_riscv_destroy_sw_node(struct kvm *kvm){
 	spin_unlock(&sw_list);
 	return 1;
 }
+
+
