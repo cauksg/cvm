@@ -655,6 +655,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 	struct kvm_run *run = vcpu->run;
 	struct iie_cvm_sbi_params *cvm_sbi_params = kmalloc(sizeof(struct iie_cvm_sbi_params), GFP_KERNEL);
 
+	sbi_ret.error = 0;
 	cvm_sbi_params->vmid_ptr = __pa(&vcpu->kvm->arch.vmid);
 	cvm_sbi_params->vcpu_id_ptr = __pa(&vcpu->vcpu_id);
 
