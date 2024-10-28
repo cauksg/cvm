@@ -24,6 +24,7 @@
 #define SBI_EXT_CVM_INIT_SWIOTLB			0xe
 #define SBI_EXT_CVM_REFILL_MEMORY_POOL 		0xf
 #define SBI_EXT_CVM_RETRY_LOAD				0x10
+#define SBI_EXT_RECYCLE_MEMORY				0x11
 /* define for function test */
 #define SBI_EXT_CVM_TEST					0xffff
 
@@ -57,6 +58,7 @@ struct iie_cvm_sbi_params {
 
 //used for initializing confidential memory
 struct cvm_list_params {
+	unsigned long vaddr;
 	unsigned long addr;
 	unsigned long ele_num;
 	unsigned long page_num;
@@ -78,11 +80,20 @@ struct swiotlb_node {
 	struct swiotlb_node *next;
 };
 
+struct cvm_mem_chunk_infor{
+	unsigned long chunk_vaddr;
+	unsigned long chunk_infor_vaddr;
+	unsigned long *paddr_list;
+	unsigned int type;		//initial alloc or realloc
+	bool free;
+	unsigned long *cvm_id;
+};
 
 //use for allocating confidential memory
-#define INITIAL_PAGE_NUM 	14 		//we allocate 2^INITIAL_PAGE_NUM pages for confidential memory at initial time.
-#define REFILL_PAGE_NUM		14		//we allocate 2^REFILL_PAGE_NUM pages to refill the confidential memory pool when it is exhausted.
+#define INITIAL_PAGE_NUM 	13 		//we allocate 2^INITIAL_PAGE_NUM pages for confidential memory at initial time.
+#define REFILL_PAGE_NUM		12		//we allocate 2^REFILL_PAGE_NUM pages to refill the confidential memory pool when it is exhausted.
 #define MAX_CVM_NUM			5		//we have 2^MAX_CVM_NUM confidential virtual machines at most.
+#define CVM_CHUNK_SIZE 		21		//this means the chunk size is 2^21 bytes. Don't modify it.
 #ifndef K
 #define K(x) ((x) << (PAGE_SHIFT-10))
 #endif

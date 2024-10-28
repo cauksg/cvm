@@ -3,7 +3,7 @@
 #include <sbi/sbi_types.h>
 #include <sbi/riscv_encoding.h>
 #include <sbi/sbi_trap.h>
-
+#include <sbi/riscv_locks.h>
 /* CVM Life Cycle ------------------------------------------------------------------------------ */
 
 #include <sbi/sbi_cvm_cpu.h>
@@ -58,6 +58,12 @@ struct sbi_cvm {
 	unsigned char hash[CVM_HASH_SIZE];
 	// hash of enclave developer's public key
 	unsigned char signer[CVM_HASH_SIZE];
+
+	//the list head of available free pages
+	struct list_head *free_mem_list_head;
+	spinlock_t free_mem_list_lock;
+	//the used chunk list of the cvm
+	struct cvm_mem_chunk_node *used_chunk_list_head;
 
 	uintptr_t pgd_phys;
 };
@@ -188,7 +194,7 @@ typedef struct cvm_lifecycle{
 
 
 typedef struct page_own_table{
-    paddr_t* vmidp;
+    unsigned long vmidp;
 }page_own_table_t;
 
 union shrd_entry{
@@ -236,6 +242,7 @@ union mcvm
 };
 
 struct cvm_list_params {
+	unsigned long vaddr;
 	unsigned long addr;			//the begin paddr of list.
 	unsigned long ele_num;		//the number of element in list.
 	unsigned long page_num;		//Number of pages occupied by all elements in the list.
@@ -248,46 +255,37 @@ struct cvm_list_params {
 
 //bitmap declaration
 //need 2MB space for 64GB
-#define MAX_MEM_SPACE           (1UL<<29)
-#define BITMAP_64BITS_COUNT     (MAX_MEM_SPACE / PAGE_SIZE / 64)
+// #define MAX_MEM_SPACE           (1UL<<29)
+// #define BITMAP_64BITS_COUNT     (MAX_MEM_SPACE / PAGE_SIZE / 64)
 #define BITMAP_OFFSET           6
 
 
 //page own table declaration
 //need 128MB space for 64GB
-#define PAGE_NUM                (MAX_MEM_SPACE / PAGE_SIZE)
+// #define PAGE_NUM                (MAX_MEM_SPACE / PAGE_SIZE)
 
 struct iie_cvm_sbi_params_swiotlb{
 	unsigned long addr;
 	unsigned long size;
 };
 
+
+struct cvm_mem_chunk_infor{
+	unsigned long chunk_vaddr;
+	unsigned long chunk_infor_vaddr;
+	unsigned long *paddr_list;
+	unsigned int type;		//initial alloc or realloc
+	bool free;
+	unsigned long *cvm_id;
+};
+
+struct cvm_mem_chunk_node{
+	struct cvm_mem_chunk_infor *chunk_infor;
+	struct cvm_mem_chunk_node *next;
+};
+
 //vcpu exit reason
 #define SWIOTLB			14
-
-struct partner_info {
-	unsigned long *vmidp;
-	uint32_t permission;
-};
-
-struct partner_node {
-	struct partner_info partner_info;
-	struct partner_node *next;
-};
-
-struct shm_info {
-	uint32_t shm_ID;
-	uint32_t KeyID;
-	unsigned long base_addr;
-	unsigned long size;
-	unsigned long *owner_vmidp;
-	struct partner_node *partner_node;
-};
-
-struct shm_node {
-	struct shm_info shm_info;
-	struct shm_node *next;
-};
 
 //memory manage function
 paddr_t malloc_cvm_empty_page_only(paddr_t* vmidp);
@@ -301,10 +299,11 @@ void reset_bitmap(paddr_t page_address);
 paddr_t* init_bitmap(struct cvm_list_params* bmp);
 int set_page_own_table(paddr_t page_address, paddr_t* vmid_addr);
 int reset_page_own_table(paddr_t page_address, paddr_t* vmid_addr);
-page_own_table_t* init_page_own_table(struct cvm_list_params* own_table);
+void init_page_own_table(struct cvm_list_params* own_table);
 void mfree_cvm_page_only(paddr_t paddr, paddr_t* vmid_addr);
-void mfree_cvm_page(struct sbi_cvm* cvm);
+int mfree_cvm_page(struct sbi_cvm* cvm, struct cvm_list_params *recycle_list);
 int init_swiotlb_params(struct iie_cvm_sbi_params_swiotlb *swiotlb, struct kvm_vmid *vmid_ptr);
+int recycle_memory(struct iie_cvm_sbi_params *cvm_sbi_params, struct cvm_list_params *recycle_list);
 
 // /** cvm functions */
 void init_cpus();
