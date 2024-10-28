@@ -69,14 +69,9 @@ void kvm_arch_destroy_vm(struct kvm *kvm)
 		uintptr_t pa_ret = __pa(ret_params);
 		sbi_ecall(SBI_EXT_CVM, SBI_EXT_RECYCLE_MEMORY, pa_cvm, __pa(ret_params), 0, 0, 0, 0);
 		struct cvm_mem_chunk_infor *chunk_infor;
-		printk("%lx\n", ret_params->ele_num);
+		// printk("recycle %ld chunks\n", ret_params->ele_num);
 		for(i=0; i<ret_params->ele_num; i++){
 			chunk_infor = (struct cvm_mem_chunk_infor *)*((unsigned long *)__va(ret_params->addr)+i);
-			// printk("----------------\n");
-			// printk("chunk_infor is %lx\n", chunk_infor);
-			// printk("vfree is %lx\n", chunk_infor->chunk_vaddr);
-			// printk("__free_pages is %lx\n", chunk_infor->chunk_infor_vaddr);
-			// printk("----------------\n");
 			vfree((void *)chunk_infor->chunk_vaddr);
 			__free_pages(virt_to_page(chunk_infor->chunk_infor_vaddr), 0);
 		}

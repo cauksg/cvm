@@ -6527,15 +6527,10 @@ int cvm_init_memorypool(struct cvm_list_params *chunk_infor_list, unsigned long 
 		chunk_infor->paddr_list = (unsigned long *)__pa(chunk_paddr_list);
 		*(chunk_infor_addr + i) = __pa(chunk_infor);
 		chunk_infor->chunk_infor_vaddr = (unsigned long)chunk_infor;
-		// printk("----------------\n");
-		// printk("chunk_infor is %lx\n", chunk_infor);
-		// printk("chunk_vaddr is %lx\n", chunk_infor->chunk_vaddr);
-		// printk("chunk_infor is %lx\n", chunk_infor->chunk_infor_vaddr);
-		// printk("----------------\n");
 		if(isrefill)
 			chunk_infor->type = 1; 	//They need to be recycled when the CVMs are destroyed.
 		else
-			chunk_infor->type = 0;	//They don't needto be recycled.
+			chunk_infor->type = 0;	//They don't need to be recycled.
 	}
 	chunk_infor_list->addr = __pa(chunk_infor_addr);
 

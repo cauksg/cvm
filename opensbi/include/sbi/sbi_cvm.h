@@ -288,18 +288,18 @@ struct cvm_mem_chunk_node{
 #define SWIOTLB			14
 
 //memory manage function
-paddr_t malloc_cvm_empty_page_only(paddr_t* vmidp);
-paddr_t malloc_cvm_empty_page(struct sbi_cvm* cvm, vaddr_t gpa);
+int malloc_cvm_empty_page_only(paddr_t* vmidp, paddr_t *hpa);
+int malloc_cvm_empty_page(struct sbi_cvm* cvm, vaddr_t gpa, paddr_t *paddr);
 paddr_t mreclaim_cvm_page(struct sbi_cvm* cvm, struct iie_cvm_sbi_params *cvm_sbi_params);
 int add_cvm_share_pages(struct sbi_cvm* cvm, paddr_t gpa, paddr_t hpa, bool swiotlb, unsigned long KeyID);
 int convert_cvm_pages(struct cvm_list_params* cm_pool_list, struct cvm_list_params* root_pt_list, struct cvm_list_params* bitmap, struct cvm_list_params* page_own_table);
 int load_file(struct iie_cvm_sbi_params_load *load_file);
 void set_bitmap(paddr_t page_address);
 void reset_bitmap(paddr_t page_address);
-paddr_t* init_bitmap(struct cvm_list_params* bmp);
+int init_bitmap(struct cvm_list_params* bmp);
 int set_page_own_table(paddr_t page_address, paddr_t* vmid_addr);
 int reset_page_own_table(paddr_t page_address, paddr_t* vmid_addr);
-void init_page_own_table(struct cvm_list_params* own_table);
+int init_page_own_table(struct cvm_list_params* own_table);
 void mfree_cvm_page_only(paddr_t paddr, paddr_t* vmid_addr);
 int mfree_cvm_page(struct sbi_cvm* cvm, struct cvm_list_params *recycle_list);
 int init_swiotlb_params(struct iie_cvm_sbi_params_swiotlb *swiotlb, struct kvm_vmid *vmid_ptr);
