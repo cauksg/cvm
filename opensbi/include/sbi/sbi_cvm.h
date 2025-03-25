@@ -318,5 +318,76 @@ int cvm_trap_virtual_inst(struct sbi_trap_regs* host_regs);
 int cvm_trap_gstage_page_fault(struct sbi_trap_regs* host_regs);
 int cvm_trap_sbi_ecall(struct sbi_trap_regs* host_regs);
 
+//REG_TAG
+#define TAG_REG_ZERO 0x00000001
+#define TAG_REG_RA 0x00000002
+#define TAG_REG_SP 0x00000004
+#define TAG_REG_GP 0x00000008
+#define TAG_REG_TP 0x00000010
+#define TAG_REG_T0 0x00000020
+#define TAG_REG_T1 0x00000040
+#define TAG_REG_T2 0x00000080
+#define TAG_REG_S0 0x00000100
+#define TAG_REG_S1 0x00000200
+#define TAG_REG_A0 0x00000400
+#define TAG_REG_A1 0x00000800
+#define TAG_REG_A2 0x00001000
+#define TAG_REG_A3 0x00002000
+#define TAG_REG_A4 0x00004000
+#define TAG_REG_A5 0x00008000
+#define TAG_REG_A6 0x00010000
+#define TAG_REG_A7 0x00020000
+#define TAG_REG_S2 0x00040000
+#define TAG_REG_S3 0x00080000
+#define TAG_REG_S4 0x00100000
+#define TAG_REG_S5 0x00200000
+#define TAG_REG_S6 0x00400000
+#define TAG_REG_S7 0x00800000
+#define TAG_REG_S8 0x01000000
+#define TAG_REG_S9 0x02000000
+#define TAG_REG_S10 0x04000000
+#define TAG_REG_S11 0x08000000
+#define TAG_REG_T3 0x10000000
+#define TAG_REG_T4 0x20000000
+#define TAG_REG_T5 0x40000000
+#define TAG_REG_T6 0x80000000
+
+#define Debug_cxt 0
+
+//shift and length of RD/RS2
+#define SH_RDS 2
+#define SH_RS2S 2
+
+#define LEN_RX 5
+#define LEN_RXS 3
+
+//get RD/RS2 of insn
+#define GET_RDNUM(insn) RV_X(insn, SH_RD, LEN_RX)
+#define GET_RDSNUM(insn)  8 + RV_X(insn, SH_RDS, LEN_RXS)
+#define GET_RS1NUM(insn)  RV_X(insn, SH_RS1, LEN_RX)
+#define GET_RS2NUM(insn)  RV_X(insn, SH_RS2, LEN_RX)
+#define GET_RS2SNUM(insn) 8 + RV_X(insn, SH_RS2S, LEN_RXS)
+#define GET_RS2CNUM(insn) RV_X(insn, SH_RS2S, LEN_RX)
+#define GET_FUNCT3(insn)	(((insn) >> 12) & 7)
+
+#define INSN_MATCH_CSRRW	0x1073
+#define INSN_MASK_CSRRW		0x707f
+#define INSN_MATCH_CSRRS	0x2073
+#define INSN_MASK_CSRRS		0x707f
+#define INSN_MATCH_CSRRC	0x3073
+#define INSN_MASK_CSRRC		0x707f
+#define INSN_MATCH_CSRRWI	0x5073
+#define INSN_MASK_CSRRWI	0x707f
+#define INSN_MATCH_CSRRSI	0x6073
+#define INSN_MASK_CSRRSI	0x707f
+#define INSN_MATCH_CSRRCI	0x7073
+#define INSN_MASK_CSRRCI	0x707f
+
+//cxt_encrypted
+unsigned long tag_mmio_load(unsigned long htinst);
+unsigned long tag_mmio_store(unsigned long htinst);
+unsigned long tag_virtual_inst(unsigned long htinst);
+unsigned long vcpu_reg_tag(struct cpu_trap* trap);
+void copy_regs_tagged(void *cxt_dest, void *cxt_src, uint32_t tag);
 
 #endif

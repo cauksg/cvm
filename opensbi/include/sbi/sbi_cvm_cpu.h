@@ -86,6 +86,7 @@ struct cvm_vcpu {
 	unsigned long guest_mideleg;
 	unsigned long guest_medeleg;
 	unsigned long guest_hgatp;
+	unsigned long cxt_tag;
 	struct cpu_context host_context;
 	struct cpu_context guest_context;
 	struct vcpu_csr guest_csr;

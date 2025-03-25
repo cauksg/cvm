@@ -336,6 +336,9 @@ void init_cvm_vcpu(struct cvm_vcpu* cvm_vcpu)
     cvm_vcpu->guest_hgatp |= SATP_MODE_SV57 << HGATP64_MODE_SHIFT;
     cvm_vcpu->guest_hgatp |= (cvm_vcpu->cvm->vmid->vmid) << HGATP64_VMID_SHIFT;
     cvm_vcpu->guest_hgatp |= (cvm_vcpu->cvm->root_pt >> RISCV_PGSHIFT) & HGATP64_PPN;
+
+    //Tag protected context
+    cvm_vcpu->cxt_tag = 0x00000000FFFFFFFF;
 }
 
 uint32_t get_cvm_id()
@@ -465,6 +468,179 @@ static void context_switch_to_host(struct sbi_trap_regs* host_regs, struct cvm_v
     swap_in_medeleg(&cvm_vcpu->host_medeleg, &cvm_vcpu->guest_medeleg);
 }
 
+unsigned long tag_mmio_load(unsigned long htinst)
+{
+    unsigned long tag = 0;
+    unsigned long insn;
+    int reg_num = 0;
+    if (htinst & 0x1){
+        insn = htinst | INSN_16BIT_MASK;
+    }
+    else{
+        return 0;
+    }
+    if ((insn & INSN_MASK_LW) == INSN_MATCH_LW){
+        reg_num = GET_RDNUM(insn);
+    }
+    else if ((insn & INSN_MASK_LB) == INSN_MATCH_LB){
+        reg_num = GET_RDNUM(insn);
+    }
+    else if ((insn & INSN_MASK_LBU) == INSN_MATCH_LBU){
+        reg_num = GET_RDNUM(insn);
+    }
+#ifdef CONFIG_64BIT
+	else if ((insn & INSN_MASK_LD) == INSN_MATCH_LD) {
+        reg_num = GET_RDNUM(insn);
+    }
+	else if ((insn & INSN_MASK_LWU) == INSN_MATCH_LWU) {
+        reg_num = GET_RDNUM(insn);
+    }
+#endif
+    else if ((insn & INSN_MASK_LH) == INSN_MATCH_LH) {
+		reg_num = GET_RDNUM(insn);
+	}
+    else if ((insn & INSN_MASK_LHU) == INSN_MATCH_LHU) {
+		reg_num = GET_RDNUM(insn);
+    }
+#ifdef CONFIG_64BIT
+    else if((insn & INSN_MASK_C_LD) == INSN_MATCH_C_LD){
+        reg_num = GET_RDSNUM(insn);
+    }
+    else if ((insn & INSN_MASK_C_LDSP) == INSN_MATCH_C_LDSP){
+		reg_num = GET_RDNUM(insn);
+    }
+#endif
+    else if ((insn & INSN_MASK_C_LW) == INSN_MATCH_C_LW) {
+        reg_num = GET_RDSNUM(insn);
+	}
+    else if ((insn & INSN_MASK_C_LWSP) == INSN_MATCH_C_LWSP) {
+        reg_num = GET_RDNUM(insn);
+	}
+    else{
+        return 0;
+    }
+    tag = 1UL << reg_num;
+    return tag;
+}
+
+unsigned long tag_mmio_store(unsigned long htinst)
+{
+    unsigned long tag = 0;
+    unsigned long insn;
+    int reg_num = 0;
+    if (htinst & 0x1){
+        insn = htinst | INSN_16BIT_MASK;
+    }
+    else{
+        return 0;
+    }
+    if ((insn & INSN_MASK_SW) == INSN_MATCH_SW) {
+		reg_num = GET_RS2NUM(insn);
+	}
+    else if ((insn & INSN_MASK_SB) == INSN_MATCH_SB) {
+		reg_num = GET_RS2NUM(insn);
+    }
+    else if ((insn & INSN_MASK_SD) == INSN_MATCH_SD) {
+		reg_num = GET_RS2NUM(insn);
+    }
+    else if ((insn & INSN_MASK_SH) == INSN_MATCH_SH) {
+		reg_num = GET_RS2NUM(insn);
+    }
+#ifdef CONFIG_64BIT
+    else if((insn & INSN_MASK_C_SD) == INSN_MATCH_C_SD){
+        reg_num = GET_RS2SNUM(insn);
+    }
+    else if((insn & INSN_MASK_C_SDSP) == INSN_MATCH_C_SDSP){
+        reg_num = GET_RS2CNUM(insn);
+    }
+#endif
+    else if ((insn & INSN_MASK_C_SW) == INSN_MATCH_C_SW){
+        reg_num = GET_RS2SNUM(insn);
+    }
+    else if((insn & INSN_MASK_C_SWSP) == INSN_MATCH_C_SWSP){
+        reg_num = GET_RS2CNUM(insn);
+    }
+    else{
+        return 0;
+    }
+    tag = 1UL << (reg_num + 32);
+    return tag;
+}
+
+unsigned long tag_virtual_inst(unsigned long stval)
+{
+    unsigned long tag = 0;
+    unsigned long insn = stval;
+    int rd_num = 0;
+    int rs1_num = 0;
+    //sbi_printf("[IIE CVM Monitor@%s] virtual_inst insn=%lu Tag=%lu\n", __func__, insn, tag);
+
+    if (INSN_IS_16BIT(insn)){
+        return 0;
+    }
+    switch (GET_FUNCT3(insn)){
+        case GET_FUNCT3(INSN_MATCH_CSRRW):
+        case GET_FUNCT3(INSN_MATCH_CSRRS):
+        case GET_FUNCT3(INSN_MATCH_CSRRC):
+            rd_num = GET_RDNUM(insn);
+            rs1_num = GET_RS1NUM(insn);
+            tag = (1UL << rd_num) | (1UL << (rs1_num + 32));
+            break;
+        case GET_FUNCT3(INSN_MATCH_CSRRWI):
+        case GET_FUNCT3(INSN_MATCH_CSRRSI):
+        case GET_FUNCT3(INSN_MATCH_CSRRCI):
+            rd_num = GET_RDNUM(insn);
+            tag = 1UL << rd_num;
+            break;
+        default:
+            break;
+    }
+    return tag;
+}
+
+unsigned long vcpu_reg_tag(struct cpu_trap* trap)
+{
+    unsigned long fault_addr;
+    unsigned long tag = 0;
+    switch(trap->scause){
+        case CAUSE_ILLEGAL_INSTRUCTION:
+	    case CAUSE_MISALIGNED_LOAD:
+	    case CAUSE_MISALIGNED_STORE:
+            break;
+        case CAUSE_VIRTUAL_INST_FAULT:
+            tag = tag_virtual_inst(trap->stval);
+            break;
+        case CAUSE_FETCH_GUEST_PAGE_FAULT:
+            break;
+	    case CAUSE_LOAD_GUEST_PAGE_FAULT:
+            tag = tag_mmio_load(trap->htinst);
+            //sbi_printf("[IIE CVM Monitor@%s] EXCEPTION: CAUSE_LOAD_GUEST_PAGE_FAULT Tag=%lu\n", __func__, tag);
+            break;
+	    case CAUSE_STORE_GUEST_PAGE_FAULT:
+            tag = tag_mmio_store(trap->htinst);
+            //sbi_printf("[IIE CVM Monitor@%s] EXCEPTION: CAUSE_STORE_GUEST_PAGE_FAULT Tag=0x%lx\n", __func__, tag);
+            break;
+        case CAUSE_VIRTUAL_SUPERVISOR_ECALL:
+            tag = ((unsigned long)(TAG_REG_A0 | TAG_REG_A1 | TAG_REG_A2 | TAG_REG_A3 | TAG_REG_A4 | TAG_REG_A5 | TAG_REG_A6 | TAG_REG_A7) << 32) | ((unsigned long)(TAG_REG_A0 | TAG_REG_A1 | TAG_REG_A2 | TAG_REG_A3 | TAG_REG_A4 | TAG_REG_A5 | TAG_REG_A6 | TAG_REG_A7));
+            //sbi_printf("[IIE CVM Monitor@%s] EXCEPTION: CAUSE_VIRTUAL_SUPERVISOR_ECALL Tag=%lu\n", __func__, tag);
+            break;
+        default:
+            break;
+    }
+    return tag;
+}
+
+void copy_regs_tagged(void *cxt_dest, void *cxt_src, uint32_t tag){
+    signed long *temp1;
+    signed long *temp2;
+    for(int i = 0; i <= 31; i++){
+        if((tag >> i) & (uint32_t)1){
+            temp1 = cxt_dest + i * sizeof(unsigned long);
+            temp2 = cxt_src + i * sizeof(unsigned long);
+            sbi_memcpy(temp1, temp2, sizeof(unsigned long));
+        }
+    }
+}
 
 int cvm_vcpu_enter(struct sbi_trap_regs* host_regs, struct cvm_vcpu* cvm_vcpu, uint64_t kvm_vcpu_context, uint64_t kvm_vcpu_csr, uint64_t kvm_trap)
 {
@@ -478,7 +654,11 @@ int cvm_vcpu_enter(struct sbi_trap_regs* host_regs, struct cvm_vcpu* cvm_vcpu, u
     cvm_vcpu->kvm_vcpu_trap = kvm_trap;
 
     // TODO only copy selected reg value
-    sbi_memcpy(&cvm_vcpu->guest_context, kvm_guest_context, sizeof(struct cpu_context));
+    cvm_vcpu->guest_context.sstatus = kvm_guest_context->sstatus;
+    cvm_vcpu->guest_context.hstatus = kvm_guest_context->hstatus;
+    cvm_vcpu->guest_context.sepc = kvm_guest_context->sepc;
+    copy_regs_tagged(&cvm_vcpu->guest_context, kvm_guest_context, (uint32_t)cvm_vcpu->cxt_tag);
+    // sbi_memcpy(&cvm_vcpu->guest_context, kvm_guest_context, sizeof(struct cpu_context));
     // sbi_memcpy(&cvm_vcpu->guest_csr, kvm_guest_csr, sizeof(struct vcpu_csr));
     context_switch_to_cvm(host_regs, cvm_vcpu);
     __sbi_hfence_vvma_all();
@@ -567,7 +747,14 @@ int cvm_vcpu_exit(struct sbi_trap_regs* host_regs)
     cvm_vcpu->guest_context.hstatus &= ~HSTATUS_GVA;
     if((cvm_vcpu->guest_mstatus & MSTATUS_GVA) == MSTATUS_GVA)
         cvm_vcpu->guest_context.hstatus |= HSTATUS_GVA;
-    sbi_memcpy(kvm_vcpu_context, &cvm_vcpu->guest_context, sizeof(struct cpu_context));
+
+    cvm_vcpu->cxt_tag = vcpu_reg_tag(kvm_vcpu_trap);
+    kvm_vcpu_context->sstatus = cvm_vcpu->guest_context.sstatus;
+    kvm_vcpu_context->hstatus = cvm_vcpu->guest_context.hstatus;
+    kvm_vcpu_context->sepc = cvm_vcpu->guest_context.sepc;
+    copy_regs_tagged(kvm_vcpu_context, &cvm_vcpu->guest_context, (uint32_t)(cvm_vcpu->cxt_tag >> 32));
+
+    // sbi_memcpy(kvm_vcpu_context, &cvm_vcpu->guest_context, sizeof(struct cpu_context));
     // sbi_memcpy(kvm_vcpu_csr, &cvm_vcpu->guest_csr, sizeof(struct vcpu_csr));
     // sbi_printf("*******************exit*********************\r\n");
     // debug_print_csr(host_regs, cvm_vcpu);
