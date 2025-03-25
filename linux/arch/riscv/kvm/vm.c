@@ -51,16 +51,33 @@ int kvm_arch_init_vm(struct kvm *kvm, unsigned long type)
 
 void kvm_arch_destroy_vm(struct kvm *kvm)
 {
+	unsigned long i;
 	if(kvm->cmode)
 	{
 		// #ifdef PROG_WSW
 		struct iie_cvm_sbi_params *cvm_sbi_params = kmalloc(sizeof(struct iie_cvm_sbi_params), GFP_KERNEL);
 		cvm_sbi_params->vmid_ptr = __pa(&kvm->arch.vmid);
 		uintptr_t pa_cvm = __pa(cvm_sbi_params);
-		sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_DESTROY, pa_cvm, 0, 0, 0, 0, 0);
+
+		////#ifdef PROG_LBL
+		struct cvm_list_params *ret_params = kzalloc(sizeof(struct cvm_list_params), GFP_KERNEL);
+		unsigned long *chunk_vaddr_list = (unsigned long *)__get_free_pages(GFP_KERNEL, get_order(2^10*PAGE_SIZE));
+		while(!chunk_vaddr_list){
+			chunk_vaddr_list = (unsigned long *)__get_free_pages(GFP_KERNEL, get_order(2^10*PAGE_SIZE));
+		}
+		ret_params->addr = (unsigned long)__pa(chunk_vaddr_list);
+		uintptr_t pa_ret = __pa(ret_params);
+		sbi_ecall(SBI_EXT_CVM, SBI_EXT_RECYCLE_MEMORY, pa_cvm, __pa(ret_params), 0, 0, 0, 0);
+		struct cvm_mem_chunk_infor *chunk_infor;
+		// printk("recycle %ld chunks\n", ret_params->ele_num);
+		for(i=0; i<ret_params->ele_num; i++){
+			chunk_infor = (struct cvm_mem_chunk_infor *)*((unsigned long *)__va(ret_params->addr)+i);
+			vfree((void *)chunk_infor->chunk_vaddr);
+			__free_pages(virt_to_page(chunk_infor->chunk_infor_vaddr), 0);
+		}
+
+		sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_DESTROY, pa_cvm, pa_ret, 0, 0, 0, 0);
 		// #endif
-		
-		//#ifdef PROG_LBL
 		kvm_riscv_destroy_sw_node(kvm);
 		//#endif
 		kfree(cvm_sbi_params);

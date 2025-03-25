@@ -53,17 +53,19 @@ static int sbi_ecall_cvm_handler(unsigned long extid, unsigned long funcid,
 		ret = sbi_cvm_test((void *)regs->a0);
 		break;
 	case SBI_EXT_CVM_ALLOC_ROOT_PT:
-		ret = init_cvm_vcpu_root_pt((void *)regs->a0);
+		ret = init_cvm_vcpu_rootptAndChunk((void *)regs->a0);
 		break;
 	case SBI_EXT_CVM_INIT_SWIOTLB:
 		ret = init_swiotlb_params((void *)regs->a0, (void *)regs->a1);
 		break;
-	case SBI_REFILL_MEMORY_POOL:
+	case SBI_EXT_REFILL_MEMORY_POOL:
 		ret = refill_memory_pool((void *)regs->a0);
 		break;
 	case SBI_EXT_CVM_RETRY_LOAD:
 		ret = retry_load_after_refill((void *)regs->a0);
 		break;
+	case SBI_EXT_RECYCLE_MEMORY:
+		ret = recycle_memory((void *)regs->a0, (void *)regs->a1);
 	default:
 		break;
 	}

@@ -839,8 +839,10 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		preempt_enable();
 		
 		if(sbi_ret.error == TEE_NO_MEMORY){
-			printk("execute refill_KVM_memory_pool function here!\n");
-			refill_KVM_memory_pool();
+			// printk("refill_KVM_memory_pool function here!\n");
+			ret = refill_KVM_memory_pool();
+			if (ret)
+				return ret;
 			/* If we got host interrupt then do nothing */
 			trap->scause = CAUSE_IRQ_FLAG;
 		}

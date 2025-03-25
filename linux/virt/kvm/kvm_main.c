@@ -1263,7 +1263,9 @@ static struct kvm *kvm_create_vm(unsigned long type, const char *fdname)
 		if(!cvm_mem_inited)
 		{
 			// #ifdef PROG_LBL
-			cvm_mem_manege_init();
+			r = cvm_mem_manege_init();
+			if(r)
+				goto out_err_no_disable;
 			cvm_mem_inited = true;
 			// #endif
 		}
@@ -4835,14 +4837,15 @@ static int kvm_vm_ioctl_get_stats_fd(struct kvm *kvm)
 }
 
 static int kvm_vm_ioctl_load_file(struct kvm *kvm, void *argp){
-	//printk("----------------linux vm ioctl begin to load kernel-------------------\n");
+	// printk("----------------linux vm ioctl begin to load file-------------------\n");
 	struct sbiret ret;
 	unsigned long file_paddr_array;
 	struct load_file load_file_t;
 	unsigned long va;
+	int r = -ENOMEM;
 	if (copy_from_user(&load_file_t, argp, sizeof(struct load_file))){
 		printk("Copy iotcl parameters failed!\n");
-		return 0;
+		return -1;
 	}
 	unsigned long pages_num = (load_file_t.file_size + PAGE_SIZE - 1) / PAGE_SIZE;
 	unsigned long addr_entry_num = (pages_num + 512 - 1) / 512;
@@ -4877,8 +4880,10 @@ static int kvm_vm_ioctl_load_file(struct kvm *kvm, void *argp){
 	sbi_load_params->vmid_ptr = (struct kvm_vmid *)__pa(&kvm->arch.vmid);
 	ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_LOAD_FILE, __pa(va_sbi_params), 0, 0, 0, 0, 0);
 	while(ret.error == TEE_NO_MEMORY){
-		printk("refill_KVM_memory_pool here\n");
-		refill_KVM_memory_pool();
+		// printk("refill_KVM_memory_pool here\n");
+		r = refill_KVM_memory_pool();
+		if(r)
+			return r;
 		ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_RETRY_LOAD, __pa(va_sbi_params), 0, 0, 0, 0, 0);
 	}
 
@@ -4889,6 +4894,7 @@ static int kvm_vm_ioctl_load_file(struct kvm *kvm, void *argp){
 	}
 	__free_pages(virt_to_page(virt_address), get_order(addr_entry_num * PAGE_SIZE));
 	__free_pages(virt_to_page(va_sbi_params), 0);
+	// printk("----------------linux vm ioctl end to load file-------------------\n");
 	return ret.error;
 }
 
@@ -6411,42 +6417,31 @@ unsigned long iie_kernel_page_translate(unsigned long addr){
 	return (pte_val(*pte) >> _PAGE_PFN_SHIFT);
 }
 
-int cvm_mem_manege_init(){
-    unsigned long host_page_num, bitmap_page_num, page_own_table_num;
-	unsigned long *bitmap_addr, *page_own_table_addr;
-	struct cvm_list_params *bitmap = (struct cvm_list_params *)__get_free_pages(GFP_KERNEL, 0);
-	struct cvm_list_params *page_own_table = (struct cvm_list_params *)__get_free_pages(GFP_KERNEL, 0);
-	int i;
-	struct sbiret ret;
-	unsigned long level1;
-
+int cvm_init_bitmap(struct cvm_list_params *bitmap){
+	unsigned long host_page_num, bitmap_page_num;
+	unsigned long *bitmap_addr;
 
 	host_page_num = get_num_physpages();
-	//printk("host_page_num is %ld\n", host_page_num);
-	//each host memory page corresponds to 1 bit bitmap. so 8 bit is 1 byte.
 	bitmap_page_num = (host_page_num / 8 + PAGE_SIZE -1) / PAGE_SIZE;
-	//each host memory page corresponds to 8 byte entry of ownership page table.
-	page_own_table_num = (host_page_num * 8 + PAGE_SIZE -1) / PAGE_SIZE;
 	bitmap->page_num = bitmap_page_num;
-	page_own_table->page_num = page_own_table_num;
-
 	bitmap_addr = (unsigned long *)__get_free_pages(GFP_KERNEL, get_order(host_page_num / 8));			//used for bitmap
 	if(!bitmap_addr){
 		printk("bitmap alloc failed!\n");
 		return -ENOMEM;
 	}
-	//printk("bitmap_vaddr is %lx, bitmap_paddr is %lx, size is %d\n", (unsigned long)bitmap_addr, __pa(bitmap_addr), get_order(host_page_num / 8));
+	bitmap->addr = __pa((unsigned long)bitmap_addr);
+	//bitmap element is unsigned long type.
+	bitmap->ele_num = host_page_num / 64;
+	return 0;
+}
 
-	// unsigned long bvadd = (unsigned long)memblock_alloc(1024, PAGE_SIZE);
-	// if(!bvadd) {
-	// 	printk("bitmap alloc failed!\n");
-	// 	return -ENOMEM;
-	// }
-	//printk("bitmap_vaddr is %lx, bitmap_paddr is %lx, size is %ld\n", bvadd, __va(bvadd), get_order(host_page_num / 8));
-
-
-	/* __get_free_pages can allocate 2^10 pages(4MB) at most , so there is a limit of host memory size(2GB at most). */
-	// printk("page_own_table_num is %ld\n", page_own_table_num);
+int cvm_init_ownershiptable(struct cvm_list_params *page_own_table){
+	unsigned long host_page_num, page_own_table_num, level1, i, page_vaddr;
+	unsigned long *page_own_table_addr;
+	
+	host_page_num = get_num_physpages();
+	page_own_table_num = (host_page_num * 8 + PAGE_SIZE -1) / PAGE_SIZE;
+	page_own_table->page_num = page_own_table_num;
 	if(page_own_table_num <= 1024){
 		level1=0;
 		page_own_table_addr = (unsigned long *)__get_free_pages(GFP_KERNEL, get_order(host_page_num * 8));
@@ -6464,7 +6459,6 @@ int cvm_mem_manege_init(){
 				printk("page_own_table alloc failed when page_own_table_num is greater than 2^10!\n");
 				return -ENOMEM;
 			}
-			unsigned long page_vaddr;
 			for(i=0; i < level1; i++){
 				page_vaddr = (unsigned long)__get_free_pages(GFP_KERNEL, get_order(1024 * PAGE_SIZE));  //allocate 4MB memory for ownership page table.
 				if(!page_vaddr){
@@ -6479,109 +6473,144 @@ int cvm_mem_manege_init(){
 			return -ENOMEM;
 		}
 	}
-
-	bitmap->addr = __pa((unsigned long)bitmap_addr);
-	//bitmap element is unsigned long type.
-	bitmap->ele_num = host_page_num / 64;
-
 	page_own_table->level = level1;
 	page_own_table->addr = __pa((unsigned long)page_own_table_addr);
 	//bitmap element is unsigned long type.
 	page_own_table->ele_num = host_page_num;
-	
+	return 0;
+}
 
-	//apply for free memory and translation their hva to hpa.
-	//allocate 2^14 pages(64MB) for confidential memory.
-	//each page addr is 8B, so we need 2^14 * 8 / 4K = 2^5 pages to record .
-	unsigned long *cm_pool = vmalloc(PAGE_SIZE << INITIAL_PAGE_NUM);
-	unsigned long cm_list_page_num = (1UL << INITIAL_PAGE_NUM) * sizeof(unsigned long) / (PAGE_SIZE);
-	unsigned long *cm_addr_list = (unsigned long *)__get_free_pages(GFP_KERNEL, get_order(cm_list_page_num * PAGE_SIZE));
-	
-	unsigned long root_pt_va;
+int cvm_init_rootpagetable(struct cvm_list_params *root_pt_params, unsigned long *rpt_addr_list){
+	unsigned long root_pt_va, i;
 	//we already known the max number of cvm is 32
-	unsigned long *root_pt_list = (unsigned long *)__get_free_pages(GFP_KERNEL, 0);
+	// unsigned long *root_pt_list = (unsigned long *)__get_free_pages(GFP_KERNEL, 0);
 	for(i=0; i<(1<<MAX_CVM_NUM); i++){
 		root_pt_va = __get_free_pages(GFP_KERNEL, 2);
 		if(!root_pt_va){
 			printk("root_pt_va alloc failed!\n");
 			return -ENOMEM;
-		}else{
-			*(root_pt_list+i) = __pa(root_pt_va);
 		}
+		*(rpt_addr_list + i) = __pa(root_pt_va);
+		
 	}
-	if (!cm_pool){
-		printk("cm_pool mmap failed!\n");
-		return -ENOMEM;
+	root_pt_params->addr = __pa((unsigned long)rpt_addr_list);
+	root_pt_params->ele_num = (1UL<<MAX_CVM_NUM);
+	return 0;
+}
+
+int cvm_init_memorypool(struct cvm_list_params *chunk_infor_list, unsigned long *chunk_infor_addr, unsigned long chunk_num, bool isrefill){
+	unsigned long *chunk_vaddr, i, j;
+	chunk_infor_list->ele_num = chunk_num;
+	chunk_infor_list->page_num = chunk_num >> 9;
+	for(i=0; i<chunk_num; i++){
+		struct cvm_mem_chunk_infor *chunk_infor = (struct cvm_mem_chunk_infor *)__get_free_pages(GFP_KERNEL, 0);
+		if (!chunk_infor){
+			printk("chunnk_info vmalloc failed!\n");
+			return -ENOMEM;
+		}
+		chunk_vaddr = vmalloc(PAGE_SIZE * 512);
+		if (!chunk_vaddr){
+			printk("chunk_vaddr vmalloc failed!\n");
+			return -ENOMEM;
+		}
+		unsigned long *chunk_paddr_list = (unsigned long *)__get_free_pages(GFP_KERNEL, 0);
+		if(!chunk_paddr_list){
+			printk("chunk_paddr_list malloc failed!\n");
+			return -ENOMEM;
+		}
+		for(j=0; j<512; j++){
+			*(chunk_paddr_list+j) = iie_kernel_page_translate((unsigned long)chunk_vaddr + j*PAGE_SIZE) << PAGE_SHIFT;
+			// printk("%lx\n", *(chunk_paddr_list+j));
+		}
+		
+		chunk_infor->chunk_vaddr = (unsigned long)chunk_vaddr;
+		chunk_infor->paddr_list = (unsigned long *)__pa(chunk_paddr_list);
+		*(chunk_infor_addr + i) = __pa(chunk_infor);
+		chunk_infor->chunk_infor_vaddr = (unsigned long)chunk_infor;
+		if(isrefill)
+			chunk_infor->type = 1; 	//They need to be recycled when the CVMs are destroyed.
+		else
+			chunk_infor->type = 0;	//They don't need to be recycled.
+	}
+	chunk_infor_list->addr = __pa(chunk_infor_addr);
+
+
+	return 0;
+}
+
+int cvm_mem_manege_init(){
+	struct cvm_list_params *bitmap, *page_own_table, *root_pt, *chunk_infor_list;
+	unsigned long *rpt_addr_list, *chunk_infor_addr;
+	unsigned long chunk_num;
+	int re;
+	struct sbiret ret;
+
+	bitmap = (struct cvm_list_params *)__get_free_pages(GFP_KERNEL, 0);
+	re = cvm_init_bitmap(bitmap);
+	if(re != 0){
+		return re;
 	}
 
-	// printk("memory mmap successed!\n");
-	// printk("virtual address begin at %lx\n", (unsigned long)cm_pool);
-	for(i=0;i<(1<<INITIAL_PAGE_NUM);i++){
-		*(cm_addr_list+i) = iie_kernel_page_translate((unsigned long)cm_pool + i*PAGE_SIZE) << PAGE_SHIFT;
-		// printk("vaddr %lx is translated to paddr %lx\n", (unsigned long)cm_pool + i*PAGE_SIZE, *(cm_addr_list+i));
-	}
-	struct cvm_list_params *cm_addr_l = (struct cvm_list_params *)__get_free_pages(GFP_KERNEL, 0);
-	cm_addr_l->addr = __pa((unsigned long)cm_addr_list);
-	cm_addr_l->ele_num = (1UL<<INITIAL_PAGE_NUM);
-	struct cvm_list_params *root_pt_l = (struct cvm_list_params *)__get_free_pages(GFP_KERNEL, 0);
-	root_pt_l->addr = __pa((unsigned long)root_pt_list);
-	root_pt_l->ele_num = (1UL<<MAX_CVM_NUM);
-	ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_INIT_PAGE_LIST, __pa((unsigned long)cm_addr_l), 
-		__pa((unsigned long)root_pt_l), __pa((unsigned long)bitmap), __pa((unsigned long)page_own_table), 0, 0);
-	
-	if(ret.error == TEE_NO_MEMORY){
-		refill_KVM_memory_pool();
+	page_own_table = (struct cvm_list_params *)__get_free_pages(GFP_KERNEL, 0);
+	re = cvm_init_ownershiptable(page_own_table);
+	if(re != 0){
+		return re;
 	}
 
-	__free_pages(virt_to_page(cm_addr_l), 0);
-	__free_pages(virt_to_page(root_pt_l), 0);
+	rpt_addr_list = (unsigned long *)__get_free_pages(GFP_KERNEL, 0);
+	root_pt = (struct cvm_list_params *)__get_free_pages(GFP_KERNEL, 0);
+	re = cvm_init_rootpagetable(root_pt, rpt_addr_list);
+	if(re != 0){
+		return re;
+	}
+	//the size of chunk is 2MB.Because one page can only contain 512 addresses of physical page while 512 physical pages are 2MB.
+	chunk_num = (PAGE_SIZE  << INITIAL_PAGE_NUM) >> CVM_CHUNK_SIZE; 
+	chunk_infor_list = kmalloc(sizeof(struct cvm_list_params), GFP_KERNEL | __GFP_ZERO);
+	chunk_infor_addr = (unsigned long *)__get_free_pages(GFP_KERNEL, 0);
+	re = cvm_init_memorypool(chunk_infor_list, chunk_infor_addr, chunk_num, false);
+	if(re != 0){
+		return re;
+	}
+
+	ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_INIT_PAGE_LIST, __pa((unsigned long)chunk_infor_list), 
+		__pa((unsigned long)root_pt), __pa((unsigned long)bitmap), __pa((unsigned long)page_own_table), 0, 0);
+
+	__free_pages(virt_to_page(chunk_infor_addr), 0);
+	__free_pages(virt_to_page(root_pt), 0);
 	__free_pages(virt_to_page(bitmap), 0);
 	__free_pages(virt_to_page(page_own_table), 0);
-	__free_pages(virt_to_page(cm_addr_list), get_order(cm_list_page_num * PAGE_SIZE));
-	__free_pages(virt_to_page(root_pt_list), 0);
+	// __free_pages(virt_to_page(cm_addr_list), get_order(cm_list_page_num * PAGE_SIZE));
+	__free_pages(virt_to_page(rpt_addr_list), 0);
 
 	return ret.error;
 }
 
 int refill_KVM_memory_pool(){
-	printk("Host OS refilled confidential memory pool!\n");
+	// printk("Host OS refilled confidential memory pool!\n");
 	struct sbiret ret;
-	unsigned long *refill_pool;
-	unsigned long refill_list_page_num;
-	unsigned long *refill_addr_list;
-	unsigned long i;
+	unsigned long *chunk_infor_addr;
+	unsigned long refill_chunk_num;
+	int re;
+	struct cvm_list_params *refill_chunk_list;
 
-	refill_pool = vmalloc(PAGE_SIZE << REFILL_PAGE_NUM);
-	if(!refill_pool){
-		printk("Failed to allocate refill_pool!\n");
+	refill_chunk_num = PAGE_SIZE << REFILL_PAGE_NUM >> CVM_CHUNK_SIZE;
+	// printk("%d\n",refill_chunk_num);
+	refill_chunk_list = (struct cvm_list_params *)__get_free_pages(GFP_KERNEL, 0);
+	if(!refill_chunk_list){
+		printk("Failed to allocate refill_chunk_list!\n");
 		return -ENOMEM;
 	}
-
-	//used to store HPA of refill_pool.
-	refill_list_page_num = (1UL << REFILL_PAGE_NUM) * sizeof(unsigned long) / (PAGE_SIZE);
-	refill_addr_list = (unsigned long *)__get_free_pages(GFP_KERNEL, get_order(refill_list_page_num * PAGE_SIZE));
-	if(!refill_addr_list){
-		printk("Failed to allocate refill_addr_list!\n");
+	chunk_infor_addr = (unsigned long *)__get_free_pages(GFP_KERNEL, 0);
+	if(!chunk_infor_addr){
+		printk("Failed to allocate chunk_infor_addr!\n");
 		return -ENOMEM;
 	}
-	for(i=0; i<(1<<REFILL_PAGE_NUM); i++){
-		*(refill_addr_list+i) = iie_kernel_page_translate((unsigned long)refill_pool + i*PAGE_SIZE) << PAGE_SHIFT;
-		//*(refill_addr_list+i) = __pa((unsigned long)refill_pool + i*PAGE_SIZE);
-		// printk("vaddr %lx is translated to paddr %lx\n", (unsigned long)cm_pool + i*PAGE_SIZE, *(cm_addr_list+i));
+	re = cvm_init_memorypool(refill_chunk_list, chunk_infor_addr, refill_chunk_num, true);
+	if(re != 0){
+		return re;
 	}
-
-	struct cvm_list_params *refill_addr_l = (struct cvm_list_params *)__get_free_pages(GFP_KERNEL, 0);
-	if(!refill_addr_l){
-		printk("Failed to allocate refill_addr_l!\n");
-		return -ENOMEM;
-	}
-	refill_addr_l->addr = __pa((unsigned long)refill_addr_list);
-	refill_addr_l->ele_num = (1UL<<REFILL_PAGE_NUM);
-
-	ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_REFILL_MEMORY_POOL, __pa(refill_addr_l), 0, 0, 0, 0, 0);
-
-
-	__free_pages(virt_to_page(refill_addr_l), 0);
-	__free_pages(virt_to_page(refill_addr_list), get_order(refill_list_page_num * PAGE_SIZE));
+	ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_REFILL_MEMORY_POOL, __pa(refill_chunk_list), 0, 0, 0, 0, 0);
+	__free_pages(virt_to_page(chunk_infor_addr), 0);
+	// printk("Host OS end refilled confidential memory pool!\n");
 	return ret.error;
 }
