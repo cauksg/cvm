@@ -1,7 +1,6 @@
-1、首先，下载本项目并切换到cvm-wsw分支
+1、首先，下载本项目
 
-`git clone https://gitee.com/lubailong/riscv-kvm.git`
-`git checkout cvm-wsw`
+`git clone https://gitee.com/lubailong/xs-cvm.git`
 
 2、之后，执行build-tool.sh脚本，安装riscv-gnu-toolchain、QEMU、kvmtool等工具，搭建riscv kvm所需要的环境
 
