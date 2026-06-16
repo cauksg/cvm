@@ -1,0 +1,123 @@
+make: Entering directory '/nfs/home/liyunxiao/xs-cvm/linux'
+make[1]: Entering directory '/nfs/home/liyunxiao/xs-cvm/build-riscv64'
+  GEN     Makefile
+*** Default configuration is based on 'defconfig'
+#
+# configuration written to .config
+#
+make[1]: Leaving directory '/nfs/home/liyunxiao/xs-cvm/build-riscv64'
+make: Leaving directory '/nfs/home/liyunxiao/xs-cvm/linux'
+make: Entering directory '/nfs/home/liyunxiao/xs-cvm/linux'
+make[1]: Entering directory '/nfs/home/liyunxiao/xs-cvm/build-riscv64'
+  SYNC    include/config/auto.conf.cmd
+  GEN     Makefile
+  GEN     Makefile
+  CALL    /nfs/home/liyunxiao/xs-cvm/linux/scripts/checksyscalls.sh
+  AR      drivers/built-in.a
+  AR      built-in.a
+  AR      vmlinux.a
+  LD      vmlinux.o
+  OBJCOPY modules.builtin.modinfo
+  GEN     modules.builtin
+  MODPOST Module.symvers
+make[1]: Leaving directory '/nfs/home/liyunxiao/xs-cvm/build-riscv64'
+make: Leaving directory '/nfs/home/liyunxiao/xs-cvm/linux'
+  CLEAN
+  CC       builtin-balloon.static.o
+  CC       builtin-debug.static.o
+  CC       builtin-help.static.o
+  CC       builtin-list.static.o
+  CC       builtin-stat.static.o
+  CC       builtin-pause.static.o
+  CC       builtin-resume.static.o
+  CC       builtin-run.static.o
+  CC       builtin-setup.static.o
+  CC       builtin-stop.static.o
+  CC       builtin-version.static.o
+  CC       devices.static.o
+  CC       disk/core.static.o
+  CC       framebuffer.static.o
+  CC       guest_compat.static.o
+  CC       hw/rtc.static.o
+  CC       irq.static.o
+  CC       kvm.static.o
+  CC       kvm-cpu.static.o
+  CC       main.static.o
+  CC       mmio.static.o
+  CC       pci.static.o
+  CC       term.static.o
+  CC       vfio/core.static.o
+  CC       vfio/pci.static.o
+  CC       virtio/blk.static.o
+  CC       virtio/scsi.static.o
+  CC       virtio/console.static.o
+  CC       virtio/core.static.o
+  CC       virtio/net.static.o
+  CC       virtio/rng.static.o
+  CC       virtio/balloon.static.o
+  CC       virtio/pci.static.o
+  CC       virtio/vsock.static.o
+  CC       virtio/pci-legacy.static.o
+  CC       virtio/pci-modern.static.o
+  CC       disk/blk.static.o
+  CC       disk/qcow.static.o
+  CC       disk/raw.static.o
+  CC       ioeventfd.static.o
+  CC       net/uip/core.static.o
+  CC       net/uip/arp.static.o
+  CC       net/uip/icmp.static.o
+  CC       net/uip/ipv4.static.o
+  CC       net/uip/tcp.static.o
+  CC       net/uip/udp.static.o
+  CC       net/uip/buf.static.o
+  CC       net/uip/csum.static.o
+  CC       net/uip/dhcp.static.o
+  CC       kvm-cmd.static.o
+  CC       util/bitmap.static.o
+  CC       util/find.static.o
+  CC       util/init.static.o
+  CC       util/iovec.static.o
+  CC       util/rbtree.static.o
+  CC       util/threadpool.static.o
+  CC       util/parse-options.static.o
+  CC       util/rbtree-interval.static.o
+  CC       util/strbuf.static.o
+  CC       util/read-write.static.o
+  CC       util/util.static.o
+  CC       virtio/9p.static.o
+  CC       virtio/9p-pdu.static.o
+  CC       kvm-ipc.static.o
+  CC       builtin-sandbox.static.o
+  CC       virtio/mmio.static.o
+  CC       virtio/mmio-legacy.static.o
+  CC       virtio/mmio-modern.static.o
+  CC       hw/serial.static.o
+  CC       riscv/fdt.static.o
+  CC       riscv/ioport.static.o
+  CC       riscv/irq.static.o
+  CC       riscv/kvm.static.o
+  CC       riscv/kvm-cpu.static.o
+  CC       riscv/pci.static.o
+  CC       riscv/plic.static.o
+  COMPILE  guest/init
+  CONVERT  guest/guest_init.c
+  CC       guest/guest_init.o
+  LINK     lkvm-static
+make: Entering directory '/nfs/home/liyunxiao/xs-cvm/busybox-1.33.1'
+  CC      networking/tc.o
+make: Leaving directory '/nfs/home/liyunxiao/xs-cvm/busybox-1.33.1'
+/nfs/home/liyunxiao/xs-cvm
+make: Entering directory '/nfs/home/liyunxiao/xs-cvm/linux'
+make[1]: Entering directory '/nfs/home/liyunxiao/xs-cvm/build-riscv64'
+  SYNC    include/config/auto.conf.cmd
+  GEN     Makefile
+  GEN     Makefile
+  CALL    /nfs/home/liyunxiao/xs-cvm/linux/scripts/checksyscalls.sh
+  CC      net/socket.o
+  CC      drivers/net/tun.o
+  UPD     kernel/config_data
+  GZIP    kernel/config_data.gz
+  CC      kernel/configs.o
+  AR      kernel/built-in.a
+  AR      net/built-in.a
+  AR      drivers/net/built-in.a

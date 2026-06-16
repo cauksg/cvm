@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 
 
 export ARCH=riscv
@@ -11,6 +12,9 @@ export CROSS_COMPILE=riscv64-linux-gnu-
 #sed -i 's|^CONFIG_STATIC=.*$|CONFIG_STATIC=y|' .config
 rm -rf ./busybox-1.33.1/_install
 #cd ..
+sed -i 's|^CONFIG_TC=.*$|# CONFIG_TC is not set|' busybox-1.33.1/.config
+sed -i 's|^CONFIG_FEATURE_TC_INGRESS=.*$|# CONFIG_FEATURE_TC_INGRESS is not set|' busybox-1.33.1/.config
+yes "" | make -C busybox-1.33.1 oldconfig
 make -C busybox-1.33.1 install
 mkdir -p busybox-1.33.1/_install/etc/init.d
 mkdir -p busybox-1.33.1/_install/dev
@@ -33,4 +37,3 @@ sed -i 's|^CONFIG_VIRTIO_NET=.*$|CONFIG_VIRTIO_NET=n|' .config
 sed -i 's|^CONFIG_INITRAMFS_SOURCE=.*$|CONFIG_INITRAMFS_SOURCE="../rootfs_kvm_riscv64.cpio"|' .config
 cd ..
 make -C linux O=`pwd`/build-riscv64 -j $(nproc)
-

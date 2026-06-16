@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 
 #git submodule update --init
 
@@ -44,7 +45,7 @@ cd ..
 
 #compile Linux with RISC-V KVM support
 #git clone https://github.com/kvm-riscv/linux.git
-mkdir build-riscv64
+mkdir -p build-riscv64
 make -C linux O=`pwd`/build-riscv64 defconfig
 sed -i 's|^CONFIG_NET_9P_VIRTIO=.*$|CONFIG_NET_9P_VIRTIO=n|' ./build-riscv64/.config
 sed -i 's|^CONFIG_VIRTIO_NET=.*$|CONFIG_VIRTIO_NET=n|' ./build-riscv64/.config
@@ -76,12 +77,22 @@ git submodule update
 cd ..
 
 #build a root FS for our OS
-wget https://busybox.net/downloads/busybox-1.33.1.tar.bz2
-tar -C . -xvf busybox-1.33.1.tar.bz2
+if [ ! -d busybox-1.33.1 ]; then
+	if [ ! -f busybox-1.33.1.tar.bz2 ]; then
+		wget https://busybox.net/downloads/busybox-1.33.1.tar.bz2 || {
+			echo "Failed to download busybox-1.33.1.tar.bz2 and no local copy is available." >&2
+			exit 1
+		}
+	fi
+	tar -C . -xvf busybox-1.33.1.tar.bz2
+fi
 cd busybox-1.33.1
 make defconfig
 sed -i 's|^CONFIG_CROSS_COMPILER_PREFIX=.*$|CONFIG_CROSS_COMPILER_PREFIX="riscv64-linux-gnu-"|' .config
 sed -i 's|.*CONFIG_STATIC.*|CONFIG_STATIC=y|' .config
+sed -i 's|^CONFIG_TC=.*$|# CONFIG_TC is not set|' .config
+sed -i 's|^CONFIG_FEATURE_TC_INGRESS=.*$|# CONFIG_FEATURE_TC_INGRESS is not set|' .config
+yes "" | make oldconfig
 cd ..
 #cd busybox-1.33.1
 #make defconfig
@@ -101,4 +112,3 @@ cd ..
 #cp -f ./kvmtool/lkvm-static busybox-1.33.1/_install/apps
 ##cp -f ./build-riscv64/arch/riscv/boot/Image busybox-1.33.1/_install/apps
 #cd busybox-1.33.1/_install; find ./ | cpio -o -H newc > ../../rootfs_kvm_riscv64.img; cd -
-
