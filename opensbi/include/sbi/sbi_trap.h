@@ -112,10 +112,13 @@
 /** Size (in bytes) of sbi_trap_info */
 #define SBI_TRAP_INFO_SIZE SBI_TRAP_INFO_OFFSET(last)
 
+#define STACK_BOUNDARY 16
+#define ALIGN_TO_BOUNDARY(x, a) (((x) + (a) - 1) & ~((a) - 1))
+
 /** Size (in bytes) of sbi_trap_context */
-#define SBI_TRAP_CONTEXT_SIZE (SBI_TRAP_REGS_SIZE + \
+#define SBI_TRAP_CONTEXT_SIZE ALIGN_TO_BOUNDARY((SBI_TRAP_REGS_SIZE + \
 			       SBI_TRAP_INFO_SIZE + \
-			       __SIZEOF_POINTER__)
+			       __SIZEOF_POINTER__), STACK_BOUNDARY)
 
 #ifndef __ASSEMBLER__
 
@@ -124,70 +127,75 @@
 
 /** Representation of register state at time of trap/interrupt */
 struct sbi_trap_regs {
-	/** zero register state */
-	unsigned long zero;
-	/** ra register state */
-	unsigned long ra;
-	/** sp register state */
-	unsigned long sp;
-	/** gp register state */
-	unsigned long gp;
-	/** tp register state */
-	unsigned long tp;
-	/** t0 register state */
-	unsigned long t0;
-	/** t1 register state */
-	unsigned long t1;
-	/** t2 register state */
-	unsigned long t2;
-	/** s0 register state */
-	unsigned long s0;
-	/** s1 register state */
-	unsigned long s1;
-	/** a0 register state */
-	unsigned long a0;
-	/** a1 register state */
-	unsigned long a1;
-	/** a2 register state */
-	unsigned long a2;
-	/** a3 register state */
-	unsigned long a3;
-	/** a4 register state */
-	unsigned long a4;
-	/** a5 register state */
-	unsigned long a5;
-	/** a6 register state */
-	unsigned long a6;
-	/** a7 register state */
-	unsigned long a7;
-	/** s2 register state */
-	unsigned long s2;
-	/** s3 register state */
-	unsigned long s3;
-	/** s4 register state */
-	unsigned long s4;
-	/** s5 register state */
-	unsigned long s5;
-	/** s6 register state */
-	unsigned long s6;
-	/** s7 register state */
-	unsigned long s7;
-	/** s8 register state */
-	unsigned long s8;
-	/** s9 register state */
-	unsigned long s9;
-	/** s10 register state */
-	unsigned long s10;
-	/** s11 register state */
-	unsigned long s11;
-	/** t3 register state */
-	unsigned long t3;
-	/** t4 register state */
-	unsigned long t4;
-	/** t5 register state */
-	unsigned long t5;
-	/** t6 register state */
-	unsigned long t6;
+	union {
+		unsigned long gprs[32];
+		struct {
+			/** zero register state */
+			unsigned long zero;
+			/** ra register state */
+			unsigned long ra;
+			/** sp register state */
+			unsigned long sp;
+			/** gp register state */
+			unsigned long gp;
+			/** tp register state */
+			unsigned long tp;
+			/** t0 register state */
+			unsigned long t0;
+			/** t1 register state */
+			unsigned long t1;
+			/** t2 register state */
+			unsigned long t2;
+			/** s0 register state */
+			unsigned long s0;
+			/** s1 register state */
+			unsigned long s1;
+			/** a0 register state */
+			unsigned long a0;
+			/** a1 register state */
+			unsigned long a1;
+			/** a2 register state */
+			unsigned long a2;
+			/** a3 register state */
+			unsigned long a3;
+			/** a4 register state */
+			unsigned long a4;
+			/** a5 register state */
+			unsigned long a5;
+			/** a6 register state */
+			unsigned long a6;
+			/** a7 register state */
+			unsigned long a7;
+			/** s2 register state */
+			unsigned long s2;
+			/** s3 register state */
+			unsigned long s3;
+			/** s4 register state */
+			unsigned long s4;
+			/** s5 register state */
+			unsigned long s5;
+			/** s6 register state */
+			unsigned long s6;
+			/** s7 register state */
+			unsigned long s7;
+			/** s8 register state */
+			unsigned long s8;
+			/** s9 register state */
+			unsigned long s9;
+			/** s10 register state */
+			unsigned long s10;
+			/** s11 register state */
+			unsigned long s11;
+			/** t3 register state */
+			unsigned long t3;
+			/** t4 register state */
+			unsigned long t4;
+			/** t5 register state */
+			unsigned long t5;
+			/** t6 register state */
+			unsigned long t6;
+		};
+	};
 	/** mepc register state */
 	unsigned long mepc;
 	/** mstatus register state */
@@ -195,6 +203,22 @@ struct sbi_trap_regs {
 	/** mstatusH register state (only for 32-bit) */
 	unsigned long mstatusH;
 };
+
+_Static_assert(
+	sizeof(((struct sbi_trap_regs *)0)->gprs) ==
+	offsetof(struct sbi_trap_regs, t6) +
+	sizeof(((struct sbi_trap_regs *)0)->t6),
+	"struct sbi_trap_regs's layout differs between gprs and named members");
+
+#define REG_VAL(idx, regs)		((regs)->gprs[(idx)])
+
+#define GET_RS1(insn, regs)		REG_VAL(GET_RS1_NUM(insn), regs)
+#define GET_RS2(insn, regs)		REG_VAL(GET_RS2_NUM(insn), regs)
+#define GET_RS1S(insn, regs)		REG_VAL(GET_RS1S_NUM(insn), regs)
+#define GET_RS2S(insn, regs)		REG_VAL(GET_RS2S_NUM(insn), regs)
+#define GET_RS2C(insn, regs)		REG_VAL(GET_RS2C_NUM(insn), regs)
+#define SET_RD(insn, regs, val)		(REG_VAL(GET_RD_NUM(insn), regs) = (val))
+#define SET_RDS(insn, regs, val)	(REG_VAL(GET_RDS_NUM(insn), regs) = (val))
 
 /** Representation of trap details */
 struct sbi_trap_info {
@@ -236,8 +260,80 @@ static inline unsigned long sbi_regs_gva(const struct sbi_trap_regs *regs)
 #endif
 }
 
+static inline bool sbi_regs_from_virt(const struct sbi_trap_regs *regs)
+{
+#if __riscv_xlen == 32
+	return (regs->mstatusH & MSTATUSH_MPV) ? true : false;
+#else
+	return (regs->mstatus & MSTATUS_MPV) ? true : false;
+#endif
+}
+
+static inline int sbi_mstatus_prev_mode(unsigned long mstatus)
+{
+	return (mstatus & MSTATUS_MPP) >> MSTATUS_MPP_SHIFT;
+}
+
+#if __riscv_xlen == 32
+static inline int sbi_regs_prev_xlen(const struct sbi_trap_regs *regs)
+{
+	return __riscv_xlen;
+}
+#else
+static inline int sbi_mstatus_sxl(unsigned long mstatus)
+{
+	return (mstatus & MSTATUS_SXL) >> MSTATUS_SXL_SHIFT;
+}
+
+static inline int sbi_mstatus_uxl(unsigned long mstatus)
+{
+	return (mstatus & MSTATUS_UXL) >> MSTATUS_UXL_SHIFT;
+}
+
+static inline int sbi_hstatus_vsxl(unsigned long hstatus)
+{
+	return (hstatus & HSTATUS_VSXL) >> HSTATUS_VSXL_SHIFT;
+}
+
+static inline int sbi_regs_prev_xlen(const struct sbi_trap_regs *regs)
+{
+	unsigned long hstatus, vsstatus;
+
+	if (!sbi_regs_from_virt(regs)) {
+		switch (sbi_mstatus_prev_mode(regs->mstatus)) {
+		case PRV_M:
+			return __riscv_xlen;
+		case PRV_S:
+			return MXL_TO_XLEN(sbi_mstatus_sxl(regs->mstatus));
+		case PRV_U:
+			return MXL_TO_XLEN(sbi_mstatus_uxl(regs->mstatus));
+		default:
+			__builtin_unreachable();
+		}
+	}
+
+	/* V=1, Check HSXLEN first */
+	if (sbi_mstatus_sxl(regs->mstatus) < MXL_XLEN_64)
+		return 32;
+
+	hstatus = csr_read(CSR_HSTATUS);
+	/* Check VSXLEN */
+	if (sbi_hstatus_vsxl(hstatus) < MXL_XLEN_64)
+		return 32;
+
+	vsstatus = csr_read(CSR_VSSTATUS);
+	switch (sbi_mstatus_prev_mode(regs->mstatus)) {
+		case PRV_S:
+			return MXL_TO_XLEN(sbi_hstatus_vsxl(hstatus));
+		case PRV_U:
+			return MXL_TO_XLEN(sbi_mstatus_uxl(vsstatus));
+	}
+	__builtin_unreachable();
+}
+#endif
+
 int sbi_trap_redirect(struct sbi_trap_regs *regs,
-		    const struct sbi_trap_info *trap);
+		      const struct sbi_trap_info *trap);
 
 static inline struct sbi_trap_context *sbi_trap_get_context(struct sbi_scratch *scratch)
 {
@@ -251,6 +347,8 @@ static inline void sbi_trap_set_context(struct sbi_scratch *scratch,
 }
 
 struct sbi_trap_context *sbi_trap_handler(struct sbi_trap_context *tcntx);
+
+struct sbi_trap_context *sbi_trap_rnmi_handler(struct sbi_trap_context *tcntx);
 
 #endif
 

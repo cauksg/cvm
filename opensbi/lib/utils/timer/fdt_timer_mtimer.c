@@ -30,7 +30,7 @@ static SBI_LIST_HEAD(mtn_list);
 
 static struct aclint_mtimer_data *mt_reference = NULL;
 
-static int timer_mtimer_cold_init(void *fdt, int nodeoff,
+static int timer_mtimer_cold_init(const void *fdt, int nodeoff,
 				  const struct fdt_match *match)
 {
 	int rc;
@@ -39,6 +39,7 @@ static int timer_mtimer_cold_init(void *fdt, int nodeoff,
 	struct aclint_mtimer_data *mt;
 	const struct timer_mtimer_quirks *quirks = match->data;
 	bool is_clint = quirks && quirks->is_clint;
+	bool is_ref = false;
 
 	mtn = sbi_zalloc(sizeof(*mtn));
 	if (!mtn)
@@ -110,13 +111,16 @@ static int timer_mtimer_cold_init(void *fdt, int nodeoff,
 	}
 
 	/*
-	 * Select first MTIMER device with no associated HARTs as our
-	 * reference MTIMER device. This is only a temporary strategy
-	 * of selecting reference MTIMER device. In future, we might
-	 * define an optional DT property or some other mechanism to
-	 * help us select the reference MTIMER device.
+	 * If we have a DT property to indicate which MTIMER is the reference,
+	 * select the first MTIMER device that has it. Otherwise, select the
+	 * first MTIMER device with no associated HARTs as our reference.
 	 */
-	if (!mt->hart_count && !mt_reference) {
+	if (fdt_getprop(fdt, nodeoff, "riscv,reference-mtimer", NULL))
+		is_ref = true;
+	else if (!mt->hart_count)
+		is_ref = true;
+
+	if (is_ref && !mt_reference) {
 		mt_reference = mt;
 		/*
 		 * Set reference for already propbed MTIMER devices
@@ -153,8 +157,10 @@ static const struct timer_mtimer_quirks thead_aclint_quirks = {
 };
 
 static const struct fdt_match timer_mtimer_match[] = {
+	{ .compatible = "mips,p8700-aclint-mtimer" },
 	{ .compatible = "riscv,clint0", .data = &sifive_clint_quirks },
 	{ .compatible = "sifive,clint0", .data = &sifive_clint_quirks },
+	{ .compatible = "sifive,clint2", .data = &sifive_clint_quirks },
 	{ .compatible = "thead,c900-clint", .data = &thead_clint_quirks },
 	{ .compatible = "thead,c900-aclint-mtimer",
 	  .data = &thead_aclint_quirks },
@@ -162,9 +168,7 @@ static const struct fdt_match timer_mtimer_match[] = {
 	{ },
 };
 
-struct fdt_timer fdt_timer_mtimer = {
+const struct fdt_driver fdt_timer_mtimer = {
 	.match_table = timer_mtimer_match,
-	.cold_init = timer_mtimer_cold_init,
-	.warm_init = aclint_mtimer_warm_init,
-	.exit = NULL,
+	.init = timer_mtimer_cold_init,
 };

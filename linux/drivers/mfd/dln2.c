@@ -125,7 +125,7 @@ int dln2_register_event_cb(struct platform_device *pdev, u16 id,
 	unsigned long flags;
 	int ret = 0;
 
-	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	entry = kzalloc_obj(*entry);
 	if (!entry)
 		return -ENOMEM;
 
@@ -778,7 +778,7 @@ static int dln2_probe(struct usb_interface *interface,
 	if (ret)
 		return ret;
 
-	dln2 = kzalloc(sizeof(*dln2), GFP_KERNEL);
+	dln2 = kzalloc_obj(*dln2);
 	if (!dln2)
 		return -ENOMEM;
 
@@ -826,7 +826,6 @@ out_stop_rx:
 	dln2_stop_rx_urbs(dln2);
 
 out_free:
-	usb_put_dev(dln2->usb_dev);
 	dln2_free(dln2);
 
 	return ret;

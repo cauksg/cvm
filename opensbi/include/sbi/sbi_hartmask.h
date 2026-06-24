@@ -128,6 +128,18 @@ static inline void sbi_hartmask_clear_all(struct sbi_hartmask *dstp)
 }
 
 /**
+ * *dstp = *srcp
+ * @param dstp the hartmask destination
+ * @param srcp the hartmask source
+ */
+static inline void sbi_hartmask_copy(struct sbi_hartmask *dstp,
+				     const struct sbi_hartmask *srcp)
+{
+	bitmap_copy(sbi_hartmask_bits(dstp), sbi_hartmask_bits(srcp),
+		    SBI_HARTMASK_MAX_BITS);
+}
+
+/**
  * *dstp = *src1p & *src2p
  * @param dstp the hartmask result
  * @param src1p the first input
@@ -167,6 +179,17 @@ static inline void sbi_hartmask_xor(struct sbi_hartmask *dstp,
 {
 	bitmap_xor(sbi_hartmask_bits(dstp), sbi_hartmask_bits(src1p),
 		   sbi_hartmask_bits(src2p), SBI_HARTMASK_MAX_BITS);
+}
+
+/**
+ * Count of bits in *srcp
+ * @param srcp the hartmask to count bits in
+ *
+ * Return: count of bits set in *srcp
+ */
+static inline int sbi_hartmask_weight(const struct sbi_hartmask *srcp)
+{
+	return bitmap_weight(sbi_hartmask_bits(srcp), SBI_HARTMASK_MAX_BITS);
 }
 
 /**

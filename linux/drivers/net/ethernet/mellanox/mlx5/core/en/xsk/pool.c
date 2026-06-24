@@ -6,10 +6,10 @@
 #include "setup.h"
 #include "en/params.h"
 
-static int mlx5e_xsk_map_pool(struct mlx5e_priv *priv,
+static int mlx5e_xsk_map_pool(struct mlx5_core_dev *mdev,
 			      struct xsk_buff_pool *pool)
 {
-	struct device *dev = mlx5_core_dma_dev(priv->mdev);
+	struct device *dev = mlx5_core_dma_dev(mdev);
 
 	return xsk_pool_dma_map(pool, dev, DMA_ATTR_SKIP_CPU_SYNC);
 }
@@ -23,8 +23,7 @@ static void mlx5e_xsk_unmap_pool(struct mlx5e_priv *priv,
 static int mlx5e_xsk_get_pools(struct mlx5e_xsk *xsk)
 {
 	if (!xsk->pools) {
-		xsk->pools = kcalloc(MLX5E_MAX_NUM_CHANNELS,
-				     sizeof(*xsk->pools), GFP_KERNEL);
+		xsk->pools = kzalloc_objs(*xsk->pools, MLX5E_MAX_NUM_CHANNELS);
 		if (unlikely(!xsk->pools))
 			return -ENOMEM;
 	}
@@ -89,7 +88,7 @@ static int mlx5e_xsk_enable_locked(struct mlx5e_priv *priv,
 	if (unlikely(!mlx5e_xsk_is_pool_sane(pool)))
 		return -EINVAL;
 
-	err = mlx5e_xsk_map_pool(priv, pool);
+	err = mlx5e_xsk_map_pool(mlx5_sd_ch_ix_get_dev(priv->mdev, ix), pool);
 	if (unlikely(err))
 		return err;
 
@@ -127,7 +126,7 @@ static int mlx5e_xsk_enable_locked(struct mlx5e_priv *priv,
 		goto err_remove_pool;
 
 	mlx5e_activate_xsk(c);
-	mlx5e_trigger_napi_icosq(c);
+	mlx5e_trigger_napi_async_icosq(c);
 
 	/* Don't wait for WQEs, because the newer xdpsock sample doesn't provide
 	 * any Fill Ring entries at the setup stage.
@@ -179,7 +178,7 @@ static int mlx5e_xsk_disable_locked(struct mlx5e_priv *priv, u16 ix)
 	c = priv->channels.c[ix];
 
 	mlx5e_activate_rq(&c->rq);
-	mlx5e_trigger_napi_icosq(c);
+	mlx5e_trigger_napi_async_icosq(c);
 	mlx5e_wait_for_min_rx_wqes(&c->rq, MLX5E_RQ_WQES_TIMEOUT);
 
 	mlx5e_rx_res_xsk_update(priv->rx_res, &priv->channels, ix, false);

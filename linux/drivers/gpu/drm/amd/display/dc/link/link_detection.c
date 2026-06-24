@@ -41,12 +41,18 @@
 #include "protocols/link_dp_dpia.h"
 #include "protocols/link_dp_phy.h"
 #include "protocols/link_dp_training.h"
+#include "protocols/link_dp_dpia_bw.h"
 #include "accessories/link_dp_trace.h"
 
 #include "link_enc_cfg.h"
 #include "dm_helpers.h"
 #include "clk_mgr.h"
 
+ // Offset DPCD 050Eh == 0x5A
+#define MST_HUB_ID_0x5A  0x5A
+
+#define DC_LOGGER \
+	link->ctx->logger
 #define DC_LOGGER_INIT(logger)
 
 #define LINK_INFO(...) \
@@ -62,7 +68,7 @@
 
 static const u8 DP_SINK_BRANCH_DEV_NAME_7580[] = "7580\x80u";
 
-static const uint8_t dp_hdmi_dongle_signature_str[] = "DP-HDMI ADAPTOR";
+static const u8 dp_hdmi_dongle_signature_str[] = "DP-HDMI ADAPTOR";
 
 static enum ddc_transaction_type get_ddc_transaction_type(enum signal_type sink_signal)
 {
@@ -165,6 +171,7 @@ static enum signal_type link_detect_sink_signal_type(struct dc_link *link,
 					 enum dc_detect_reason reason)
 {
 	enum signal_type result;
+	struct audio_support *aud_support;
 	struct graphics_object_id enc_id;
 
 	if (link->is_dig_mapping_flexible)
@@ -177,53 +184,51 @@ static enum signal_type link_detect_sink_signal_type(struct dc_link *link,
 	if (link->ep_type != DISPLAY_ENDPOINT_PHY)
 		return result;
 
-	/* Internal digital encoder will detect only dongles
+	/*
+	 * Internal digital encoder will detect only dongles
 	 * that require digital signal
 	 */
 
-	/* Detection mechanism is different
+	/*
+	 * Detection mechanism is different
 	 * for different native connectors.
 	 * LVDS connector supports only LVDS signal;
 	 * PCIE is a bus slot, the actual connector needs to be detected first;
 	 * eDP connector supports only eDP signal;
 	 * HDMI should check straps for audio
 	 */
-
-	/* PCIE detects the actual connector on add-on board */
-	if (link->link_id.id == CONNECTOR_ID_PCIE) {
-		/* ZAZTODO implement PCIE add-on card detection */
-	}
-
 	switch (link->link_id.id) {
-	case CONNECTOR_ID_HDMI_TYPE_A: {
-		/* check audio support:
+	case CONNECTOR_ID_HDMI_TYPE_A:
+		/*
+		 * check audio support:
 		 * if native HDMI is not supported, switch to DVI
 		 */
-		struct audio_support *aud_support =
-					&link->dc->res_pool->audio_support;
+		aud_support = &link->dc->res_pool->audio_support;
 
 		if (!aud_support->hdmi_audio_native)
-			if (link->link_id.id == CONNECTOR_ID_HDMI_TYPE_A)
-				result = SIGNAL_TYPE_DVI_SINGLE_LINK;
-	}
-	break;
+			result = SIGNAL_TYPE_DVI_SINGLE_LINK;
+		break;
 	case CONNECTOR_ID_DISPLAY_PORT:
-	case CONNECTOR_ID_USBC: {
-		/* DP HPD short pulse. Passive DP dongle will not
+	case CONNECTOR_ID_USBC:
+		/*
+		 * DP HPD short pulse. Passive DP dongle will not
 		 * have short pulse
 		 */
 		if (reason != DETECT_REASON_HPDRX) {
-			/* Check whether DP signal detected: if not -
+			/*
+			 * Check whether DP signal detected: if not -
 			 * we assume signal is DVI; it could be corrected
 			 * to HDMI after dongle detection
 			 */
 			if (!dm_helpers_is_dp_sink_present(link))
 				result = SIGNAL_TYPE_DVI_SINGLE_LINK;
 		}
-	}
-	break;
+		break;
+	case CONNECTOR_ID_PCIE:
+		/* ZAZTODO implement PCIE add-on card detection */
+		break;
 	default:
-	break;
+		break;
 	}
 
 	return result;
@@ -263,6 +268,10 @@ static void read_scdc_caps(struct ddc_service *ddc_service,
 {
 	uint8_t slave_address = HDMI_SCDC_ADDRESS;
 	uint8_t offset = HDMI_SCDC_MANUFACTURER_OUI;
+
+	if (ddc_service->link->local_sink &&
+		!ddc_service->link->local_sink->edid_caps.scdc_present)
+		return;
 
 	link_query_ddc_data(ddc_service, slave_address, &offset,
 			sizeof(offset), sink->scdc_caps.manufacturer_OUI.byte,
@@ -322,10 +331,11 @@ static void query_dp_dual_mode_adaptor(
 	bool is_type2_dongle = false;
 	int retry_count = 2;
 	struct dp_hdmi_dongle_signature_data *dongle_signature;
+	struct dc_link *link = ddc->link;
 
 	/* Assume we have no valid DP passive dongle connected */
 	*dongle = DISPLAY_DONGLE_NONE;
-	sink_cap->max_hdmi_pixel_clock = DP_ADAPTOR_HDMI_SAFE_MAX_TMDS_CLK;
+	sink_cap->max_hdmi_pixel_clock = DP_ADAPTOR_DVI_MAX_TMDS_CLK;
 
 	/* Read DP-HDMI dongle I2c (no response interpreted as DP-DVI dongle)*/
 	if (!i2c_read(
@@ -381,6 +391,8 @@ static void query_dp_dual_mode_adaptor(
 
 		}
 	}
+	if (is_valid_hdmi_signature)
+		sink_cap->max_hdmi_pixel_clock = DP_ADAPTOR_HDMI_SAFE_MAX_TMDS_CLK;
 
 	if (is_type2_dongle) {
 		uint32_t max_tmds_clk =
@@ -512,8 +524,8 @@ static void query_hdcp_capability(enum signal_type signal, struct dc_link *link)
 static void read_current_link_settings_on_detect(struct dc_link *link)
 {
 	union lane_count_set lane_count_set = {0};
-	uint8_t link_bw_set;
-	uint8_t link_rate_set;
+	uint8_t link_bw_set = 0;
+	uint8_t link_rate_set = 0;
 	uint32_t read_dpcd_retry_cnt = 10;
 	enum dc_status status = DC_ERROR_UNEXPECTED;
 	int i;
@@ -586,8 +598,9 @@ static bool detect_dp(struct dc_link *link,
 
 	if (sink_caps->transaction_type == DDC_TRANSACTION_TYPE_I2C_OVER_AUX) {
 		sink_caps->signal = SIGNAL_TYPE_DISPLAY_PORT;
-		if (!detect_dp_sink_caps(link))
+		if (!detect_dp_sink_caps(link)) {
 			return false;
+		}
 
 		if (is_dp_branch_device(link))
 			/* DP SST branch */
@@ -604,6 +617,7 @@ static bool detect_dp(struct dc_link *link,
 		link->dpcd_caps.dongle_type = sink_caps->dongle_type;
 		link->dpcd_caps.is_dongle_type_one = sink_caps->is_dongle_type_one;
 		link->dpcd_caps.dpcd_rev.raw = 0;
+		link->dpcd_caps.usb4_dp_tun_info.dp_tun_cap.raw = 0;
 	}
 
 	return true;
@@ -611,6 +625,9 @@ static bool detect_dp(struct dc_link *link,
 
 static bool is_same_edid(struct dc_edid *old_edid, struct dc_edid *new_edid)
 {
+	if (old_edid == NULL || new_edid == NULL)
+		return false;
+
 	if (old_edid->length != new_edid->length)
 		return false;
 
@@ -647,7 +664,7 @@ static bool wait_for_entering_dp_alt_mode(struct dc_link *link)
 		return true;
 
 	is_in_alt_mode = link->link_enc->funcs->is_in_alt_mode(link->link_enc);
-	DC_LOG_DC("DP Alt mode state on HPD: %d\n", is_in_alt_mode);
+	DC_LOG_DC("DP Alt mode state on HPD: %d  Link=%d\n", is_in_alt_mode, link->link_index);
 
 	if (is_in_alt_mode)
 		return true;
@@ -688,6 +705,15 @@ static void apply_dpia_mst_dsc_always_on_wa(struct dc_link *link)
 			link->dpcd_caps.dsc_caps.dsc_basic_caps.fields.dsc_support.DSC_SUPPORT &&
 			!link->dc->debug.dpia_debug.bits.disable_mst_dsc_work_around)
 		link->wa_flags.dpia_mst_dsc_always_on = true;
+
+	if (link->ep_type == DISPLAY_ENDPOINT_USB4_DPIA &&
+		link->type == dc_connection_mst_branch &&
+		link->dpcd_caps.branch_dev_id == DP_BRANCH_DEVICE_ID_90CC24 &&
+		link->dpcd_caps.branch_vendor_specific_data[2] == MST_HUB_ID_0x5A &&
+		link->dpcd_caps.dsc_caps.dsc_basic_caps.fields.dsc_support.DSC_SUPPORT &&
+		!link->dc->debug.dpia_debug.bits.disable_mst_dsc_work_around) {
+			link->wa_flags.dpia_mst_dsc_always_on = true;
+	}
 }
 
 static void revert_dpia_mst_dsc_always_on_wa(struct dc_link *link)
@@ -800,7 +826,10 @@ static bool should_verify_link_capability_destructively(struct dc_link *link,
 {
 	bool destrictive = false;
 	struct dc_link_settings max_link_cap;
-	bool is_link_enc_unavailable = link->link_enc &&
+	bool is_link_enc_unavailable = false;
+
+	if (!link->dc->config.unify_link_enc_assignment)
+		is_link_enc_unavailable = link->link_enc &&
 			link->dc->res_pool->funcs->link_encs_assign &&
 			!link_enc_cfg_is_link_enc_avail(
 					link->ctx->dc,
@@ -813,7 +842,8 @@ static bool should_verify_link_capability_destructively(struct dc_link *link,
 
 		if (link->dc->debug.skip_detection_link_training ||
 				dc_is_embedded_signal(link->local_sink->sink_signal) ||
-				link->ep_type == DISPLAY_ENDPOINT_USB4_DPIA) {
+				(link->ep_type == DISPLAY_ENDPOINT_USB4_DPIA &&
+				!link->dc->config.enable_dpia_pre_training)) {
 			destrictive = false;
 		} else if (link_dp_get_encoding_format(&max_link_cap) ==
 				DP_8b_10b_ENCODING) {
@@ -834,6 +864,96 @@ static void verify_link_capability(struct dc_link *link, struct dc_sink *sink,
 		verify_link_capability_destructive(link, sink, reason);
 	else
 		verify_link_capability_non_destructive(link);
+}
+
+/**
+ * link_detect_evaluate_edid_header() - Evaluate if an EDID header is acceptable.
+ *
+ * Evaluates an 8-byte EDID header to check if it's good enough
+ * for the purpose of determining whether a display is connected
+ * without reading the full EDID.
+ *
+ * @edid_header: The first 8 bytes of the EDID read from DDC.
+ *
+ * Return: true if the header looks valid (>= 6 of 8 bytes match the
+ *         expected 00/FF pattern), false otherwise.
+ */
+static bool link_detect_evaluate_edid_header(uint8_t edid_header[8])
+{
+	int edid_header_score = 0;
+	int i;
+
+	for (i = 0; i < 8; ++i)
+		edid_header_score += edid_header[i] == ((i == 0 || i == 7) ? 0x00 : 0xff);
+
+	return edid_header_score >= 6;
+}
+
+/**
+ * link_detect_ddc_probe() - Probe the DDC to see if a display is connected.
+ *
+ * Detect whether a display is connected to DDC without reading full EDID.
+ * Reads only the EDID header (the first 8 bytes of EDID) from DDC and
+ * evaluates whether that matches.
+ *
+ * @link: DC link whose DDC/I2C is probed for the EDID header.
+ *
+ * Return: true if the EDID header was read and passes validation,
+ *         false otherwise.
+ */
+static bool link_detect_ddc_probe(struct dc_link *link)
+{
+	if (!link->ddc)
+		return false;
+
+	uint8_t edid_header[8] = {0};
+	bool ddc_probed = i2c_read(link->ddc, 0x50, edid_header, sizeof(edid_header));
+
+	if (!ddc_probed)
+		return false;
+
+	if (!link_detect_evaluate_edid_header(edid_header))
+		return false;
+
+	return true;
+}
+
+/**
+ * link_detect_dac_load_detect() - Performs DAC load detection.
+ *
+ * Load detection can be used to detect the presence of an
+ * analog display when we can't read DDC. This causes a visible
+ * visual glitch so it should be used sparingly.
+ *
+ * @link: DC link to test using the DAC load-detect path.
+ *
+ * Return: true if the VBIOS load-detect call reports OK, false
+ *         otherwise.
+ */
+static bool link_detect_dac_load_detect(struct dc_link *link)
+{
+	struct dc_bios *bios = link->ctx->dc_bios;
+	struct link_encoder *link_enc = link->link_enc;
+	enum engine_id engine_id = link_enc->preferred_engine;
+	enum dal_device_type device_type = DEVICE_TYPE_CRT;
+	enum bp_result bp_result = BP_RESULT_UNSUPPORTED;
+	uint32_t enum_id;
+
+	switch (engine_id) {
+	case ENGINE_ID_DACB:
+		enum_id = 2;
+		break;
+	case ENGINE_ID_DACA:
+	default:
+		engine_id = ENGINE_ID_DACA;
+		enum_id = 1;
+		break;
+	}
+
+	if (bios->funcs->dac_load_detection)
+		bp_result = bios->funcs->dac_load_detection(bios, engine_id, device_type, enum_id);
+
+	return bp_result == BP_RESULT_OK;
 }
 
 /*
@@ -859,7 +979,6 @@ static bool detect_link_and_local_sink(struct dc_link *link,
 	struct dc_sink *prev_sink = NULL;
 	struct dpcd_caps prev_dpcd_caps;
 	enum dc_connection_type new_connection_type = dc_connection_none;
-	enum dc_connection_type pre_connection_type = link->type;
 	const uint32_t post_oui_delay = 30; // 30ms
 
 	DC_LOGGER_INIT(link->ctx->logger);
@@ -876,7 +995,7 @@ static bool detect_link_and_local_sink(struct dc_link *link,
 			(link->dpcd_sink_ext_caps.bits.oled == 1)) {
 			dpcd_set_source_specific_data(link);
 			msleep(post_oui_delay);
-			set_cached_brightness_aux(link);
+			set_default_brightness_aux(link);
 		}
 
 		return true;
@@ -921,6 +1040,12 @@ static bool detect_link_and_local_sink(struct dc_link *link,
 			break;
 		}
 
+		case SIGNAL_TYPE_RGB: {
+			sink_caps.transaction_type = DDC_TRANSACTION_TYPE_I2C;
+			sink_caps.signal = SIGNAL_TYPE_RGB;
+			break;
+		}
+
 		case SIGNAL_TYPE_LVDS: {
 			sink_caps.transaction_type = DDC_TRANSACTION_TYPE_I2C;
 			sink_caps.signal = SIGNAL_TYPE_LVDS;
@@ -961,7 +1086,6 @@ static bool detect_link_and_local_sink(struct dc_link *link,
 			}
 
 			if (!detect_dp(link, &sink_caps, reason)) {
-				link->type = pre_connection_type;
 
 				if (prev_sink)
 					dc_sink_release(prev_sink);
@@ -988,6 +1112,13 @@ static bool detect_link_and_local_sink(struct dc_link *link,
 			if (link->ep_type == DISPLAY_ENDPOINT_USB4_DPIA &&
 					link->reported_link_cap.link_rate > LINK_RATE_HIGH3)
 				link->reported_link_cap.link_rate = LINK_RATE_HIGH3;
+
+			if (link->dpcd_caps.usb4_dp_tun_info.dp_tun_cap.bits.dp_tunneling
+					&& link->dpcd_caps.usb4_dp_tun_info.dp_tun_cap.bits.dpia_bw_alloc
+					&& link->dpcd_caps.usb4_dp_tun_info.driver_bw_cap.bits.driver_bw_alloc_support) {
+				if (link_dpia_enable_usb4_dp_bw_alloc_mode(link) == false)
+					link->dpcd_caps.usb4_dp_tun_info.dp_tun_cap.bits.dpia_bw_alloc = false;
+			}
 			break;
 		}
 
@@ -1039,7 +1170,31 @@ static bool detect_link_and_local_sink(struct dc_link *link,
 			DC_LOG_ERROR("Partial EDID valid, abandon invalid blocks.\n");
 			break;
 		case EDID_NO_RESPONSE:
+			/* Analog connectors without EDID:
+			 * - old monitor that actually doesn't have EDID
+			 * - cheap DVI-A cable or adapter that doesn't connect DDC
+			 */
+			if (dc_connector_supports_analog(link->link_id.id)) {
+				/* If we didn't already detect a display using
+				 * DAC load detection, we know it isn't connected.
+				 */
+				if (link->type != dc_connection_analog_load) {
+					if (prev_sink)
+						dc_sink_release(prev_sink);
+					link_disconnect_sink(link);
+					return false;
+				}
+
+				LINK_INFO("link=%d, analog display detected without EDID\n",
+					   link->link_index);
+
+				link->type = dc_connection_analog_load;
+				sink->edid_caps.analog = true;
+				break;
+			}
+
 			DC_LOG_ERROR("No EDID read.\n");
+
 			/*
 			 * Abort detection for non-DP connectors if we have
 			 * no EDID
@@ -1085,6 +1240,9 @@ static bool detect_link_and_local_sink(struct dc_link *link,
 		if (sink->edid_caps.panel_patch.skip_scdc_overwrite)
 			link->ctx->dc->debug.hdmi20_disable = true;
 
+		if (sink->edid_caps.panel_patch.remove_sink_ext_caps)
+			link->dpcd_sink_ext_caps.raw = 0;
+
 		if (dc_is_hdmi_signal(link->connector_signal))
 			read_scdc_caps(link->ddc, link->local_sink);
 
@@ -1103,13 +1261,26 @@ static bool detect_link_and_local_sink(struct dc_link *link,
 				sink = prev_sink;
 				prev_sink = NULL;
 			}
-			query_hdcp_capability(sink->sink_signal, link);
+
+			if (!sink->edid_caps.analog)
+				query_hdcp_capability(sink->sink_signal, link);
 		}
+
+		/* DVI-I connector connected to analog display. */
+		if ((link->link_id.id == CONNECTOR_ID_DUAL_LINK_DVII ||
+		     link->link_id.id == CONNECTOR_ID_SINGLE_LINK_DVII) &&
+			sink->edid_caps.analog)
+			sink->sink_signal = SIGNAL_TYPE_RGB;
 
 		/* HDMI-DVI Dongle */
 		if (sink->sink_signal == SIGNAL_TYPE_HDMI_TYPE_A &&
 		    !sink->edid_caps.edid_hdmi)
 			sink->sink_signal = SIGNAL_TYPE_DVI_SINGLE_LINK;
+		else if (dc_is_dvi_signal(sink->sink_signal) &&
+			 dc_is_dvi_signal(link->connector_signal) &&
+			 aud_support->hdmi_audio_native &&
+			 sink->edid_caps.edid_hdmi)
+			sink->sink_signal = SIGNAL_TYPE_HDMI_TYPE_A;
 
 		if (link->local_sink && dc_is_dp_signal(sink_caps.signal))
 			dp_trace_init(link);
@@ -1162,7 +1333,12 @@ static bool detect_link_and_local_sink(struct dc_link *link,
 			// Pickup base DM settings
 			dm_helpers_init_panel_settings(dc_ctx, &link->panel_config, sink);
 			// Override dc_panel_config if system has specific settings
-			dm_helpers_override_panel_settings(dc_ctx, &link->panel_config);
+			dm_helpers_override_panel_settings(dc_ctx, link);
+
+			//sink only can use supported link rate table, we are foreced to enable it
+			if (link->reported_link_cap.link_rate == LINK_RATE_UNKNOWN)
+				link->panel_config.ilr.optimize_edp_link_rate = true;
+			link->reported_link_cap.link_rate = get_max_edp_link_rate(link);
 		}
 
 	} else {
@@ -1193,6 +1369,36 @@ static bool detect_link_and_local_sink(struct dc_link *link,
 	return true;
 }
 
+/**
+ * link_detect_connection_type_analog() - Determines if an analog sink is connected.
+ *
+ * @link: DC link to evaluate (must support analog signalling).
+ * @type: Updated with the detected connection type:
+ *        dc_connection_single (analog via DDC),
+ *        dc_connection_analog_load (via load-detect),
+ *        or dc_connection_none.
+ *
+ * Return: true if detection completed.
+ */
+static bool link_detect_connection_type_analog(struct dc_link *link, enum dc_connection_type *type)
+{
+	/* Don't care about connectors that don't support an analog signal. */
+	ASSERT(dc_connector_supports_analog(link->link_id.id));
+
+	if (link_detect_ddc_probe(link)) {
+		*type = dc_connection_single;
+		return true;
+	}
+
+	if (link_detect_dac_load_detect(link)) {
+		*type = dc_connection_analog_load;
+		return true;
+	}
+
+	*type = dc_connection_none;
+	return true;
+}
+
 /*
  * link_detect_connection_type() - Determine if there is a sink connected
  *
@@ -1202,12 +1408,21 @@ static bool detect_link_and_local_sink(struct dc_link *link,
  */
 bool link_detect_connection_type(struct dc_link *link, enum dc_connection_type *type)
 {
-	uint32_t is_hpd_high = 0;
-
 	if (link->connector_signal == SIGNAL_TYPE_LVDS) {
 		*type = dc_connection_single;
 		return true;
 	}
+
+	/* Ignore the HPD pin (if any) for analog connectors.
+	 * Instead rely on DDC and DAC.
+	 *
+	 * - VGA connectors don't have any HPD at all.
+	 * - Some DVI-A cables don't connect the HPD pin.
+	 * - Some DVI-A cables pull up the HPD pin.
+	 *   (So it's high even when no display is connected.)
+	 */
+	if (dc_connector_supports_analog(link->link_id.id))
+		return link_detect_connection_type_analog(link, type);
 
 	if (link->connector_signal == SIGNAL_TYPE_EDP) {
 		/*in case it is not on*/
@@ -1227,10 +1442,7 @@ bool link_detect_connection_type(struct dc_link *link, enum dc_connection_type *
 	}
 
 
-	if (!query_hpd_status(link, &is_hpd_high))
-		goto hpd_gpio_failure;
-
-	if (is_hpd_high) {
+	if (link_get_hpd_state(link)) {
 		*type = dc_connection_single;
 		/* TODO: need to do the actual detection */
 	} else {
@@ -1243,9 +1455,6 @@ bool link_detect_connection_type(struct dc_link *link, enum dc_connection_type *
 	}
 
 	return true;
-
-hpd_gpio_failure:
-	return false;
 }
 
 bool link_detect(struct dc_link *link, enum dc_detect_reason reason)
@@ -1269,8 +1478,7 @@ bool link_detect(struct dc_link *link, enum dc_detect_reason reason)
 			link->dpcd_caps.is_mst_capable)
 		is_delegated_to_mst_top_mgr = discover_dp_mst_topology(link, reason);
 
-	if (is_local_sink_detect_success &&
-			pre_link_type == dc_connection_mst_branch &&
+	if (pre_link_type == dc_connection_mst_branch &&
 			link->type != dc_connection_mst_branch)
 		is_delegated_to_mst_top_mgr = link_reset_cur_dp_mst_topology(link);
 

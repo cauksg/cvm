@@ -10,10 +10,12 @@
 #include <linux/err.h>
 #include <linux/module.h>
 #include <linux/uaccess.h>
+#include <linux/vmalloc.h>
 #include <linux/kvm_host.h>
+#include <asm/kvm_mmu.h>
 #include <cvm/iie-cvm-sbi.h>
 
-const struct _kvm_stats_desc kvm_vm_stats_desc[] = {
+const struct kvm_stats_desc kvm_vm_stats_desc[] = {
 	KVM_GENERIC_VM_STATS()
 };
 static_assert(ARRAY_SIZE(kvm_vm_stats_desc) ==
@@ -32,13 +34,13 @@ int kvm_arch_init_vm(struct kvm *kvm, unsigned long type)
 {
 	int r;
 
-	r = kvm_riscv_gstage_alloc_pgd(kvm);
+	r = kvm_riscv_mmu_alloc_pgd(kvm);
 	if (r)
 		return r;
 
 	r = kvm_riscv_gstage_vmid_init(kvm);
 	if (r) {
-		kvm_riscv_gstage_free_pgd(kvm);
+		kvm_riscv_mmu_free_pgd(kvm);
 		return r;
 	}
 
@@ -51,37 +53,61 @@ int kvm_arch_init_vm(struct kvm *kvm, unsigned long type)
 
 void kvm_arch_destroy_vm(struct kvm *kvm)
 {
-	unsigned long i;
-	if(kvm->cmode)
-	{
-		// #ifdef PROG_WSW
-		struct iie_cvm_sbi_params *cvm_sbi_params = kmalloc(sizeof(struct iie_cvm_sbi_params), GFP_KERNEL);
-		cvm_sbi_params->vmid_ptr = __pa(&kvm->arch.vmid);
-		uintptr_t pa_cvm = __pa(cvm_sbi_params);
+	if (kvm->cmode) {
+		struct iie_cvm_sbi_params *cvm_sbi_params;
+		struct cvm_list_params *ret_params;
+		unsigned long *chunk_vaddr_list;
+		struct sbiret sbi_ret;
+		unsigned long i;
 
-		////#ifdef PROG_LBL
-		struct cvm_list_params *ret_params = kzalloc(sizeof(struct cvm_list_params), GFP_KERNEL);
-		unsigned long *chunk_vaddr_list = (unsigned long *)__get_free_pages(GFP_KERNEL, get_order(2^10*PAGE_SIZE));
-		while(!chunk_vaddr_list){
-			chunk_vaddr_list = (unsigned long *)__get_free_pages(GFP_KERNEL, get_order(2^10*PAGE_SIZE));
-		}
-		ret_params->addr = (unsigned long)__pa(chunk_vaddr_list);
-		uintptr_t pa_ret = __pa(ret_params);
-		sbi_ecall(SBI_EXT_CVM, SBI_EXT_RECYCLE_MEMORY, pa_cvm, __pa(ret_params), 0, 0, 0, 0);
-		struct cvm_mem_chunk_infor *chunk_infor;
-		// printk("recycle %ld chunks\n", ret_params->ele_num);
-		for(i=0; i<ret_params->ele_num; i++){
-			chunk_infor = (struct cvm_mem_chunk_infor *)*((unsigned long *)__va(ret_params->addr)+i);
-			vfree((void *)chunk_infor->chunk_vaddr);
-			__free_pages(virt_to_page(chunk_infor->chunk_infor_vaddr), 0);
+		reset_KVM_memory_pool_refill_count();
+
+		cvm_sbi_params = kzalloc(sizeof(*cvm_sbi_params), GFP_KERNEL);
+		ret_params = kzalloc(sizeof(*ret_params), GFP_KERNEL);
+		chunk_vaddr_list = (unsigned long *)__get_free_pages(GFP_KERNEL | __GFP_ZERO,
+								     get_order(1024 * sizeof(unsigned long)));
+		if (cvm_sbi_params) {
+			cvm_sbi_params->vmid_ptr = (struct kvm_vmid *)__pa(&kvm->arch.vmid);
 		}
 
-		sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_DESTROY, pa_cvm, pa_ret, 0, 0, 0, 0);
-		// #endif
+		if (kvm->cvm_root_ready &&
+		    cvm_sbi_params && ret_params && chunk_vaddr_list) {
+			ret_params->addr = __pa(chunk_vaddr_list);
+
+			sbi_ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_RECYCLE_MEMORY,
+					    __pa(cvm_sbi_params), __pa(ret_params),
+					    0, 0, 0, 0);
+			if (!sbi_ret.error) {
+				for (i = 0; i < ret_params->ele_num && i < 1024; i++) {
+					struct cvm_mem_chunk_infor *chunk_infor;
+
+					if (!chunk_vaddr_list[i])
+						continue;
+
+					chunk_infor = (struct cvm_mem_chunk_infor *)chunk_vaddr_list[i];
+					if (chunk_infor->chunk_vaddr)
+						vfree((void *)chunk_infor->chunk_vaddr);
+					if (chunk_infor->paddr_list)
+						free_page((unsigned long)__va((unsigned long)chunk_infor->paddr_list));
+					free_page(chunk_infor->chunk_infor_vaddr);
+				}
+			}
+		}
+
+		if (cvm_sbi_params) {
+			sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_DESTROY,
+				  __pa(cvm_sbi_params), ret_params ? __pa(ret_params) : 0,
+				  0, 0, 0, 0);
+		}
+
 		kvm_riscv_destroy_sw_node(kvm);
-		//#endif
+		if (chunk_vaddr_list)
+			free_pages((unsigned long)chunk_vaddr_list,
+				   get_order(1024 * sizeof(unsigned long)));
+		kfree(ret_params);
 		kfree(cvm_sbi_params);
 	}
+
 	kvm_destroy_vcpus(kvm);
 
 	kvm_riscv_aia_destroy_vm(kvm);
@@ -126,7 +152,7 @@ int kvm_riscv_setup_default_irq_routing(struct kvm *kvm, u32 lines)
 	struct kvm_irq_routing_entry *ents;
 	int i, rc;
 
-	ents = kcalloc(lines, sizeof(*ents), GFP_KERNEL);
+	ents = kzalloc_objs(*ents, lines);
 	if (!ents)
 		return -ENOMEM;
 
@@ -211,14 +237,13 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 		r = kvm_riscv_aia_available();
 		break;
 	case KVM_CAP_IOEVENTFD:
-	case KVM_CAP_DEVICE_CTRL:
 	case KVM_CAP_USER_MEMORY:
-	case KVM_CAP_SYNC_MMU:
 	case KVM_CAP_DESTROY_MEMORY_REGION_WORKS:
 	case KVM_CAP_ONE_REG:
 	case KVM_CAP_READONLY_MEM:
 	case KVM_CAP_MP_STATE:
 	case KVM_CAP_IMMEDIATE_EXIT:
+	case KVM_CAP_SET_GUEST_DEBUG:
 		r = 1;
 		break;
 	case KVM_CAP_NR_VCPUS:
@@ -231,7 +256,7 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 		r = KVM_USER_MEM_SLOTS;
 		break;
 	case KVM_CAP_VM_GPA_BITS:
-		r = kvm_riscv_gstage_gpa_bits();
+		r = kvm_riscv_gstage_gpa_bits;
 		break;
 	default:
 		r = 0;
@@ -239,6 +264,19 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 	}
 
 	return r;
+}
+
+int kvm_vm_ioctl_enable_cap(struct kvm *kvm, struct kvm_enable_cap *cap)
+{
+	switch (cap->cap) {
+	case KVM_CAP_RISCV_MP_STATE_RESET:
+		if (cap->flags)
+			return -EINVAL;
+		kvm->arch.mp_state_reset = true;
+		return 0;
+	default:
+		return -EINVAL;
+	}
 }
 
 int kvm_arch_vm_ioctl(struct file *filp, unsigned int ioctl, unsigned long arg)

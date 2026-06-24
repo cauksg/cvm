@@ -11,6 +11,7 @@
 #include <sbi/riscv_encoding.h>
 #include <sbi/sbi_bitops.h>
 #include <sbi/sbi_console.h>
+#include <sbi/sbi_double_trap.h>
 #include <sbi/sbi_ecall.h>
 #include <sbi/sbi_error.h>
 #include <sbi/sbi_hart.h>
@@ -19,127 +20,79 @@
 #include <sbi/sbi_irqchip.h>
 #include <sbi/sbi_trap_ldst.h>
 #include <sbi/sbi_pmu.h>
+#include <sbi/sbi_platform.h>
 #include <sbi/sbi_scratch.h>
 #include <sbi/sbi_sse.h>
 #include <sbi/sbi_timer.h>
 #include <sbi/sbi_trap.h>
 #include <sbi/sbi_cvm.h>
 
-// static void sbi_trap_error_one(const struct sbi_trap_context *tcntx,
-// 			       const char *prefix, u32 hartid, u32 depth)
-// {
-// 	const struct sbi_trap_info *trap = &tcntx->trap;
-// 	const struct sbi_trap_regs *regs = &tcntx->regs;
-
-// 	sbi_printf("\n");
-// 	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
-// 		   hartid, depth, "mcause", trap->cause, "mtval", trap->tval);
-// 	if (misa_extension('H')) {
-// 		sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
-// 			   hartid, depth, "mtval2", trap->tval2, "mtinst", trap->tinst);
-// 	}
-// 	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
-// 		   hartid, depth, "mepc", regs->mepc, "mstatus", regs->mstatus);
-// 	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
-// 		   hartid, depth, "ra", regs->ra, "sp", regs->sp);
-// 	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
-// 		   hartid, depth, "gp", regs->gp, "tp", regs->tp);
-// 	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
-// 		   hartid, depth, "s0", regs->s0, "s1", regs->s1);
-// 	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
-// 		   hartid, depth, "a0", regs->a0, "a1", regs->a1);
-// 	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
-// 		   hartid, depth, "a2", regs->a2, "a3", regs->a3);
-// 	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
-// 		   hartid, depth, "a4", regs->a4, "a5", regs->a5);
-// 	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
-// 		   hartid, depth, "a6", regs->a6, "a7", regs->a7);
-// 	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
-// 		   hartid, depth, "s2", regs->s2, "s3", regs->s3);
-// 	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
-// 		   hartid, depth, "s4", regs->s4, "s5", regs->s5);
-// 	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
-// 		   hartid, depth, "s6", regs->s6, "s7", regs->s7);
-// 	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
-// 		   hartid, depth, "s8", regs->s8, "s9", regs->s9);
-// 	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
-// 		   hartid, depth, "s10", regs->s10, "s11", regs->s11);
-// 	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
-// 		   hartid, depth, "t0", regs->t0, "t1", regs->t1);
-// 	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
-// 		   hartid, depth, "t2", regs->t2, "t3", regs->t3);
-// 	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
-// 		   hartid, depth, "t4", regs->t4, "t5", regs->t5);
-// 	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX "\n", prefix,
-// 		   hartid, depth, "t6", regs->t6);
-// }
-
-// static void __noreturn sbi_trap_error(const char *msg, int rc,
-// 				      const struct sbi_trap_context *tcntx)
-// {
-// 	u32 depth = 0, hartid = current_hartid();
-// 	const struct sbi_trap_context *tc;
-// 	for (tc = tcntx; tc; tc = tc->prev_context)
-// 		depth++;
-// 	sbi_printf("\n");
-// 	sbi_printf("%s: hart%d: trap%d: %s (error %d)\n", __func__,
-// 		   hartid, depth - 1, msg, rc);
-// 	for (tc = tcntx; tc; tc = tc->prev_context)
-// 		sbi_trap_error_one(tc, __func__, hartid, --depth);
-// 	sbi_hart_hang();
-// }
-static void __noreturn sbi_trap_error(const char *msg, int rc,
-				      ulong mcause, ulong mtval, ulong mtval2,
-				      ulong mtinst, struct sbi_trap_regs *regs)
+static void sbi_trap_error_one(const struct sbi_trap_context *tcntx,
+			       const char *prefix, u32 hartid, u32 depth)
 {
-	u32 hartid = current_hartid();
+	const struct sbi_trap_info *trap = &tcntx->trap;
+	const struct sbi_trap_regs *regs = &tcntx->regs;
 
-	sbi_printf("%s: hart%d: %s (error %d)\n", __func__, hartid, msg, rc);
-	sbi_printf("%s: hart%d: mcause=0x%" PRILX " mtval=0x%" PRILX "\n",
-		   __func__, hartid, mcause, mtval);
+	sbi_printf("\n");
+	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
+		   hartid, depth, "mcause", trap->cause, "mtval", trap->tval);
 	if (misa_extension('H')) {
-		sbi_printf("%s: hart%d: mtval2=0x%" PRILX
-			   " mtinst=0x%" PRILX "\n",
-			   __func__, hartid, mtval2, mtinst);
+		sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
+			   hartid, depth, "mtval2", trap->tval2, "mtinst", trap->tinst);
 	}
-	sbi_printf("%s: hart%d: mepc=0x%" PRILX " mstatus=0x%" PRILX "\n",
-		   __func__, hartid, regs->mepc, regs->mstatus);
-	sbi_printf("%s: hart%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", __func__,
-		   hartid, "ra", regs->ra, "sp", regs->sp);
-	sbi_printf("%s: hart%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", __func__,
-		   hartid, "gp", regs->gp, "tp", regs->tp);
-	sbi_printf("%s: hart%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", __func__,
-		   hartid, "s0", regs->s0, "s1", regs->s1);
-	sbi_printf("%s: hart%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", __func__,
-		   hartid, "a0", regs->a0, "a1", regs->a1);
-	sbi_printf("%s: hart%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", __func__,
-		   hartid, "a2", regs->a2, "a3", regs->a3);
-	sbi_printf("%s: hart%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", __func__,
-		   hartid, "a4", regs->a4, "a5", regs->a5);
-	sbi_printf("%s: hart%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", __func__,
-		   hartid, "a6", regs->a6, "a7", regs->a7);
-	sbi_printf("%s: hart%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", __func__,
-		   hartid, "s2", regs->s2, "s3", regs->s3);
-	sbi_printf("%s: hart%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", __func__,
-		   hartid, "s4", regs->s4, "s5", regs->s5);
-	sbi_printf("%s: hart%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", __func__,
-		   hartid, "s6", regs->s6, "s7", regs->s7);
-	sbi_printf("%s: hart%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", __func__,
-		   hartid, "s8", regs->s8, "s9", regs->s9);
-	sbi_printf("%s: hart%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", __func__,
-		   hartid, "s10", regs->s10, "s11", regs->s11);
-	sbi_printf("%s: hart%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", __func__,
-		   hartid, "t0", regs->t0, "t1", regs->t1);
-	sbi_printf("%s: hart%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", __func__,
-		   hartid, "t2", regs->t2, "t3", regs->t3);
-	sbi_printf("%s: hart%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", __func__,
-		   hartid, "t4", regs->t4, "t5", regs->t5);
-	sbi_printf("%s: hart%d: %s=0x%" PRILX "\n", __func__, hartid, "t6",
-		   regs->t6);
+	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
+		   hartid, depth, "mepc", regs->mepc, "mstatus", regs->mstatus);
+	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
+		   hartid, depth, "ra", regs->ra, "sp", regs->sp);
+	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
+		   hartid, depth, "gp", regs->gp, "tp", regs->tp);
+	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
+		   hartid, depth, "s0", regs->s0, "s1", regs->s1);
+	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
+		   hartid, depth, "a0", regs->a0, "a1", regs->a1);
+	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
+		   hartid, depth, "a2", regs->a2, "a3", regs->a3);
+	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
+		   hartid, depth, "a4", regs->a4, "a5", regs->a5);
+	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
+		   hartid, depth, "a6", regs->a6, "a7", regs->a7);
+	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
+		   hartid, depth, "s2", regs->s2, "s3", regs->s3);
+	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
+		   hartid, depth, "s4", regs->s4, "s5", regs->s5);
+	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
+		   hartid, depth, "s6", regs->s6, "s7", regs->s7);
+	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
+		   hartid, depth, "s8", regs->s8, "s9", regs->s9);
+	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
+		   hartid, depth, "s10", regs->s10, "s11", regs->s11);
+	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
+		   hartid, depth, "t0", regs->t0, "t1", regs->t1);
+	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
+		   hartid, depth, "t2", regs->t2, "t3", regs->t3);
+	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX " %s=0x%" PRILX "\n", prefix,
+		   hartid, depth, "t4", regs->t4, "t5", regs->t5);
+	sbi_printf("%s: hart%d: trap%d: %s=0x%" PRILX "\n", prefix,
+		   hartid, depth, "t6", regs->t6);
+}
+
+static void __noreturn sbi_trap_error(const char *msg, int rc,
+				      const struct sbi_trap_context *tcntx)
+{
+	u32 depth = 0, hartid = current_hartid();
+	const struct sbi_trap_context *tc;
+
+	for (tc = tcntx; tc; tc = tc->prev_context)
+		depth++;
+
+	sbi_printf("\n");
+	sbi_printf("%s: hart%d: trap%d: %s (error %d)\n", __func__,
+		   hartid, depth - 1, msg, rc);
+	for (tc = tcntx; tc; tc = tc->prev_context)
+		sbi_trap_error_one(tc, __func__, hartid, --depth);
 
 	sbi_hart_hang();
 }
-
 
 /**
  * Redirect trap to lower privledge mode (S-mode or U-mode)
@@ -153,18 +106,26 @@ int sbi_trap_redirect(struct sbi_trap_regs *regs,
 		      const struct sbi_trap_info *trap)
 {
 	ulong hstatus, vsstatus, prev_mode;
-#if __riscv_xlen == 32
-	bool prev_virt = (regs->mstatusH & MSTATUSH_MPV) ? true : false;
-#else
-	bool prev_virt = (regs->mstatus & MSTATUS_MPV) ? true : false;
-#endif
+	bool elp = false;
+	bool prev_virt = sbi_regs_from_virt(regs);
 	/* By default, we redirect to HS-mode */
 	bool next_virt = false;
 
 	/* Sanity check on previous mode */
-	prev_mode = (regs->mstatus & MSTATUS_MPP) >> MSTATUS_MPP_SHIFT;
+	prev_mode = sbi_mstatus_prev_mode(regs->mstatus);
 	if (prev_mode != PRV_S && prev_mode != PRV_U)
 		return SBI_ENOTSUPP;
+
+	/* If hart support for zicfilp, clear MPELP because redirecting to VS or (H)S */
+	if (sbi_hart_has_extension(sbi_scratch_thishart_ptr(), SBI_HART_EXT_ZICFILP)) {
+#if __riscv_xlen == 32
+		elp = regs->mstatusH & MSTATUSH_MPELP;
+		regs->mstatusH &= ~MSTATUSH_MPELP;
+#else
+		elp = regs->mstatus & MSTATUS_MPELP;
+		regs->mstatus &= ~MSTATUS_MPELP;
+#endif
+	}
 
 	/* If exceptions came from VS/VU-mode, redirect to VS-mode if
 	 * delegated in hedeleg
@@ -210,7 +171,7 @@ int sbi_trap_redirect(struct sbi_trap_regs *regs,
 		csr_write(CSR_VSCAUSE, trap->cause);
 
 		/* Set MEPC to VS-mode exception vector base */
-		regs->mepc = csr_read(CSR_VSTVEC);
+		regs->mepc = csr_read(CSR_VSTVEC) & ~MTVEC_MODE;
 
 		/* Set MPP to VS-mode */
 		regs->mstatus &= ~MSTATUS_MPP;
@@ -218,6 +179,10 @@ int sbi_trap_redirect(struct sbi_trap_regs *regs,
 
 		/* Get VS-mode SSTATUS CSR */
 		vsstatus = csr_read(CSR_VSSTATUS);
+
+		/* If elp was set, set it back in vsstatus */
+		if (elp)
+			vsstatus |= MSTATUS_SPELP;
 
 		/* Set SPP for VS-mode */
 		vsstatus &= ~SSTATUS_SPP;
@@ -241,7 +206,7 @@ int sbi_trap_redirect(struct sbi_trap_regs *regs,
 		csr_write(CSR_SCAUSE, trap->cause);
 
 		/* Set MEPC to S-mode exception vector base */
-		regs->mepc = csr_read(CSR_STVEC);
+		regs->mepc = csr_read(CSR_STVEC) & ~MTVEC_MODE;
 
 		/* Set MPP to S-mode */
 		regs->mstatus &= ~MSTATUS_MPP;
@@ -259,112 +224,104 @@ int sbi_trap_redirect(struct sbi_trap_regs *regs,
 
 		/* Clear SIE for S-mode */
 		regs->mstatus &= ~MSTATUS_SIE;
+
+		/* If elp was set, set it back in mstatus */
+		if (elp)
+			regs->mstatus |= MSTATUS_SPELP;
 	}
 
 	return 0;
 }
 
-// static int sbi_trap_nonaia_irq(unsigned long irq)
-// {
-// 	switch (irq) {
-// 	case IRQ_M_TIMER:
-// 		sbi_timer_process();
-// 		break;
-// 	case IRQ_M_SOFT:
-// 		sbi_ipi_process();
-// 		break;
-// 	case IRQ_PMU_OVF:
-// 		sbi_pmu_ovf_irq();
-// 		break;
-// 	case IRQ_M_EXT:
-// 		return sbi_irqchip_process();
-// 	default:
-// 		return SBI_ENOENT;
-// 	}
-// 	return 0;
-// }
-static int sbi_trap_nonaia_irq(struct sbi_trap_regs *regs, ulong mcause)
+static int sbi_trap_nonaia_irq(struct sbi_trap_regs *regs, unsigned long irq)
 {
-	// struct sbi_trap_info trap;
-	mcause &= ~(1UL << (__riscv_xlen - 1));
+	int rc;
 
-	if(check_in_cmode() > 0) {
-	
-		// sbi_printf("mcause intr %lx mepc %lx\r\n",mcause, regs->mepc);
-		switch (mcause) {
+	if (check_in_cmode() > 0) {
+		switch (irq) {
 		case IRQ_M_TIMER:
-			// sbi_printf("timer mcause %lx\r\n",mcause);
-			cvm_vcpu_exit(regs);
+			rc = cvm_vcpu_exit(regs);
+			if (rc)
+				return rc;
 			sbi_timer_process();
 			break;
 		case IRQ_M_SOFT:
-			cvm_vcpu_exit(regs);
+			rc = cvm_vcpu_exit(regs);
+			if (rc)
+				return rc;
 			sbi_ipi_process();
 			break;
 		case IRQ_M_EXT:
 			return sbi_irqchip_process();
 		case IRQ_S_EXT:
-			cvm_vcpu_exit(regs);
+			rc = cvm_vcpu_exit(regs);
+			if (rc)
+				return rc;
 			csr_set(CSR_MIDELEG, MIP_SEIP);
-			
 			break;
 		default:
-			cvm_vcpu_exit(regs);
-			return SBI_ENOENT;
+			return cvm_vcpu_exit(regs);
 		}
-	}else{
-		switch (mcause) {
-		case IRQ_M_TIMER:
-			sbi_timer_process();
-			break;
-		case IRQ_M_SOFT:
-			sbi_ipi_process();
-			break;
-		case IRQ_M_EXT:
-			return sbi_irqchip_process();
-		default:
-			return SBI_ENOENT;
+
+		return 0;
+	}
+
+	switch (irq) {
+	case IRQ_M_TIMER:
+		sbi_timer_process();
+		break;
+	case IRQ_M_SOFT:
+		sbi_ipi_process();
+		break;
+	case IRQ_M_EXT:
+		return sbi_irqchip_process();
+	default:
+		if (irq == sbi_pmu_irq_bit()) {
+			sbi_pmu_ovf_irq();
+			return 0;
 		}
+		return SBI_ENOENT;
 	}
 
 	return 0;
 }
 
-
-// static int sbi_trap_aia_irq(void)
-// {
-// 	int rc;
-// 	unsigned long mtopi;
-// 	while ((mtopi = csr_read(CSR_MTOPI))) {
-// 		mtopi = mtopi >> TOPI_IID_SHIFT;
-// 		switch (mtopi) {
-// 		case IRQ_M_TIMER:
-// 			sbi_timer_process();
-// 			break;
-// 		case IRQ_M_SOFT:
-// 			sbi_ipi_process();
-// 			break;
-// 		case IRQ_PMU_OVF:
-// 			sbi_pmu_ovf_irq();
-// 			break;
-// 		case IRQ_M_EXT:
-// 			rc = sbi_irqchip_process();
-// 			if (rc)
-// 				return rc;
-// 			break;
-// 		default:
-// 			return SBI_ENOENT;
-// 		}
-// 	}
-// 	return 0;
-// }
-static int sbi_trap_aia_irq(struct sbi_trap_regs *regs, ulong mcause)
+static int sbi_trap_aia_irq(struct sbi_trap_regs *regs)
 {
 	int rc;
 	unsigned long mtopi;
 
 	while ((mtopi = csr_read(CSR_MTOPI))) {
 		mtopi = mtopi >> TOPI_IID_SHIFT;
+		if (check_in_cmode() > 0) {
+			switch (mtopi) {
+			case IRQ_M_TIMER:
+				rc = cvm_vcpu_exit(regs);
+				if (rc)
+					return rc;
+				sbi_timer_process();
+				break;
+			case IRQ_M_SOFT:
+				rc = cvm_vcpu_exit(regs);
+				if (rc)
+					return rc;
+				sbi_ipi_process();
+				break;
+			case IRQ_M_EXT:
+				return sbi_irqchip_process();
+			case IRQ_S_EXT:
+				rc = cvm_vcpu_exit(regs);
+				if (rc)
+					return rc;
+				csr_set(CSR_MIDELEG, MIP_SEIP);
+				break;
+			default:
+				return cvm_vcpu_exit(regs);
+			}
+
+			continue;
+		}
+
 		switch (mtopi) {
 		case IRQ_M_TIMER:
 			sbi_timer_process();
@@ -378,13 +335,17 @@ static int sbi_trap_aia_irq(struct sbi_trap_regs *regs, ulong mcause)
 				return rc;
 			break;
 		default:
+			if (mtopi == sbi_pmu_irq_bit()) {
+				sbi_pmu_ovf_irq();
+				break;
+			}
+
 			return SBI_ENOENT;
 		}
 	}
 
 	return 0;
 }
-
 
 /**
  * Handle trap/interrupt
@@ -415,32 +376,17 @@ struct sbi_trap_context *sbi_trap_handler(struct sbi_trap_context *tcntx)
 	tcntx->prev_context = sbi_trap_get_context(scratch);
 	sbi_trap_set_context(scratch, tcntx);
 
-	//ulong mcause = csr_read(CSR_MCAUSE);
-	ulong mtval = csr_read(CSR_MTVAL), mtval2 = 0, mtinst = 0;
-	if (misa_extension('H')) {
-		mtval2 = csr_read(CSR_MTVAL2);
-		mtinst = csr_read(CSR_MTINST);
-	}
-
-	if (mcause & (1UL << (__riscv_xlen - 1))) {
+	if (mcause & MCAUSE_IRQ_MASK) {
 		if (sbi_hart_has_extension(sbi_scratch_thishart_ptr(),
 					   SBI_HART_EXT_SMAIA))
-			rc = sbi_trap_aia_irq(regs, mcause);
+			rc = sbi_trap_aia_irq(regs);
 		else
-			rc = sbi_trap_nonaia_irq(regs, mcause);
-		if (rc) {
-			msg = "unhandled local interrupt";
-			goto trap_error;
-		}
-		return tcntx;
+			rc = sbi_trap_nonaia_irq(regs, mcause & ~MCAUSE_IRQ_MASK);
+		msg = "unhandled local interrupt";
+		goto trap_done;
 	}
 
-	if(check_in_cmode() > 0) {
-		if(!(csr_read(CSR_MSTATUS) & MSTATUS_MPV)){
-			sbi_printf("%s:%d: This is not exception in CVM\r\n",__FILE__,__LINE__);
-		}
-
-		// sbi_printf("mcause exce %lx mepc %lx\r\n",mcause, regs->mepc);
+	if (check_in_cmode() > 0) {
 		switch (mcause) {
 		case CAUSE_ILLEGAL_INSTRUCTION:
 		case CAUSE_MISALIGNED_LOAD:
@@ -450,7 +396,7 @@ struct sbi_trap_context *sbi_trap_handler(struct sbi_trap_context *tcntx)
 			break;
 		case CAUSE_VIRTUAL_INST_FAULT:
 			rc = cvm_trap_virtual_inst(regs);
-			msg = "cvm virtual inst handler failed";
+			msg = "cvm virtual instruction handler failed";
 			break;
 		case CAUSE_FETCH_GUEST_PAGE_FAULT:
 		case CAUSE_LOAD_GUEST_PAGE_FAULT:
@@ -464,59 +410,98 @@ struct sbi_trap_context *sbi_trap_handler(struct sbi_trap_context *tcntx)
 			break;
 		default:
 			rc = cvm_trap_redirect_to_hs(regs);
+			msg = "cvm trap redirect failed";
 			break;
 		}
+		goto trap_done;
 	}
-	else{
-		switch (mcause) {
-			case CAUSE_ILLEGAL_INSTRUCTION:
-				rc  = sbi_illegal_insn_handler(tcntx);
-				msg = "illegal instruction handler failed";
-				break;
-			case CAUSE_MISALIGNED_LOAD:
-				sbi_pmu_ctr_incr_fw(SBI_PMU_FW_MISALIGNED_LOAD);
-				rc  = sbi_misaligned_load_handler(tcntx);
-				msg = "misaligned load handler failed";
-				break;
-			case CAUSE_MISALIGNED_STORE:
-				sbi_pmu_ctr_incr_fw(SBI_PMU_FW_MISALIGNED_STORE);
-				rc  = sbi_misaligned_store_handler(tcntx);
-				msg = "misaligned store handler failed";
-				break;
-			case CAUSE_SUPERVISOR_ECALL:
-			case CAUSE_MACHINE_ECALL:
-				rc  = sbi_ecall_handler(tcntx);
-				msg = "ecall handler failed";
-				break;
-			case CAUSE_LOAD_ACCESS:
-				sbi_pmu_ctr_incr_fw(SBI_PMU_FW_ACCESS_LOAD);
-				rc  = sbi_load_access_handler(tcntx);
-				msg = "load fault handler failed";
-				break;
-			case CAUSE_STORE_ACCESS:
-				sbi_pmu_ctr_incr_fw(SBI_PMU_FW_ACCESS_STORE);
-				rc  = sbi_store_access_handler(tcntx);
-				msg = "store fault handler failed";
-				break;
-			default:
-				/* If the trap came from S or U mode, redirect it there */
-				msg = "trap redirect failed";
-				rc  = sbi_trap_redirect(regs, trap);
-				break;
-		}
+
+	switch (mcause) {
+	case CAUSE_ILLEGAL_INSTRUCTION:
+		rc  = sbi_illegal_insn_handler(tcntx);
+		msg = "illegal instruction handler failed";
+		break;
+	case CAUSE_MISALIGNED_LOAD:
+		sbi_pmu_ctr_incr_fw(SBI_PMU_FW_MISALIGNED_LOAD);
+		rc  = sbi_misaligned_load_handler(tcntx);
+		msg = "misaligned load handler failed";
+		break;
+	case CAUSE_MISALIGNED_STORE:
+		sbi_pmu_ctr_incr_fw(SBI_PMU_FW_MISALIGNED_STORE);
+		rc  = sbi_misaligned_store_handler(tcntx);
+		msg = "misaligned store handler failed";
+		break;
+	case CAUSE_SUPERVISOR_ECALL:
+	case CAUSE_MACHINE_ECALL:
+		rc  = sbi_ecall_handler(tcntx);
+		msg = "ecall handler failed";
+		break;
+	case CAUSE_LOAD_ACCESS:
+		sbi_pmu_ctr_incr_fw(SBI_PMU_FW_ACCESS_LOAD);
+		rc  = sbi_load_access_handler(tcntx);
+		msg = "load fault handler failed";
+		break;
+	case CAUSE_STORE_ACCESS:
+		sbi_pmu_ctr_incr_fw(SBI_PMU_FW_ACCESS_STORE);
+		rc  = sbi_store_access_handler(tcntx);
+		msg = "store fault handler failed";
+		break;
+	case CAUSE_DOUBLE_TRAP:
+		rc  = sbi_double_trap_handler(tcntx);
+		msg = "double trap handler failed";
+		break;
+	default:
+		/* If the trap came from S or U mode, redirect it there */
+		msg = "trap redirect failed";
+		rc  = sbi_trap_redirect(regs, trap);
+		break;
 	}
-	
 
-// trap_done:
-// 	if (rc)
-// 		sbi_trap_error(msg, rc, tcntx);
-// 	if (((regs->mstatus & MSTATUS_MPP) >> MSTATUS_MPP_SHIFT) != PRV_M)
-// 		sbi_sse_process_pending_events(regs);
-// 	sbi_trap_set_context(scratch, tcntx->prev_context);
-// 	return tcntx;
-
-trap_error:
+trap_done:
 	if (rc)
-		sbi_trap_error(msg, rc, mcause, mtval, mtval2, mtinst, regs);
+		sbi_trap_error(msg, rc, tcntx);
+
+	if (check_in_cmode() <= 0 && sbi_mstatus_prev_mode(regs->mstatus) != PRV_M)
+		sbi_sse_process_pending_events(regs);
+
+	sbi_trap_set_context(scratch, tcntx->prev_context);
+	return tcntx;
+}
+
+/**
+ * Default Resumable NMI (RNMI) handler
+ *
+ * This function is called from the _trap_rnmi_handler assembly code.
+ * It provides a simple wrapper that calls the platform-specific
+ * NMI handler if registered. If no handler is registered, it prints
+ * diagnostic information and hangs, similar to unhandled traps.
+ *
+ * Note: The trap context stores NMI CSR values (MNCAUSE, MNEPC, MNSTATUS)
+ * in the generic trap context fields (cause, mepc, mstatus).
+ *
+ * @param tcntx Pointer to trap context (saved on stack)
+ * @return Same trap context pointer (needed for restore macros)
+ */
+struct sbi_trap_context *sbi_trap_rnmi_handler(struct sbi_trap_context *tcntx)
+{
+	int rc;
+	const struct sbi_platform *plat = sbi_platform_thishart_ptr();
+	const struct sbi_platform_operations *ops = sbi_platform_ops(plat);
+
+	/* Call platform-specific NMI handler if registered */
+	if (ops && ops->rnmi_handler) {
+		rc = ops->rnmi_handler(tcntx);
+		if (rc) {
+			/* Platform handler failed to handle NMI */
+			sbi_trap_error("platform NMI handler failed", rc, tcntx);
+		}
+		return tcntx;
+	}
+
+	/* No platform handler - treat as unhandled NMI */
+	sbi_trap_error("unhandled NMI (no platform rnmi_handler)",
+		       SBI_ENOTSUPP, tcntx);
+
+	/* Never returns */
 	return tcntx;
 }

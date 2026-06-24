@@ -30,6 +30,8 @@
  *
  **************************************************************************/
 
+#include <linux/export.h>
+
 #include <drm/drm_atomic.h>
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_device.h>
@@ -138,7 +140,7 @@ int drm_atomic_helper_dirtyfb(struct drm_framebuffer *fb,
 			num_clips /= 2;
 		}
 
-		rects = kcalloc(num_clips, sizeof(*rects), GFP_KERNEL);
+		rects = kzalloc_objs(*rects, num_clips);
 		if (!rects) {
 			ret = -ENOMEM;
 			goto out;
@@ -241,7 +243,8 @@ drm_atomic_helper_damage_iter_init(struct drm_atomic_helper_damage_iter *iter,
 	iter->plane_src.x2 = (src.x2 >> 16) + !!(src.x2 & 0xFFFF);
 	iter->plane_src.y2 = (src.y2 >> 16) + !!(src.y2 & 0xFFFF);
 
-	if (!iter->clips || !drm_rect_equals(&state->src, &old_state->src)) {
+	if (!iter->clips || state->ignore_damage_clips ||
+	    !drm_rect_equals(&state->src, &old_state->src)) {
 		iter->clips = NULL;
 		iter->num_clips = 0;
 		iter->full_update = true;
@@ -307,7 +310,7 @@ EXPORT_SYMBOL(drm_atomic_helper_damage_iter_next);
  * True if there is valid plane damage otherwise false.
  */
 bool drm_atomic_helper_damage_merged(const struct drm_plane_state *old_state,
-				     struct drm_plane_state *state,
+				     const struct drm_plane_state *state,
 				     struct drm_rect *rect)
 {
 	struct drm_atomic_helper_damage_iter iter;

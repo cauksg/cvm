@@ -17,16 +17,16 @@
 static int module_extend_max_pages(struct load_info *info, unsigned int extent)
 {
 	struct page **new_pages;
+	unsigned int new_max = info->max_pages + extent;
 
-	new_pages = kvmalloc_array(info->max_pages + extent,
-				   sizeof(info->pages), GFP_KERNEL);
+	new_pages = kvrealloc(info->pages,
+			      size_mul(new_max, sizeof(*info->pages)),
+			      GFP_KERNEL);
 	if (!new_pages)
 		return -ENOMEM;
 
-	memcpy(new_pages, info->pages, info->max_pages * sizeof(info->pages));
-	kvfree(info->pages);
 	info->pages = new_pages;
-	info->max_pages += extent;
+	info->max_pages = new_max;
 
 	return 0;
 }
@@ -100,7 +100,7 @@ static ssize_t module_gzip_decompress(struct load_info *info,
 	s.next_in = buf + gzip_hdr_len;
 	s.avail_in = size - gzip_hdr_len;
 
-	s.workspace = kmalloc(zlib_inflate_workspacesize(), GFP_KERNEL);
+	s.workspace = kvmalloc(zlib_inflate_workspacesize(), GFP_KERNEL);
 	if (!s.workspace)
 		return -ENOMEM;
 
@@ -138,7 +138,7 @@ static ssize_t module_gzip_decompress(struct load_info *info,
 out_inflate_end:
 	zlib_inflateEnd(&s);
 out:
-	kfree(s.workspace);
+	kvfree(s.workspace);
 	return retval;
 }
 #elif defined(CONFIG_MODULE_COMPRESS_XZ)
@@ -241,7 +241,7 @@ static ssize_t module_zstd_decompress(struct load_info *info,
 	}
 
 	wksp_size = zstd_dstream_workspace_bound(header.windowSize);
-	wksp = vmalloc(wksp_size);
+	wksp = kvmalloc(wksp_size, GFP_KERNEL);
 	if (!wksp) {
 		retval = -ENOMEM;
 		goto out;
@@ -284,7 +284,7 @@ static ssize_t module_zstd_decompress(struct load_info *info,
 	retval = new_size;
 
  out:
-	vfree(wksp);
+	kvfree(wksp);
 	return retval;
 }
 #else

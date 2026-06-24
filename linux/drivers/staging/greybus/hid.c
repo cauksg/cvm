@@ -434,7 +434,7 @@ static int gb_hid_probe(struct gb_bundle *bundle,
 	if (cport_desc->protocol_id != GREYBUS_PROTOCOL_HID)
 		return -ENODEV;
 
-	ghid = kzalloc(sizeof(*ghid), GFP_KERNEL);
+	ghid = kzalloc_obj(*ghid);
 	if (!ghid)
 		return -ENOMEM;
 
@@ -516,4 +516,5 @@ static struct greybus_driver gb_hid_driver = {
 };
 module_greybus_driver(gb_hid_driver);
 
+MODULE_DESCRIPTION("HID class driver for the Greybus");
 MODULE_LICENSE("GPL v2");

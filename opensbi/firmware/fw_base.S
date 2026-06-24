@@ -14,8 +14,8 @@
 #include <sbi/sbi_scratch.h>
 #include <sbi/sbi_trap.h>
 
-#define BOOT_STATUS_LOTTERY_DONE	1
-#define BOOT_STATUS_BOOT_HART_DONE	2
+#define BOOT_LOTTERY_ACQUIRED		1
+#define BOOT_STATUS_BOOT_HART_DONE	1
 
 .macro	MOV_3R __d0, __s0, __d1, __s1, __d2, __s2
 	add	\__d0, \__s0, zero
@@ -29,6 +29,16 @@
 	add	\__d2, \__s2, zero
 	add	\__d3, \__s3, zero
 	add	\__d4, \__s4, zero
+.endm
+
+.macro CLEAR_MDT tmp
+#if __riscv_xlen == 32
+	li 	\tmp, MSTATUSH_MDT
+	csrc	CSR_MSTATUSH, \tmp
+#else
+	li 	\tmp, MSTATUS_MDT
+	csrc	CSR_MSTATUS, \tmp
+#endif
 .endm
 
 	.section .entry, "ax", %progbits
@@ -47,28 +57,40 @@ _start:
 	bne	a0, a6, _wait_for_boot_hart
 _try_lottery:
 	/* Jump to relocation wait loop if we don't get relocation lottery */
-	lla	a6, _boot_status
-	li	a7, BOOT_STATUS_LOTTERY_DONE
+	lla	a6, _boot_lottery
+	li	a7, BOOT_LOTTERY_ACQUIRED
+#if defined(__riscv_atomic) || defined(__riscv_zaamo)
 	amoswap.w a6, a7, (a6)
 	bnez	a6, _wait_for_boot_hart
+#elif defined(__riscv_zalrsc)
+_sc_fail:
+	lr.w	t0, (a6)
+	sc.w	t1, a7, (a6)
+	bnez	t1, _sc_fail
+	bnez	t0, _wait_for_boot_hart
+#else
+#error "need a or zalrsc"
+#endif
 
 	/* relocate the global table content */
-	lla	t2, _fw_start
-	lla	t0, __rel_dyn_start
-	lla	t1, __rel_dyn_end
+	li	t0, FW_TEXT_START	/* link start */
+	lla	t1, _fw_start		/* load start */
+	sub	t2, t1, t0		/* load offset */
+	lla	t0, __rela_dyn_start
+	lla	t1, __rela_dyn_end
 	beq	t0, t1, _relocate_done
 2:
-	REG_L	t5, REGBYTES(t0)	/* t5 <-- relocation info:type */
+	REG_L	t5, __SIZEOF_LONG__(t0)	/* t5 <-- relocation info:type */
 	li	t3, R_RISCV_RELATIVE	/* reloc type R_RISCV_RELATIVE */
 	bne	t5, t3, 3f
 	REG_L	t3, 0(t0)
-	REG_L	t5, (REGBYTES * 2)(t0)	/* t5 <-- addend */
+	REG_L	t5, (__SIZEOF_LONG__ * 2)(t0)	/* t5 <-- addend */
 	add	t5, t5, t2
 	add	t3, t3, t2
 	REG_S	t5, 0(t3)		/* store runtime address to the GOT entry */
 
 3:
-	addi	t0, t0, (REGBYTES * 3)
+	addi	t0, t0, (__SIZEOF_LONG__ * 3)
 	blt	t0, t1, 2b
 _relocate_done:
 	/* At this point we are running from link address */
@@ -88,6 +110,14 @@ _bss_zero:
 	/* Setup temporary trap handler */
 	lla	s4, _start_hang
 	csrw	CSR_MTVEC, s4
+
+	/*
+	 * While at this point, trap handling is rudimentary, if a trap happens,
+	 * it will end up in _start_hang which is enough to hook up a GDB. Clear
+	 * MDT to avoid generating a double trap and thus entering a
+	 * critical-error state.
+	 */
+	CLEAR_MDT t0
 
 	/* Setup temporary stack */
 	lla	s4, _fw_end
@@ -204,9 +234,10 @@ _scratch_init:
 	/* Store hartid-to-scratch function address in scratch space */
 	lla	a4, _hartid_to_scratch
 	REG_S	a4, SBI_SCRATCH_HARTID_TO_SCRATCH_OFFSET(tp)
-	/* Clear trap_context and tmp0 in scratch space */
+	/* Clear trap_context, tmp0 and tmp1 in scratch space */
 	REG_S	zero, SBI_SCRATCH_TRAP_CONTEXT_OFFSET(tp)
 	REG_S	zero, SBI_SCRATCH_TMP0_OFFSET(tp)
+	REG_S	zero, SBI_SCRATCH_TMP1_OFFSET(tp)
 	/* Store firmware options in scratch space */
 	MOV_3R	s0, a0, s1, a1, s2, a2
 #ifdef FW_OPTIONS
@@ -216,6 +247,8 @@ _scratch_init:
 #endif
 	REG_S	a0, SBI_SCRATCH_OPTIONS_OFFSET(tp)
 	MOV_3R	a0, s0, a1, s1, a2, s2
+	/* Store hart index in scratch space */
+	REG_S	t1, SBI_SCRATCH_HARTINDEX_OFFSET(tp)
 	/* Move to next scratch space */
 	add	t1, t1, t2
 	blt	t1, s7, _scratch_init
@@ -240,30 +273,14 @@ _scratch_init:
 	beq	t1, a1, _fdt_reloc_done
 	/* t0 = source FDT start address */
 	add	t0, a1, zero
-	/* t2 = source FDT size in big-endian */
-#if __riscv_xlen > 32
-	lwu	t2, 4(t0)
-#else
-	lw	t2, 4(t0)
-#endif
-	/* t3 = bit[15:8] of FDT size */
-	add	t3, t2, zero
-	srli	t3, t3, 16
-	and	t3, t3, a4
+	/* t2 = source FDT size (convert from big-endian) */
+	lbu	t2, 7(t0)
+	lbu	t3, 6(t0)
+	lbu	t4, 5(t0)
+	lbu	t5, 4(t0)
 	slli	t3, t3, 8
-	/* t4 = bit[23:16] of FDT size */
-	add	t4, t2, zero
-	srli	t4, t4, 8
-	and	t4, t4, a4
 	slli	t4, t4, 16
-	/* t5 = bit[31:24] of FDT size */
-	add	t5, t2, zero
-	and	t5, t5, a4
 	slli	t5, t5, 24
-	/* t2 = bit[7:0] of FDT size */
-	srli	t2, t2, 24
-	and	t2, t2, a4
-	/* t2 = FDT size in little-endian */
 	or	t2, t2, t3
 	or	t2, t2, t4
 	or	t2, t2, t5
@@ -286,7 +303,7 @@ _fdt_reloc_done:
 	REG_S	t0, 0(t1)
 	j	_start_warm
 
-	/* waiting for boot hart to be done (_boot_status == 2) */
+	/* waiting for boot hart to be done (_boot_status == BOOT_STATUS_BOOT_HART_DONE) */
 _wait_for_boot_hart:
 	li	t0, BOOT_STATUS_BOOT_HART_DONE
 	lla	t1, _boot_status
@@ -360,6 +377,9 @@ _start_warm:
 _skip_trap_handler_hyp:
 	csrw	CSR_MTVEC, a4
 
+	/* Clear MDT here again for all harts */
+	CLEAR_MDT t0
+
 	/* Initialize SBI runtime */
 	csrr	a0, CSR_MSCRATCH
 	call	sbi_init
@@ -369,6 +389,8 @@ _skip_trap_handler_hyp:
 
 	.data
 	.align 3
+_boot_lottery:
+	RISCV_PTR	0
 _boot_status:
 	RISCV_PTR	0
 
@@ -483,6 +505,45 @@ memcmp:
 	csrrw	tp, CSR_MSCRATCH, tp
 .endm
 
+.macro	TRAP_SAVE_AND_SETUP_SP_T0_NMI
+	/* Swap TP and MNSCRATCH (for RNMI) */
+	csrrw	tp, CSR_MNSCRATCH, tp
+
+	/* Save T0 in scratch space */
+	REG_S	t0, SBI_SCRATCH_TMP1_OFFSET(tp)
+
+	/*
+	 * Set T0 to appropriate exception stack
+	 *
+	 * Came_From_M_Mode = ((MNSTATUS.MNPP < PRV_M) ? 1 : 0) - 1;
+	 * Exception_Stack = TP ^ (Came_From_M_Mode & (SP ^ TP))
+	 */
+	csrr	t0, CSR_MNSTATUS
+	srl	t0, t0, 11		/* MNPP is at bits 11-12 */
+	and	t0, t0, PRV_M
+	slti	t0, t0, PRV_M
+	add	t0, t0, -1
+	xor	sp, sp, tp
+	and	t0, t0, sp
+	xor	sp, sp, tp
+	xor	t0, tp, t0
+
+	/* Save original SP on exception stack */
+	REG_S	sp, (SBI_TRAP_REGS_OFFSET(sp) - SBI_TRAP_CONTEXT_SIZE)(t0)
+
+	/* Set SP to exception stack and make room for trap context */
+	add	sp, t0, -(SBI_TRAP_CONTEXT_SIZE)
+
+	/* Restore T0 from scratch space */
+	REG_L	t0, SBI_SCRATCH_TMP1_OFFSET(tp)
+
+	/* Save T0 on stack */
+	REG_S	t0, SBI_TRAP_REGS_OFFSET(t0)(sp)
+
+	/* Swap TP and MNSCRATCH */
+	csrrw	tp, CSR_MNSCRATCH, tp
+.endm
+
 .macro	TRAP_SAVE_MEPC_MSTATUS have_mstatush
 	/* Save MEPC and MSTATUS CSRs */
 	csrr	t0, CSR_MEPC
@@ -495,6 +556,20 @@ memcmp:
 	.else
 	REG_S	zero, SBI_TRAP_REGS_OFFSET(mstatusH)(sp)
 	.endif
+.endm
+
+.macro	TRAP_SAVE_MNEPC_MNSTATUS have_mstatush
+	/*
+	 * Save MNEPC and MNSTATUS CSRs (for RNMI)
+	 * Note: Trap context structure has generic field names (mepc, mstatus),
+	 * we store MN* CSR values into these same structure fields.
+	 */
+	csrr	t0, CSR_MNEPC
+	REG_S	t0, SBI_TRAP_REGS_OFFSET(mepc)(sp)
+	csrr	t0, CSR_MNSTATUS
+	REG_S	t0, SBI_TRAP_REGS_OFFSET(mstatus)(sp)
+	/* MNSTATUSH doesn't exist in SMRNMI spec */
+	REG_S	zero, SBI_TRAP_REGS_OFFSET(mstatusH)(sp)
 .endm
 
 .macro	TRAP_SAVE_GENERAL_REGS_EXCEPT_SP_T0
@@ -555,12 +630,39 @@ memcmp:
 	li	t0, 0
 .endif
 	REG_S	t0, (SBI_TRAP_REGS_SIZE + SBI_TRAP_INFO_OFFSET(gva))(sp)
+
+	/* We are ready to take another trap, clear MDT */
+	CLEAR_MDT t0
+.endm
+
+.macro	TRAP_SAVE_NMI_INFO
+	/*
+	 * Save NMI trap info (MNCAUSE, no MNTVAL in spec)
+	 * Note: Trap info structure has generic field names (cause, tval, etc.),
+	 * we store MN* CSR values into these same structure fields.
+	 */
+	csrr	t0, CSR_MNCAUSE
+	REG_S	t0, (SBI_TRAP_REGS_SIZE + SBI_TRAP_INFO_OFFSET(cause))(sp)
+	/* MNTVAL doesn't exist in SMRNMI spec */
+	REG_S	zero, (SBI_TRAP_REGS_SIZE + SBI_TRAP_INFO_OFFSET(tval))(sp)
+	REG_S	zero, (SBI_TRAP_REGS_SIZE + SBI_TRAP_INFO_OFFSET(tval2))(sp)
+	REG_S	zero, (SBI_TRAP_REGS_SIZE + SBI_TRAP_INFO_OFFSET(tinst))(sp)
+	REG_S	zero, (SBI_TRAP_REGS_SIZE + SBI_TRAP_INFO_OFFSET(gva))(sp)
+
+	/* We are ready to take another trap, clear MDT */
+	CLEAR_MDT t0
 .endm
 
 .macro	TRAP_CALL_C_ROUTINE
 	/* Call C routine */
 	add	a0, sp, zero
 	call	sbi_trap_handler
+.endm
+
+.macro	TRAP_CALL_C_RNMI_ROUTINE
+	/* Call C routine */
+	add	a0, sp, zero
+	call	sbi_trap_rnmi_handler
 .endm
 
 .macro	TRAP_RESTORE_GENERAL_REGS_EXCEPT_A0_T0
@@ -597,15 +699,31 @@ memcmp:
 .endm
 
 .macro	TRAP_RESTORE_MEPC_MSTATUS have_mstatush
-	/* Restore MEPC and MSTATUS CSRs */
-	REG_L	t0, SBI_TRAP_REGS_OFFSET(mepc)(a0)
-	csrw	CSR_MEPC, t0
-	REG_L	t0, SBI_TRAP_REGS_OFFSET(mstatus)(a0)
-	csrw	CSR_MSTATUS, t0
+	/*
+	 * Restore MSTATUS and MEPC CSRs starting with MSTATUS/H to set MDT
+	 * flags since we can not take a trap now or MEPC would be cloberred
+	 */
 	.if \have_mstatush
 	REG_L	t0, SBI_TRAP_REGS_OFFSET(mstatusH)(a0)
 	csrw	CSR_MSTATUSH, t0
 	.endif
+	REG_L	t0, SBI_TRAP_REGS_OFFSET(mstatus)(a0)
+	csrw	CSR_MSTATUS, t0
+	REG_L	t0, SBI_TRAP_REGS_OFFSET(mepc)(a0)
+	csrw	CSR_MEPC, t0
+.endm
+
+.macro	TRAP_RESTORE_MNEPC_MNSTATUS
+	/*
+	 * Restore MNSTATUS and MNEPC CSRs (for RNMI)
+	 * Note: Load from generic structure fields (mstatus, mepc) and
+	 * restore to NMI-specific CSRs (MNSTATUS, MNEPC).
+	 * No MNSTATUSH in SMRNMI spec.
+	 */
+	REG_L	t0, SBI_TRAP_REGS_OFFSET(mstatus)(a0)
+	csrw	CSR_MNSTATUS, t0
+	REG_L	t0, SBI_TRAP_REGS_OFFSET(mepc)(a0)
+	csrw	CSR_MNEPC, t0
 .endm
 
 .macro TRAP_RESTORE_A0_T0
@@ -674,6 +792,37 @@ _trap_handler_hyp:
 
 	.section .entry, "ax", %progbits
 	.align 3
+	.globl _trap_rnmi_handler
+_trap_rnmi_handler:
+	/*
+	 * NMI interrupt handler using MN* CSRs
+	 *
+	 * Context detection via MNPP (previous privilege mode):
+	 * - If MNPP < M-mode: use exception stack (TP)
+	 * - If MNPP == M-mode: use current stack (SP)
+	 * This handles nested interrupt cases.
+	 */
+	TRAP_SAVE_AND_SETUP_SP_T0_NMI
+
+	TRAP_SAVE_MNEPC_MNSTATUS 0
+
+	TRAP_SAVE_GENERAL_REGS_EXCEPT_SP_T0
+
+	TRAP_SAVE_NMI_INFO
+
+	TRAP_CALL_C_RNMI_ROUTINE
+
+	TRAP_RESTORE_GENERAL_REGS_EXCEPT_A0_T0
+
+	TRAP_RESTORE_MNEPC_MNSTATUS
+
+	TRAP_RESTORE_A0_T0
+
+	/* mnret - return from NMI (SMRNMI extension) */
+	.word 0x70200073
+
+	.section .entry, "ax", %progbits
+	.align 3
 	.globl _reset_regs
 _reset_regs:
 
@@ -708,6 +857,19 @@ _reset_regs:
 	csrw CSR_MSCRATCH, 0
 
 	ret
+
+	.section .rodata
+.Lstack_corrupt_msg:
+	.string "stack smashing detected\n"
+
+	/* This will be called when the stack corruption is detected */
+	.section .text
+	.align 3
+	.globl __stack_chk_fail
+	.type __stack_chk_fail, %function
+__stack_chk_fail:
+	la	a0, .Lstack_corrupt_msg
+	call	sbi_panic
 
 #ifdef FW_FDT_PATH
 	.section .rodata

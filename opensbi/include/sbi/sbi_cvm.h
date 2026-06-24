@@ -62,6 +62,7 @@ struct sbi_cvm {
 	//the list head of available free pages
 	struct list_head *free_mem_list_head;
 	spinlock_t free_mem_list_lock;
+	spinlock_t page_table_lock;
 	//the used chunk list of the cvm
 	struct cvm_mem_chunk_node *used_chunk_list_head;
 
@@ -294,6 +295,8 @@ paddr_t mreclaim_cvm_page(struct sbi_cvm* cvm, struct iie_cvm_sbi_params *cvm_sb
 int add_cvm_share_pages(struct sbi_cvm* cvm, paddr_t gpa, paddr_t hpa, bool swiotlb, unsigned long KeyID);
 int convert_cvm_pages(struct cvm_list_params* cm_pool_list, struct cvm_list_params* root_pt_list, struct cvm_list_params* bitmap, struct cvm_list_params* page_own_table);
 int load_file(struct iie_cvm_sbi_params_load *load_file);
+int retry_load_after_refill(struct iie_cvm_sbi_params_load *load_file);
+int refill_memory_pool(struct cvm_list_params *chunk_infor_list);
 void set_bitmap(paddr_t page_address);
 void reset_bitmap(paddr_t page_address);
 int init_bitmap(struct cvm_list_params* bmp);
@@ -304,6 +307,7 @@ void mfree_cvm_page_only(paddr_t paddr, paddr_t* vmid_addr);
 int mfree_cvm_page(struct sbi_cvm* cvm, struct cvm_list_params *recycle_list);
 int init_swiotlb_params(struct iie_cvm_sbi_params_swiotlb *swiotlb, struct kvm_vmid *vmid_ptr);
 int recycle_memory(struct iie_cvm_sbi_params *cvm_sbi_params, struct cvm_list_params *recycle_list);
+int init_cvm_vcpu_rootptAndChunk(struct iie_cvm_sbi_params *cvm_sbi_params);
 
 // /** cvm functions */
 void init_cpus();

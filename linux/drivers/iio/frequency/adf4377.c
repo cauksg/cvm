@@ -8,7 +8,9 @@
 #include <linux/bitfield.h>
 #include <linux/bits.h>
 #include <linux/clk.h>
+#include <linux/clk-provider.h>
 #include <linux/clkdev.h>
+#include <linux/container_of.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/gpio/consumer.h>
@@ -20,7 +22,7 @@
 #include <linux/regmap.h>
 #include <linux/units.h>
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 /* ADF4377 REG0000 Map */
 #define ADF4377_0000_SOFT_RESET_R_MSK		BIT(7)
@@ -400,7 +402,13 @@ enum muxout_select_mode {
 	ADF4377_MUXOUT_HIGH = 0x8,
 };
 
+struct adf4377_chip_info {
+	const char *name;
+	bool has_gpio_enclk2;
+};
+
 struct adf4377_state {
+	const struct adf4377_chip_info	*chip_info;
 	struct spi_device	*spi;
 	struct regmap		*regmap;
 	struct clk		*clkin;
@@ -429,8 +437,13 @@ struct adf4377_state {
 	struct gpio_desc	*gpio_ce;
 	struct gpio_desc	*gpio_enclk1;
 	struct gpio_desc	*gpio_enclk2;
+	struct clk		*clk;
+	struct clk		*clkout;
+	struct clk_hw		hw;
 	u8			buf[2] __aligned(IIO_DMA_MINALIGN);
 };
+
+#define to_adf4377_state(h)	container_of(h, struct adf4377_state, hw)
 
 static const char * const adf4377_muxout_modes[] = {
 	[ADF4377_MUXOUT_HIGH_Z] = "high_z",
@@ -495,7 +508,7 @@ static int adf4377_soft_reset(struct adf4377_state *st)
 		return ret;
 
 	return regmap_read_poll_timeout(st->regmap, 0x0, read_val,
-					!(read_val & (ADF4377_0000_SOFT_RESET_R_MSK |
+					!(read_val & (ADF4377_0000_SOFT_RESET_MSK |
 					ADF4377_0000_SOFT_RESET_R_MSK)), 200, 200 * 100);
 }
 
@@ -870,7 +883,6 @@ static const struct iio_chan_spec adf4377_channels[] = {
 static int adf4377_properties_parse(struct adf4377_state *st)
 {
 	struct spi_device *spi = st->spi;
-	const char *str;
 	int ret;
 
 	st->clkin = devm_clk_get_enabled(&spi->dev, "ref_in");
@@ -890,22 +902,21 @@ static int adf4377_properties_parse(struct adf4377_state *st)
 		return dev_err_probe(&spi->dev, PTR_ERR(st->gpio_enclk1),
 				     "failed to get the CE GPIO\n");
 
-	st->gpio_enclk2 = devm_gpiod_get_optional(&st->spi->dev, "clk2-enable",
-						  GPIOD_OUT_LOW);
-	if (IS_ERR(st->gpio_enclk2))
-		return dev_err_probe(&spi->dev, PTR_ERR(st->gpio_enclk2),
-				     "failed to get the CE GPIO\n");
-
-	ret = device_property_read_string(&spi->dev, "adi,muxout-select", &str);
-	if (ret) {
-		st->muxout_select = ADF4377_MUXOUT_HIGH_Z;
-	} else {
-		ret = match_string(adf4377_muxout_modes, ARRAY_SIZE(adf4377_muxout_modes), str);
-		if (ret < 0)
-			return ret;
-
-		st->muxout_select = ret;
+	if (st->chip_info->has_gpio_enclk2) {
+		st->gpio_enclk2 = devm_gpiod_get_optional(&st->spi->dev, "clk2-enable",
+							  GPIOD_OUT_LOW);
+		if (IS_ERR(st->gpio_enclk2))
+			return dev_err_probe(&spi->dev, PTR_ERR(st->gpio_enclk2),
+					"failed to get the CE GPIO\n");
 	}
+
+	ret = device_property_match_property_string(&spi->dev, "adi,muxout-select",
+						    adf4377_muxout_modes,
+						    ARRAY_SIZE(adf4377_muxout_modes));
+	if (ret >= 0)
+		st->muxout_select = ret;
+	else
+		st->muxout_select = ADF4377_MUXOUT_HIGH_Z;
 
 	return 0;
 }
@@ -924,6 +935,120 @@ static int adf4377_freq_change(struct notifier_block *nb, unsigned long action, 
 
 	return NOTIFY_OK;
 }
+
+static unsigned long adf4377_clk_recalc_rate(struct clk_hw *hw,
+					     unsigned long parent_rate)
+{
+	struct adf4377_state *st = to_adf4377_state(hw);
+	u64 freq;
+	int ret;
+
+	ret = adf4377_get_freq(st, &freq);
+	if (ret)
+		return 0;
+
+	return freq;
+}
+
+static int adf4377_clk_set_rate(struct clk_hw *hw,
+				unsigned long rate,
+				unsigned long parent_rate)
+{
+	struct adf4377_state *st = to_adf4377_state(hw);
+
+	return adf4377_set_freq(st, rate);
+}
+
+static int adf4377_clk_prepare(struct clk_hw *hw)
+{
+	struct adf4377_state *st = to_adf4377_state(hw);
+
+	return regmap_update_bits(st->regmap, 0x1a, ADF4377_001A_PD_CLKOUT1_MSK |
+				  ADF4377_001A_PD_CLKOUT2_MSK,
+				  FIELD_PREP(ADF4377_001A_PD_CLKOUT1_MSK, 0) |
+				  FIELD_PREP(ADF4377_001A_PD_CLKOUT2_MSK, 0));
+}
+
+static void adf4377_clk_unprepare(struct clk_hw *hw)
+{
+	struct adf4377_state *st = to_adf4377_state(hw);
+
+	regmap_update_bits(st->regmap, 0x1a, ADF4377_001A_PD_CLKOUT1_MSK |
+			   ADF4377_001A_PD_CLKOUT2_MSK,
+			   FIELD_PREP(ADF4377_001A_PD_CLKOUT1_MSK, 1) |
+			   FIELD_PREP(ADF4377_001A_PD_CLKOUT2_MSK, 1));
+}
+
+static int adf4377_clk_is_prepared(struct clk_hw *hw)
+{
+	struct adf4377_state *st = to_adf4377_state(hw);
+	unsigned int readval;
+	int ret;
+
+	ret = regmap_read(st->regmap, 0x1a, &readval);
+	if (ret)
+		return ret;
+
+	return !(readval & (ADF4377_001A_PD_CLKOUT1_MSK | ADF4377_001A_PD_CLKOUT2_MSK));
+}
+
+static const struct clk_ops adf4377_clk_ops = {
+	.recalc_rate = adf4377_clk_recalc_rate,
+	.set_rate = adf4377_clk_set_rate,
+	.prepare = adf4377_clk_prepare,
+	.unprepare = adf4377_clk_unprepare,
+	.is_prepared = adf4377_clk_is_prepared,
+};
+
+static int adf4377_clk_register(struct adf4377_state *st)
+{
+	struct spi_device *spi = st->spi;
+	struct device *dev = &spi->dev;
+	struct clk_init_data init;
+	struct clk_parent_data parent_data;
+	int ret;
+
+	if (!device_property_present(dev, "#clock-cells"))
+		return 0;
+
+	ret = device_property_read_string(dev, "clock-output-names", &init.name);
+	if (ret) {
+		init.name = devm_kasprintf(dev, GFP_KERNEL, "%pfw-clk",
+					   dev_fwnode(dev));
+		if (!init.name)
+			return -ENOMEM;
+	}
+
+	parent_data.fw_name = "ref_in";
+
+	init.ops = &adf4377_clk_ops;
+	init.parent_data = &parent_data;
+	init.num_parents = 1;
+	init.flags = CLK_SET_RATE_PARENT;
+
+	st->hw.init = &init;
+	ret = devm_clk_hw_register(dev, &st->hw);
+	if (ret)
+		return ret;
+
+	ret = devm_of_clk_add_hw_provider(dev, of_clk_hw_simple_get, &st->hw);
+	if (ret)
+		return ret;
+
+	st->clkout = st->hw.clk;
+
+	return 0;
+}
+
+static const struct adf4377_chip_info adf4377_chip_info = {
+	.name = "adf4377",
+	.has_gpio_enclk2 = true,
+};
+
+static const struct adf4377_chip_info adf4378_chip_info = {
+	.name = "adf4378",
+	.has_gpio_enclk2 = false,
+};
 
 static int adf4377_probe(struct spi_device *spi)
 {
@@ -944,11 +1069,10 @@ static int adf4377_probe(struct spi_device *spi)
 
 	indio_dev->info = &adf4377_info;
 	indio_dev->name = "adf4377";
-	indio_dev->channels = adf4377_channels;
-	indio_dev->num_channels = ARRAY_SIZE(adf4377_channels);
 
 	st->regmap = regmap;
 	st->spi = spi;
+	st->chip_info = spi_get_device_match_data(spi);
 	mutex_init(&st->lock);
 
 	ret = adf4377_properties_parse(st);
@@ -964,18 +1088,29 @@ static int adf4377_probe(struct spi_device *spi)
 	if (ret)
 		return ret;
 
+	ret = adf4377_clk_register(st);
+	if (ret)
+		return ret;
+
+	if (!st->clkout) {
+		indio_dev->channels = adf4377_channels;
+		indio_dev->num_channels = ARRAY_SIZE(adf4377_channels);
+	}
+
 	return devm_iio_device_register(&spi->dev, indio_dev);
 }
 
 static const struct spi_device_id adf4377_id[] = {
-	{ "adf4377", 0 },
-	{}
+	{ "adf4377", (kernel_ulong_t)&adf4377_chip_info },
+	{ "adf4378", (kernel_ulong_t)&adf4378_chip_info },
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, adf4377_id);
 
 static const struct of_device_id adf4377_of_match[] = {
-	{ .compatible = "adi,adf4377" },
-	{}
+	{ .compatible = "adi,adf4377", .data = &adf4377_chip_info },
+	{ .compatible = "adi,adf4378", .data = &adf4378_chip_info },
+	{ }
 };
 MODULE_DEVICE_TABLE(of, adf4377_of_match);
 

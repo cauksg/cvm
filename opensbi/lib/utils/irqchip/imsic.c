@@ -12,6 +12,7 @@
 #include <sbi/riscv_io.h>
 #include <sbi/riscv_encoding.h>
 #include <sbi/sbi_console.h>
+#include <sbi/sbi_csr_detect.h>
 #include <sbi/sbi_domain.h>
 #include <sbi/sbi_ipi.h>
 #include <sbi/sbi_irqchip.h>
@@ -118,29 +119,35 @@ int imsic_map_hartid_to_data(u32 hartid, struct imsic_data *imsic, int file)
 	return 0;
 }
 
-struct imsic_data *imsic_get_data(u32 hartid)
+struct imsic_data *imsic_get_data(u32 hartindex)
 {
 	struct sbi_scratch *scratch;
 
-	scratch = sbi_hartid_to_scratch(hartid);
+	if (!imsic_ptr_offset)
+		return NULL;
+
+	scratch = sbi_hartindex_to_scratch(hartindex);
 	if (!scratch)
 		return NULL;
 
 	return imsic_get_hart_data_ptr(scratch);
 }
 
-int imsic_get_target_file(u32 hartid)
+int imsic_get_target_file(u32 hartindex)
 {
 	struct sbi_scratch *scratch;
 
-	scratch = sbi_hartid_to_scratch(hartid);
+	if (!imsic_file_offset)
+		return SBI_ENOENT;
+
+	scratch = sbi_hartindex_to_scratch(hartindex);
 	if (!scratch)
 		return SBI_ENOENT;
 
 	return imsic_get_hart_file(scratch);
 }
 
-static int imsic_external_irqfn(void)
+static int imsic_process_hwirqs(struct sbi_irqchip_device *chip)
 {
 	ulong mirq;
 
@@ -192,6 +199,7 @@ static void imsic_ipi_send(u32 hart_index)
 
 static struct sbi_ipi_device imsic_ipi_device = {
 	.name		= "aia-imsic",
+	.rating		= 300,
 	.ipi_send	= imsic_ipi_send
 };
 
@@ -222,6 +230,8 @@ static void imsic_local_eix_update(unsigned long base_id,
 
 void imsic_local_irqchip_init(void)
 {
+	struct sbi_trap_info trap = { 0 };
+
 	/*
 	 * This function is expected to be called from:
 	 * 1) nascent_init() platform callback which is called
@@ -230,6 +240,11 @@ void imsic_local_irqchip_init(void)
 	 * 2) irqchip_init() platform callback which is called
 	 *    in boot-up path.
 	 */
+
+	/* If Smaia not available then do nothing */
+	csr_read_allowed(CSR_MTOPI, &trap);
+	if (trap.cause)
+		return;
 
 	/* Setup threshold to allow all enabled interrupts */
 	imsic_csr_write(IMSIC_EITHRESHOLD, IMSIC_ENABLE_EITHRESHOLD);
@@ -241,9 +256,9 @@ void imsic_local_irqchip_init(void)
 	imsic_local_eix_update(IMSIC_IPI_ID, 1, false, true);
 }
 
-int imsic_warm_irqchip_init(void)
+static int imsic_warm_irqchip_init(struct sbi_irqchip_device *dev)
 {
-	struct imsic_data *imsic = imsic_get_data(current_hartid());
+	struct imsic_data *imsic = imsic_get_data(current_hartindex());
 
 	/* Sanity checks */
 	if (!imsic || !imsic->targets_mmode)
@@ -331,10 +346,22 @@ int imsic_data_check(struct imsic_data *imsic)
 	return 0;
 }
 
+static int imsic_hwirq_setup(struct sbi_irqchip_device *chip, u32 hwirq, u32 hwirq_flags)
+{
+	if (hwirq_flags != SBI_HWIRQ_FLAGS_NONE)
+		return SBI_ENOTSUPP;
+	return 0;
+}
+
+static struct sbi_irqchip_device imsic_device = {
+	.warm_init	= imsic_warm_irqchip_init,
+	.process_hwirqs	= imsic_process_hwirqs,
+	.hwirq_setup	= imsic_hwirq_setup,
+};
+
 int imsic_cold_irqchip_init(struct imsic_data *imsic)
 {
 	int i, rc;
-	struct sbi_domain_memregion reg;
 
 	/* Sanity checks */
 	rc = imsic_data_check(imsic);
@@ -359,24 +386,34 @@ int imsic_cold_irqchip_init(struct imsic_data *imsic)
 			return SBI_ENOMEM;
 	}
 
-	/* Setup external interrupt function for IMSIC */
-	sbi_irqchip_set_irqfn(imsic_external_irqfn);
-
 	/* Add IMSIC regions to the root domain */
 	for (i = 0; i < IMSIC_MAX_REGS && imsic->regs[i].size; i++) {
-		sbi_domain_memregion_init(imsic->regs[i].addr,
-					  imsic->regs[i].size,
-					  (SBI_DOMAIN_MEMREGION_MMIO |
-					   SBI_DOMAIN_MEMREGION_M_READABLE |
-					   SBI_DOMAIN_MEMREGION_M_WRITABLE),
-					  &reg);
-		rc = sbi_domain_root_add_memregion(&reg);
+		rc = sbi_domain_root_add_memrange(imsic->regs[i].addr,
+						  imsic->regs[i].size,
+						  IMSIC_MMIO_PAGE_SZ,
+						  SBI_DOMAIN_MEMREGION_MMIO |
+						  SBI_DOMAIN_MEMREGION_M_READABLE |
+						  SBI_DOMAIN_MEMREGION_M_WRITABLE);
 		if (rc)
 			return rc;
 	}
 
+	/* Register irqchip device */
+	imsic_device.id = imsic->unique_id;
+	imsic_device.caps = SBI_IRQCHIP_CAPS_MSI;
+	imsic_device.num_hwirq = imsic->num_ids + 1;
+	sbi_hartmask_set_all(&imsic_device.target_harts);
+	rc = sbi_irqchip_add_device(&imsic_device);
+	if (rc)
+		return rc;
+
+	/* Mark hwirq 0 and IPI hwirq as reserved */
+	rc = sbi_irqchip_register_reserved(&imsic_device, 0, IMSIC_IPI_ID + 1);
+	if (rc)
+		return rc;
+
 	/* Register IPI device */
-	sbi_ipi_set_device(&imsic_ipi_device);
+	sbi_ipi_add_device(&imsic_ipi_device);
 
 	return 0;
 }

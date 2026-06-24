@@ -1,9 +1,9 @@
 ::sysinit:/bin/busybox mount -t proc proc /proc
+::sysinit:/bin/busybox mount -t devtmpfs devtmpfs /dev
+::sysinit:/bin/busybox mkdir -p /dev/pts
+::sysinit:-/bin/busybox mount -t devpts devpts /dev/pts
 ::sysinit:/bin/busybox mount -t tmpfs tmpfs /tmp
 ::sysinit:/bin/busybox mount -t sysfs sysfs /sys
-::sysinit:/bin/busybox mount -a
 ::sysinit:/bin/busybox --install -s
 ::sysinit:/sbin/mdev -s
-::sysinit:/sbin/ifup -a
-::sysinit:/bin/dropbear -R
-/dev/console::sysinit:-/bin/ash 
+ttyS0::respawn:/bin/cttyhack /bin/ash

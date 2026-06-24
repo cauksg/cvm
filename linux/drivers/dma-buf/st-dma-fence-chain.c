@@ -84,10 +84,10 @@ static int sanitycheck(void *arg)
 		return -ENOMEM;
 
 	chain = mock_chain(NULL, f, 1);
-	if (!chain)
+	if (chain)
+		dma_fence_enable_sw_signaling(chain);
+	else
 		err = -ENOMEM;
-
-	dma_fence_enable_sw_signaling(chain);
 
 	dma_fence_signal(f);
 	dma_fence_put(f);
@@ -116,13 +116,11 @@ static int fence_chains_init(struct fence_chains *fc, unsigned int count,
 	unsigned int i;
 	int err = 0;
 
-	fc->chains = kvmalloc_array(count, sizeof(*fc->chains),
-				    GFP_KERNEL | __GFP_ZERO);
+	fc->chains = kvmalloc_objs(*fc->chains, count, GFP_KERNEL | __GFP_ZERO);
 	if (!fc->chains)
 		return -ENOMEM;
 
-	fc->fences = kvmalloc_array(count, sizeof(*fc->fences),
-				    GFP_KERNEL | __GFP_ZERO);
+	fc->fences = kvmalloc_objs(*fc->fences, count, GFP_KERNEL | __GFP_ZERO);
 	if (!fc->fences) {
 		err = -ENOMEM;
 		goto err_chains;
@@ -452,7 +450,7 @@ static int find_race(void *arg)
 	if (err)
 		return err;
 
-	threads = kmalloc_array(ncpus, sizeof(*threads), GFP_KERNEL);
+	threads = kmalloc_objs(*threads, ncpus);
 	if (!threads) {
 		err = -ENOMEM;
 		goto err;
@@ -476,10 +474,9 @@ static int find_race(void *arg)
 	for (i = 0; i < ncpus; i++) {
 		int ret;
 
-		ret = kthread_stop(threads[i]);
+		ret = kthread_stop_put(threads[i]);
 		if (ret && !err)
 			err = ret;
-		put_task_struct(threads[i]);
 	}
 	kfree(threads);
 
@@ -591,8 +588,7 @@ static int wait_forward(void *arg)
 	for (i = 0; i < fc.chain_length; i++)
 		dma_fence_signal(fc.fences[i]);
 
-	err = kthread_stop(tsk);
-	put_task_struct(tsk);
+	err = kthread_stop_put(tsk);
 
 err:
 	fence_chains_fini(&fc);
@@ -621,8 +617,7 @@ static int wait_backward(void *arg)
 	for (i = fc.chain_length; i--; )
 		dma_fence_signal(fc.fences[i]);
 
-	err = kthread_stop(tsk);
-	put_task_struct(tsk);
+	err = kthread_stop_put(tsk);
 
 err:
 	fence_chains_fini(&fc);
@@ -669,8 +664,7 @@ static int wait_random(void *arg)
 	for (i = 0; i < fc.chain_length; i++)
 		dma_fence_signal(fc.fences[i]);
 
-	err = kthread_stop(tsk);
-	put_task_struct(tsk);
+	err = kthread_stop_put(tsk);
 
 err:
 	fence_chains_fini(&fc);

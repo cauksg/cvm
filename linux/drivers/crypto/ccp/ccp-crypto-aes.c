@@ -7,15 +7,16 @@
  * Author: Tom Lendacky <thomas.lendacky@amd.com>
  */
 
-#include <linux/module.h>
-#include <linux/sched.h>
-#include <linux/delay.h>
-#include <linux/scatterlist.h>
-#include <linux/crypto.h>
-#include <crypto/algapi.h>
 #include <crypto/aes.h>
 #include <crypto/ctr.h>
-#include <crypto/scatterwalk.h>
+#include <crypto/internal/skcipher.h>
+#include <linux/err.h>
+#include <linux/kernel.h>
+#include <linux/list.h>
+#include <linux/module.h>
+#include <linux/scatterlist.h>
+#include <linux/slab.h>
+#include <linux/string.h>
 
 #include "ccp-crypto.h"
 
@@ -267,24 +268,6 @@ static struct ccp_aes_def aes_algs[] = {
 		.alg_defaults	= &ccp_aes_defaults,
 	},
 	{
-		.mode		= CCP_AES_MODE_CFB,
-		.version	= CCP_VERSION(3, 0),
-		.name		= "cfb(aes)",
-		.driver_name	= "cfb-aes-ccp",
-		.blocksize	= 1,
-		.ivsize		= AES_BLOCK_SIZE,
-		.alg_defaults	= &ccp_aes_defaults,
-	},
-	{
-		.mode		= CCP_AES_MODE_OFB,
-		.version	= CCP_VERSION(3, 0),
-		.name		= "ofb(aes)",
-		.driver_name	= "ofb-aes-ccp",
-		.blocksize	= 1,
-		.ivsize		= AES_BLOCK_SIZE,
-		.alg_defaults	= &ccp_aes_defaults,
-	},
-	{
 		.mode		= CCP_AES_MODE_CTR,
 		.version	= CCP_VERSION(3, 0),
 		.name		= "ctr(aes)",
@@ -311,7 +294,7 @@ static int ccp_register_aes_alg(struct list_head *head,
 	struct skcipher_alg *alg;
 	int ret;
 
-	ccp_alg = kzalloc(sizeof(*ccp_alg), GFP_KERNEL);
+	ccp_alg = kzalloc_obj(*ccp_alg);
 	if (!ccp_alg)
 		return -ENOMEM;
 

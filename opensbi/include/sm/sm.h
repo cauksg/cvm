@@ -16,7 +16,13 @@ extern uintptr_t _fw_start[], _fw_end[];
 #define SM_BASE ((uintptr_t) _fw_start)
 #define SM_SIZE (((uintptr_t) _fw_end) - ((uintptr_t) _fw_start))
 
+#ifndef MAX_HARTS
 #define MAX_HARTS 8
+#endif
+
+#ifndef LOCK_DEBUG
+#define LOCK_DEBUG 0
+#endif
 
 //Host SBI numbers
 #define SBI_MM_INIT            100

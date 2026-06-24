@@ -240,9 +240,8 @@ int iser_alloc_rx_descriptors(struct iser_conn *iser_conn,
 		goto alloc_login_buf_fail;
 
 	iser_conn->num_rx_descs = session->cmds_max;
-	iser_conn->rx_descs = kmalloc_array(iser_conn->num_rx_descs,
-					    sizeof(struct iser_rx_desc),
-					    GFP_KERNEL);
+	iser_conn->rx_descs = kmalloc_objs(struct iser_rx_desc,
+					   iser_conn->num_rx_descs);
 	if (!iser_conn->rx_descs)
 		goto rx_desc_alloc_fail;
 
@@ -581,7 +580,10 @@ static inline int iser_inv_desc(struct iser_fr_desc *desc, u32 rkey)
 		return -EINVAL;
 	}
 
-	desc->rsc.mr_valid = 0;
+	if (desc->sig_protected)
+		desc->rsc.sig_mr->need_inval = false;
+	else
+		desc->rsc.mr->need_inval = false;
 
 	return 0;
 }

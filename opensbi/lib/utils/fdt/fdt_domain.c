@@ -10,6 +10,7 @@
 
 #include <libfdt.h>
 #include <libfdt_env.h>
+#include <sbi/sbi_console.h>
 #include <sbi/sbi_domain.h>
 #include <sbi/sbi_error.h>
 #include <sbi/sbi_hartmask.h>
@@ -46,6 +47,14 @@ int fdt_iterate_each_domain(void *fdt, void *opaque,
 	}
 
 	return 0;
+}
+
+static int fdt_iterate_each_domain_ro(const void *fdt, void *opaque,
+				      int (*fn)(const void *fdt, int domain_offset,
+						void *opaque))
+{
+	return fdt_iterate_each_domain((void *)fdt, opaque,
+				       (int (*)(void *, int,  void *))fn);
 }
 
 int fdt_iterate_each_memregion(void *fdt, int domain_offset, void *opaque,
@@ -86,6 +95,15 @@ int fdt_iterate_each_memregion(void *fdt, int domain_offset, void *opaque,
 	}
 
 	return 0;
+}
+
+static int fdt_iterate_each_memregion_ro(const void *fdt, int domain_offset, void *opaque,
+					 int (*fn)(const void *fdt, int domain_offset,
+						   int region_offset, u32 region_access,
+						   void *opaque))
+{
+	return fdt_iterate_each_memregion((void *)fdt, domain_offset, opaque,
+					  (int (*)(void *, int, int, u32, void *))fn);
 }
 
 struct __fixup_find_domain_offset_info {
@@ -220,7 +238,9 @@ skip_device_disable:
 	fdt_nop_node(fdt, poffset);
 }
 
-#define FDT_DOMAIN_REGION_MAX_COUNT	16
+#define FDT_DOMAIN_REGION_MAX_COUNT		16
+#define FDT_ROOT_REGION_INHERIT_M_ONLY		0
+#define FDT_ROOT_REGION_INHERIT_ALL		1
 
 struct parse_region_data {
 	struct sbi_domain *dom;
@@ -228,7 +248,7 @@ struct parse_region_data {
 	u32 max_regions;
 };
 
-static int __fdt_parse_region(void *fdt, int domain_offset,
+static int __fdt_parse_region(const void *fdt, int domain_offset,
 			      int region_offset, u32 region_access,
 			      void *opaque)
 {
@@ -236,8 +256,8 @@ static int __fdt_parse_region(void *fdt, int domain_offset,
 	u32 val32;
 	u64 val64;
 	const u32 *val;
+	unsigned long base, order, flags;
 	struct parse_region_data *preg = opaque;
-	struct sbi_domain_memregion *region;
 
 	/*
 	 * Non-root domains cannot add a region with only M-mode
@@ -254,7 +274,6 @@ static int __fdt_parse_region(void *fdt, int domain_offset,
 	/* Find next region of the domain */
 	if (preg->max_regions <= preg->region_count)
 		return SBI_ENOSPC;
-	region = &preg->dom->regions[preg->region_count];
 
 	/* Read "base" DT property */
 	val = fdt_getprop(fdt, region_offset, "base", &len);
@@ -262,7 +281,7 @@ static int __fdt_parse_region(void *fdt, int domain_offset,
 		return SBI_EINVAL;
 	val64 = fdt32_to_cpu(val[0]);
 	val64 = (val64 << 32) | fdt32_to_cpu(val[1]);
-	region->base = val64;
+	base = val64;
 
 	/* Read "order" DT property */
 	val = fdt_getprop(fdt, region_offset, "order", &len);
@@ -271,29 +290,36 @@ static int __fdt_parse_region(void *fdt, int domain_offset,
 	val32 = fdt32_to_cpu(*val);
 	if (val32 < 3 || __riscv_xlen < val32)
 		return SBI_EINVAL;
-	region->order = val32;
+	order = val32;
+
+	flags = region_access & (SBI_DOMAIN_MEMREGION_ACCESS_MASK
+				| SBI_DOMAIN_MEMREGION_ENF_PERMISSIONS);
 
 	/* Read "mmio" DT property */
-	region->flags = region_access & SBI_DOMAIN_MEMREGION_ACCESS_MASK;
 	if (fdt_get_property(fdt, region_offset, "mmio", NULL))
-		region->flags |= SBI_DOMAIN_MEMREGION_MMIO;
+		flags |= SBI_DOMAIN_MEMREGION_MMIO;
+
+	sbi_domain_memregion_init(base, (order == __riscv_xlen) ? ~0UL : BIT(order),
+				  flags, &preg->dom->regions[preg->region_count]);
 
 	preg->region_count++;
 
 	return 0;
 }
 
-static int __fdt_parse_domain(void *fdt, int domain_offset, void *opaque)
+static int __fdt_parse_domain(const void *fdt, int domain_offset, void *opaque)
 {
 	u32 val32;
 	u64 val64;
 	const u32 *val;
+	const char *inherit;
 	struct sbi_domain *dom;
 	struct sbi_hartmask *mask;
 	struct sbi_hartmask assign_mask;
 	struct parse_region_data preg;
 	int *cold_domain_offset = opaque;
 	struct sbi_domain_memregion *reg;
+	int inheritance_mode = FDT_ROOT_REGION_INHERIT_M_ONLY;
 	int i, err = 0, len, cpus_offset, cpu_offset, doffset;
 
 	dom = sbi_zalloc(sizeof(*dom));
@@ -347,25 +373,47 @@ static int __fdt_parse_domain(void *fdt, int domain_offset, void *opaque)
 	}
 
 	/* Setup memregions from DT */
-	err = fdt_iterate_each_memregion(fdt, domain_offset, &preg,
-					 __fdt_parse_region);
+	err = fdt_iterate_each_memregion_ro(fdt, domain_offset, &preg,
+					    __fdt_parse_region);
 	if (err)
 		goto fail_free_all;
 
-	/*
-	 * Copy over root domain memregions which don't allow
-	 * read, write and execute from lower privilege modes.
-	 *
-	 * These root domain memregions without read, write,
-	 * and execute permissions include:
-	 * 1) firmware region protecting the firmware memory
-	 * 2) mmio regions protecting M-mode only mmio devices
-	 */
+	/* Determine root domain regions inheritance behavior. */
+	inherit = fdt_getprop(fdt, domain_offset,
+			       "root-regions-inheritance", &len);
+	if (inherit && len > 0) {
+		if (!strcmp(inherit, "all"))
+			inheritance_mode = FDT_ROOT_REGION_INHERIT_ALL;
+		else if (!strcmp(inherit, "m-only"))
+			inheritance_mode = FDT_ROOT_REGION_INHERIT_M_ONLY;
+		else {
+			sbi_printf("%s: domain \"%s\" has unsupported "
+				   "root-regions-inheritance=\"%s\"\n",
+				   __func__, dom->name, inherit);
+			err = SBI_EINVAL;
+			goto fail_free_all;
+		}
+	}
+
+	/* Copy over root domain memregions according to inheritance_mode. */
 	sbi_domain_for_each_memregion(&root, reg) {
-		if ((reg->flags & SBI_DOMAIN_MEMREGION_SU_READABLE) ||
-		    (reg->flags & SBI_DOMAIN_MEMREGION_SU_WRITABLE) ||
-		    (reg->flags & SBI_DOMAIN_MEMREGION_SU_EXECUTABLE))
+		bool copy = false;
+
+		switch (inheritance_mode) {
+		case FDT_ROOT_REGION_INHERIT_ALL:
+			copy = true;
+			break;
+		case FDT_ROOT_REGION_INHERIT_M_ONLY:
+			if (SBI_DOMAIN_MEMREGION_IS_FIRMWARE(reg->flags) ||
+			    SBI_DOMAIN_MEMREGION_M_ONLY_ACCESS(reg->flags)) {
+				copy = true;
+			}
+			break;
+		}
+
+		if (!copy)
 			continue;
+
 		if (preg.max_regions <= preg.region_count) {
 			err = SBI_EINVAL;
 			goto fail_free_all;
@@ -375,16 +423,13 @@ static int __fdt_parse_domain(void *fdt, int domain_offset, void *opaque)
 	dom->fw_region_inited = root.fw_region_inited;
 
 	/* Read "boot-hart" DT property */
-	val32 = -1U;
+	val32 = current_hartid();
 	val = fdt_getprop(fdt, domain_offset, "boot-hart", &len);
 	if (val && len >= 4) {
 		cpu_offset = fdt_node_offset_by_phandle(fdt,
 							 fdt32_to_cpu(*val));
 		if (cpu_offset >= 0 && fdt_node_is_enabled(fdt, cpu_offset))
 			fdt_parse_hart_id(fdt, cpu_offset, &val32);
-	} else {
-		if (domain_offset == *cold_domain_offset)
-			val32 = current_hartid();
 	}
 	dom->boot_hartid = val32;
 
@@ -395,8 +440,7 @@ static int __fdt_parse_domain(void *fdt, int domain_offset, void *opaque)
 		val64 = fdt32_to_cpu(val[0]);
 		val64 = (val64 << 32) | fdt32_to_cpu(val[1]);
 	} else {
-		if (domain_offset == *cold_domain_offset)
-			val64 = sbi_scratch_thishart_ptr()->next_arg1;
+		val64 = sbi_scratch_thishart_ptr()->next_arg1;
 	}
 	dom->next_arg1 = val64;
 
@@ -453,18 +497,18 @@ static int __fdt_parse_domain(void *fdt, int domain_offset, void *opaque)
 		if (err)
 			continue;
 
-		if (SBI_HARTMASK_MAX_BITS <= val32)
+		if (SBI_HARTMASK_MAX_BITS <= sbi_hartid_to_hartindex(val32))
 			continue;
 
 		if (!fdt_node_is_enabled(fdt, cpu_offset))
 			continue;
 
+		/* This is an optional property */
 		val = fdt_getprop(fdt, cpu_offset, "opensbi-domain", &len);
-		if (!val || len < 4) {
-			err = SBI_EINVAL;
-			goto fail_free_all;
-		}
+		if (!val || len < 4)
+			continue;
 
+		/* However, it should be valid if specified */
 		doffset = fdt_node_offset_by_phandle(fdt, fdt32_to_cpu(*val));
 		if (doffset < 0) {
 			err = doffset;
@@ -491,7 +535,7 @@ fail_free_domain:
 	return err;
 }
 
-int fdt_domains_populate(void *fdt)
+int fdt_domains_populate(const void *fdt)
 {
 	const u32 *val;
 	int cold_domain_offset;
@@ -530,6 +574,6 @@ int fdt_domains_populate(void *fdt)
 	}
 
 	/* Iterate over each domain in FDT and populate details */
-	return fdt_iterate_each_domain(fdt, &cold_domain_offset,
-				       __fdt_parse_domain);
+	return fdt_iterate_each_domain_ro(fdt, &cold_domain_offset,
+					  __fdt_parse_domain);
 }

@@ -222,9 +222,7 @@ static int pxa2xx_ac97_dev_probe(struct platform_device *pdev)
 {
 	int ret;
 	struct ac97_controller *ctrl;
-	pxa2xx_audio_ops_t *pdata = pdev->dev.platform_data;
 	struct resource *regs;
-	void **codecs_pdata;
 
 	if (pdev->id != -1) {
 		dev_err(&pdev->dev, "PXA2xx has only one AC97 port.\n");
@@ -247,10 +245,9 @@ static int pxa2xx_ac97_dev_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	codecs_pdata = pdata ? pdata->codec_pdata : NULL;
 	ctrl = snd_ac97_controller_register(&pxa2xx_ac97_ops, &pdev->dev,
 					    AC97_SLOTS_AVAILABLE_ALL,
-					    codecs_pdata);
+					    NULL);
 	if (IS_ERR(ctrl))
 		return PTR_ERR(ctrl);
 
@@ -271,7 +268,6 @@ static void pxa2xx_ac97_dev_remove(struct platform_device *pdev)
 	pxa2xx_ac97_hw_remove(pdev);
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int pxa2xx_ac97_dev_suspend(struct device *dev)
 {
 	return pxa2xx_ac97_hw_suspend();
@@ -282,18 +278,15 @@ static int pxa2xx_ac97_dev_resume(struct device *dev)
 	return pxa2xx_ac97_hw_resume();
 }
 
-static SIMPLE_DEV_PM_OPS(pxa2xx_ac97_pm_ops,
+static DEFINE_SIMPLE_DEV_PM_OPS(pxa2xx_ac97_pm_ops,
 		pxa2xx_ac97_dev_suspend, pxa2xx_ac97_dev_resume);
-#endif
 
 static struct platform_driver pxa2xx_ac97_driver = {
 	.probe		= pxa2xx_ac97_dev_probe,
-	.remove_new	= pxa2xx_ac97_dev_remove,
+	.remove		= pxa2xx_ac97_dev_remove,
 	.driver		= {
 		.name	= "pxa2xx-ac97",
-#ifdef CONFIG_PM_SLEEP
 		.pm	= &pxa2xx_ac97_pm_ops,
-#endif
 		.of_match_table = of_match_ptr(pxa2xx_ac97_dt_ids),
 	},
 };

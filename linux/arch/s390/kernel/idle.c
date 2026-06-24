@@ -15,36 +15,22 @@
 #include <trace/events/power.h>
 #include <asm/cpu_mf.h>
 #include <asm/cputime.h>
+#include <asm/idle.h>
 #include <asm/nmi.h>
 #include <asm/smp.h>
-#include "entry.h"
 
-static DEFINE_PER_CPU(struct s390_idle_data, s390_idle);
+DEFINE_PER_CPU(struct s390_idle_data, s390_idle);
 
 void account_idle_time_irq(void)
 {
 	struct s390_idle_data *idle = this_cpu_ptr(&s390_idle);
 	unsigned long idle_time;
-	u64 cycles_new[8];
-	int i;
 
-	if (smp_cpu_mtid) {
-		stcctm(MT_DIAG, smp_cpu_mtid, cycles_new);
-		for (i = 0; i < smp_cpu_mtid; i++)
-			this_cpu_add(mt_cycles[i], cycles_new[i] - idle->mt_cycles_enter[i]);
-	}
-
-	idle_time = S390_lowcore.int_clock - idle->clock_idle_enter;
-
-	S390_lowcore.steal_timer += idle->clock_idle_enter - S390_lowcore.last_update_clock;
-	S390_lowcore.last_update_clock = S390_lowcore.int_clock;
-
-	S390_lowcore.system_timer += S390_lowcore.last_update_timer - idle->timer_idle_enter;
-	S390_lowcore.last_update_timer = S390_lowcore.sys_enter_timer;
+	idle_time = get_lowcore()->int_clock - idle->clock_idle_enter;
 
 	/* Account time spent with enabled wait psw loaded as idle time. */
-	WRITE_ONCE(idle->idle_time, READ_ONCE(idle->idle_time) + idle_time);
-	WRITE_ONCE(idle->idle_count, READ_ONCE(idle->idle_count) + 1);
+	__atomic64_add(idle_time, &idle->idle_time);
+	__atomic64_add_const(1, &idle->idle_count);
 	account_idle_time(cputime_to_nsecs(idle_time));
 }
 
@@ -57,9 +43,13 @@ void noinstr arch_cpu_idle(void)
 	psw_mask = PSW_KERNEL_BITS | PSW_MASK_WAIT |
 		   PSW_MASK_IO | PSW_MASK_EXT | PSW_MASK_MCHECK;
 	clear_cpu_flag(CIF_NOHZ_DELAY);
-
-	/* psw_idle() returns with interrupts disabled. */
-	psw_idle(idle, psw_mask);
+	set_cpu_flag(CIF_ENABLED_WAIT);
+	if (smp_cpu_mtid)
+		stcctm(MT_DIAG, smp_cpu_mtid, (u64 *)&idle->mt_cycles_enter);
+	idle->clock_idle_enter = get_tod_clock_fast();
+	idle->timer_idle_enter = get_cpu_timer();
+	bpon();
+	__load_psw_mask(psw_mask);
 }
 
 static ssize_t show_idle_count(struct device *dev,

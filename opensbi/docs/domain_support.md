@@ -41,7 +41,6 @@ has following details:
 * **name** - Name of this domain
 * **assigned_harts** - HARTs assigned to this domain
 * **possible_harts** - HARTs possible in this domain
-* **hartindex_to_context_table** - Contexts corresponding to possible HARTs
 * **regions** - Array of memory regions terminated by a memory region
   with order zero
 * **boot_hartid** - HART id of the HART booting this domain. The domain
@@ -81,7 +80,6 @@ following manner:
   platform support
 * **possible_harts** - All valid HARTs of a RISC-V platform are possible
   HARTs of the ROOT domain
-* **hartindex_to_context_table** - Contexts corresponding to ROOT domain's possible HARTs
 * **regions** - Two memory regions available to the ROOT domain:
   **A)** A memory region to protect OpenSBI firmware from S-mode and U-mode
   **B)** A memory region of **order=__riscv_xlen** allowing S-mode and
@@ -161,6 +159,13 @@ The DT properties of a domain instance DT node are as follows:
 * **possible-harts** (Optional) - The list of CPU DT node phandles for the
   the domain instance. This list represents the possible HARTs of the
   domain instance.
+* **root-regions-inheritance** (Optional) - A string property controlling
+  how memory regions are inherited from **the ROOT domain**, which are then
+  overlaid with regions specified in the **regions** property for additional
+  restrictions. The allowed values are:
+  * "all" - inherit all memory regions from **the ROOT domain**
+  * "m-only" - inherit M-mode only memory regions from **the ROOT domain**
+  If this DT property is absent, behavior is the same as "m-only".
 * **regions** (Optional) - The list of domain memory region DT node phandle
   and access permissions for the domain instance. Each list entry is a pair
   of DT node phandle and access permissions. The access permissions are
@@ -175,14 +180,12 @@ The DT properties of a domain instance DT node are as follows:
   Any region of a domain defined in DT node cannot have only M-bits set
   in access permissions i.e. it cannot be an m-mode only accessible region.
 * **boot-hart** (Optional) - The DT node phandle of the HART booting the
-  domain instance. If coldboot HART is assigned to the domain instance then
-  this DT property is ignored and the coldboot HART is assumed to be the
-  boot HART of the domain instance.
+  domain instance. If not specified, defaults to the coldboot HART. Note that
+  if the coldboot HART is assigned to this domain, it will be forced as
+  the boot HART regardless of this property.
 * **next-arg1** (Optional) - The 64 bit next booting stage arg1 for the
   domain instance. If this DT property is not available and coldboot HART
-  is not assigned to the domain instance then **0x0** is used as default
-  value. If this DT property is not available and coldboot HART is assigned
-  to the domain instance then **next booting stage arg1 of coldboot HART**
+  is not assigned to the domain instance then **next booting stage arg1 of coldboot HART**
   is used as default value.
 * **next-addr** (Optional) - The 64 bit next booting stage address for the
   domain instance. If this DT property is not available and coldboot HART

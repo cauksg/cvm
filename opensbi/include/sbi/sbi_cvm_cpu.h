@@ -4,7 +4,9 @@
 #include <sbi/sbi_types.h>
 #include <stdint.h>
 
+#ifndef MAX_HARTS
 #define MAX_HARTS 32
+#endif
 
 struct cpu_context
 {
@@ -57,6 +59,7 @@ struct vcpu_csr {
 	unsigned long vsatp;
 	unsigned long scounteren;
 	unsigned long senvcfg;
+	unsigned long vstimecmp;
 };
 
 struct cpu_trap {

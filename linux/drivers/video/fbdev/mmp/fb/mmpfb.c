@@ -476,8 +476,7 @@ static int modes_setup(struct mmpfb_info *fbi)
 		return 0;
 	}
 	/* put videomode list to info structure */
-	videomodes = kcalloc(videomode_num, sizeof(struct fb_videomode),
-			     GFP_KERNEL);
+	videomodes = kzalloc_objs(struct fb_videomode, videomode_num);
 	if (!videomodes)
 		return -ENOMEM;
 
@@ -627,13 +626,6 @@ static int mmpfb_probe(struct platform_device *pdev)
 
 	dev_info(fbi->dev, "loaded to /dev/fb%d <%s>.\n",
 		info->node, info->fix.id);
-
-#ifdef CONFIG_LOGO
-	if (fbi->fb_start) {
-		fb_prepare_logo(info, 0);
-		fb_show_logo(info, 0);
-	}
-#endif
 
 	return 0;
 

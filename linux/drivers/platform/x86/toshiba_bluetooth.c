@@ -59,7 +59,6 @@ static struct acpi_driver toshiba_bt_rfkill_driver = {
 				.remove =	toshiba_bt_rfkill_remove,
 				.notify =	toshiba_bt_rfkill_notify,
 			},
-	.owner = 	THIS_MODULE,
 	.drv.pm =	&toshiba_bt_pm,
 };
 
@@ -243,7 +242,7 @@ static int toshiba_bt_rfkill_add(struct acpi_device *device)
 
 	pr_info("Toshiba ACPI Bluetooth device driver\n");
 
-	bt_dev = kzalloc(sizeof(*bt_dev), GFP_KERNEL);
+	bt_dev = kzalloc_obj(*bt_dev);
 	if (!bt_dev)
 		return -ENOMEM;
 	bt_dev->acpi_dev = device;

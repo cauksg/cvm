@@ -3,7 +3,7 @@
  * This file contains functions which emulate a local clock-event
  * device via a broadcast event source.
  *
- * Copyright(C) 2005-2006, Thomas Gleixner <tglx@linutronix.de>
+ * Copyright(C) 2005-2006, Linutronix GmbH, Thomas Gleixner <tglx@kernel.org>
  * Copyright(C) 2005-2007, Red Hat, Inc., Ingo Molnar
  * Copyright(C) 2006-2007, Timesys Corp., Thomas Gleixner
  */
@@ -76,8 +76,10 @@ const struct clock_event_device *tick_get_wakeup_device(int cpu)
  */
 static void tick_broadcast_start_periodic(struct clock_event_device *bc)
 {
-	if (bc)
+	if (bc) {
+		bc->next_event_forced = 0;
 		tick_setup_periodic(bc, 1);
+	}
 }
 
 /*
@@ -403,6 +405,7 @@ static void tick_handle_periodic_broadcast(struct clock_event_device *dev)
 	bool bc_local;
 
 	raw_spin_lock(&tick_broadcast_lock);
+	tick_broadcast_device.evtdev->next_event_forced = 0;
 
 	/* Handle spurious interrupts gracefully */
 	if (clockevent_state_shutdown(tick_broadcast_device.evtdev)) {
@@ -696,6 +699,7 @@ static void tick_handle_oneshot_broadcast(struct clock_event_device *dev)
 
 	raw_spin_lock(&tick_broadcast_lock);
 	dev->next_event = KTIME_MAX;
+	tick_broadcast_device.evtdev->next_event_forced = 0;
 	next_event = KTIME_MAX;
 	cpumask_clear(tmpmask);
 	now = ktime_get();
@@ -1020,6 +1024,8 @@ static inline ktime_t tick_get_next_period(void)
 
 /**
  * tick_broadcast_setup_oneshot - setup the broadcast device
+ * @bc: the broadcast device
+ * @from_periodic: true if called from periodic mode
  */
 static void tick_broadcast_setup_oneshot(struct clock_event_device *bc,
 					 bool from_periodic)
@@ -1061,6 +1067,7 @@ static void tick_broadcast_setup_oneshot(struct clock_event_device *bc,
 
 
 	bc->event_handler = tick_handle_oneshot_broadcast;
+	bc->next_event_forced = 0;
 	bc->next_event = KTIME_MAX;
 
 	/*
@@ -1148,7 +1155,32 @@ void hotplug_cpu__broadcast_tick_pull(int deadcpu)
 	bc = tick_broadcast_device.evtdev;
 
 	if (bc && broadcast_needs_cpu(bc, deadcpu)) {
+		/*
+		 * If the broadcast force bit of the current CPU is set,
+		 * then the current CPU has not yet reprogrammed the local
+		 * timer device to avoid a ping-pong race. See
+		 * ___tick_broadcast_oneshot_control().
+		 *
+		 * If the broadcast device is hrtimer based then
+		 * programming the broadcast event below does not have any
+		 * effect because the local clockevent device is not
+		 * running and not programmed because the broadcast event
+		 * is not earlier than the pending event of the local clock
+		 * event device. As a consequence all CPUs waiting for a
+		 * broadcast event are stuck forever.
+		 *
+		 * Detect this condition and reprogram the cpu local timer
+		 * device to avoid the starvation.
+		 */
+		if (tick_check_broadcast_expired()) {
+			struct tick_device *td = this_cpu_ptr(&tick_cpu_device);
+
+			cpumask_clear_cpu(smp_processor_id(), tick_broadcast_force_mask);
+			tick_program_event(td->evtdev->next_event, 1);
+		}
+
 		/* This moves the broadcast assignment to this CPU: */
+		bc->next_event_forced = 0;
 		clockevents_program_event(bc, bc->next_event, 1);
 	}
 	raw_spin_unlock_irqrestore(&tick_broadcast_lock, flags);

@@ -13,6 +13,12 @@ firmware-cflags-y +=
 firmware-asflags-y +=
 firmware-ldflags-y +=
 
+ifdef FW_TEXT_START
+firmware-genflags-y += -DFW_TEXT_START=$(FW_TEXT_START)
+else
+firmware-genflags-y += -DFW_TEXT_START=0x0
+endif
+
 ifdef FW_FDT_PATH
 firmware-genflags-y += -DFW_FDT_PATH=\"$(FW_FDT_PATH)\"
 ifdef FW_FDT_PADDING
@@ -60,3 +66,12 @@ endif
 ifdef FW_OPTIONS
 firmware-genflags-y += -DFW_OPTIONS=$(FW_OPTIONS)
 endif
+
+ifeq ($(CONFIG_STACK_PROTECTOR),y)
+stack-protector-cflags-$(CONFIG_STACK_PROTECTOR) := -fstack-protector
+stack-protector-cflags-$(CONFIG_STACK_PROTECTOR_STRONG) := -fstack-protector-strong
+stack-protector-cflags-$(CONFIG_STACK_PROTECTOR_ALL) := -fstack-protector-all
+else
+stack-protector-cflags-y := -fno-stack-protector
+endif
+firmware-cflags-y += $(stack-protector-cflags-y)

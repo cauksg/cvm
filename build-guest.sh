@@ -1,9 +1,28 @@
 #!/bin/bash
 set -e
 
+TOP_DIR=$(pwd)
 
-export ARCH=riscv
-export CROSS_COMPILE=riscv64-linux-gnu-
+export ARCH=${ARCH:-riscv}
+if [ -z "${CROSS_COMPILE:-}" ]; then
+	if [ -n "${RISCV:-}" ]; then
+		export CROSS_COMPILE="$RISCV/bin/riscv64-unknown-linux-gnu-"
+	else
+		export CROSS_COMPILE=riscv64-linux-gnu-
+	fi
+fi
+
+LINUX_DIR=${LINUX_DIR:-linux}
+BUILD_DIR=${BUILD_DIR:-build-riscv64}
+case "$LINUX_DIR" in
+	/*) ;;
+	*) LINUX_DIR="$TOP_DIR/$LINUX_DIR" ;;
+esac
+case "$BUILD_DIR" in
+	/*) BUILD_PATH="$BUILD_DIR" ;;
+	*) BUILD_PATH="$TOP_DIR/$BUILD_DIR" ;;
+esac
+CONFIG_FILE="$BUILD_PATH/.config"
 
 #cd busybox-1.33.1
 #make defconfig
@@ -31,9 +50,7 @@ cd busybox-1.33.1/_install; echo "mknod dev/console c 5 1; find ./ | cpio -o -H 
 
 
 #mkdir build-riscv64
-cd build-riscv64
-sed -i 's|^CONFIG_NET_9P_VIRTIO=.*$|CONFIG_NET_9P_VIRTIO=n|' .config
-sed -i 's|^CONFIG_VIRTIO_NET=.*$|CONFIG_VIRTIO_NET=n|' .config
-sed -i 's|^CONFIG_INITRAMFS_SOURCE=.*$|CONFIG_INITRAMFS_SOURCE="../rootfs_kvm_riscv64.cpio"|' .config
-cd ..
-make -C linux O=`pwd`/build-riscv64 -j $(nproc)
+sed -i 's|^CONFIG_NET_9P_VIRTIO=.*$|CONFIG_NET_9P_VIRTIO=n|' "$CONFIG_FILE"
+sed -i 's|^CONFIG_VIRTIO_NET=.*$|CONFIG_VIRTIO_NET=n|' "$CONFIG_FILE"
+sed -i "s|^CONFIG_INITRAMFS_SOURCE=.*$|CONFIG_INITRAMFS_SOURCE=\"$TOP_DIR/rootfs_kvm_riscv64.cpio\"|" "$CONFIG_FILE"
+make -C "$LINUX_DIR" O="$BUILD_PATH" -j $(nproc)

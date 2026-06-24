@@ -180,17 +180,6 @@ mwifiex_is_wpa_oui_present(struct mwifiex_bssdescriptor *bss_desc, u32 cipher)
 }
 
 /*
- * This function compares two SSIDs and checks if they match.
- */
-s32
-mwifiex_ssid_cmp(struct cfg80211_ssid *ssid1, struct cfg80211_ssid *ssid2)
-{
-	if (!ssid1 || !ssid2 || (ssid1->ssid_len != ssid2->ssid_len))
-		return -1;
-	return memcmp(ssid1->ssid, ssid2->ssid, ssid1->ssid_len);
-}
-
-/*
  * This function checks if wapi is enabled in driver and scanned network is
  * compatible with it.
  */
@@ -675,15 +664,14 @@ mwifiex_scan_channel_list(struct mwifiex_private *priv,
 
 			/* Copy the current channel TLV to the command being
 			   prepared */
-			memcpy(chan_tlv_out->chan_scan_param + tlv_idx,
+			memcpy(&chan_tlv_out->chan_scan_param[tlv_idx],
 			       tmp_chan_list,
-			       sizeof(chan_tlv_out->chan_scan_param));
+			       sizeof(*chan_tlv_out->chan_scan_param));
 
 			/* Increment the TLV header length by the size
 			   appended */
 			le16_unaligned_add_cpu(&chan_tlv_out->header.len,
-					       sizeof(
-						chan_tlv_out->chan_scan_param));
+					       sizeof(*chan_tlv_out->chan_scan_param));
 
 			/*
 			 * The tlv buffer length is set to the number of bytes
@@ -1383,6 +1371,12 @@ int mwifiex_update_bss_desc_with_ie(struct mwifiex_adapter *adapter,
 			bss_entry->rsn_offset = (u16) (current_ptr -
 							bss_entry->beacon_buf);
 			break;
+		case WLAN_EID_RSNX:
+			bss_entry->bcn_rsnx_ie =
+				(struct ieee_types_generic *)current_ptr;
+			bss_entry->rsnx_offset =
+				(u16)(current_ptr - bss_entry->beacon_buf);
+			break;
 		case WLAN_EID_BSS_AC_ACCESS_DELAY:
 			bss_entry->bcn_wapi_ie =
 				(struct ieee_types_generic *) current_ptr;
@@ -1509,16 +1503,14 @@ int mwifiex_scan_networks(struct mwifiex_private *priv,
 	adapter->scan_processing = true;
 	spin_unlock_bh(&adapter->mwifiex_cmd_lock);
 
-	scan_cfg_out = kzalloc(sizeof(union mwifiex_scan_cmd_config_tlv),
-			       GFP_KERNEL);
+	scan_cfg_out = kzalloc_obj(union mwifiex_scan_cmd_config_tlv);
 	if (!scan_cfg_out) {
 		ret = -ENOMEM;
 		goto done;
 	}
 
-	scan_chan_list = kcalloc(MWIFIEX_USER_SCAN_CHAN_MAX,
-				 sizeof(struct mwifiex_chan_scan_param_set),
-				 GFP_KERNEL);
+	scan_chan_list = kzalloc_objs(struct mwifiex_chan_scan_param_set,
+				      MWIFIEX_USER_SCAN_CHAN_MAX);
 	if (!scan_chan_list) {
 		kfree(scan_cfg_out);
 		ret = -ENOMEM;
@@ -1656,7 +1648,7 @@ static int mwifiex_save_hidden_ssid_channels(struct mwifiex_private *priv,
 	int chid;
 
 	/* Allocate and fill new bss descriptor */
-	bss_desc = kzalloc(sizeof(*bss_desc), GFP_KERNEL);
+	bss_desc = kzalloc_obj(*bss_desc);
 	if (!bss_desc)
 		return -ENOMEM;
 
@@ -1699,7 +1691,7 @@ static int mwifiex_update_curr_bss_params(struct mwifiex_private *priv,
 	int ret;
 
 	/* Allocate and fill new bss descriptor */
-	bss_desc = kzalloc(sizeof(struct mwifiex_bssdescriptor), GFP_KERNEL);
+	bss_desc = kzalloc_obj(struct mwifiex_bssdescriptor);
 	if (!bss_desc)
 		return -ENOMEM;
 
@@ -1938,7 +1930,7 @@ mwifiex_active_scan_req_for_passive_chan(struct mwifiex_private *priv)
 		mwifiex_dbg(adapter, INFO, "No BSS with hidden SSID found on DFS channels\n");
 		return 0;
 	}
-	user_scan_cfg = kzalloc(sizeof(*user_scan_cfg), GFP_KERNEL);
+	user_scan_cfg = kzalloc_obj(*user_scan_cfg);
 
 	if (!user_scan_cfg)
 		return -ENOMEM;
@@ -2057,8 +2049,6 @@ void mwifiex_cancel_scan(struct mwifiex_adapter *adapter)
 		spin_unlock_bh(&adapter->mwifiex_cmd_lock);
 		for (i = 0; i < adapter->priv_num; i++) {
 			priv = adapter->priv[i];
-			if (!priv)
-				continue;
 			if (priv->scan_request) {
 				struct cfg80211_scan_info info = {
 					.aborted = true,
@@ -2182,9 +2172,8 @@ int mwifiex_ret_802_11_scan(struct mwifiex_private *priv,
 
 	if (nd_config) {
 		adapter->nd_info =
-			kzalloc(struct_size(adapter->nd_info, matches,
-					    scan_rsp->number_of_sets),
-				GFP_ATOMIC);
+			kzalloc_flex(*adapter->nd_info, matches,
+				     scan_rsp->number_of_sets, GFP_ATOMIC);
 
 		if (adapter->nd_info)
 			adapter->nd_info->n_matches = scan_rsp->number_of_sets;
@@ -2380,12 +2369,11 @@ int mwifiex_cmd_802_11_bg_scan_config(struct mwifiex_private *priv,
 		     chan_idx < MWIFIEX_BG_SCAN_CHAN_MAX &&
 		     bgscan_cfg_in->chan_list[chan_idx].chan_number;
 		     chan_idx++) {
-			temp_chan = chan_list_tlv->chan_scan_param + chan_idx;
+			temp_chan = &chan_list_tlv->chan_scan_param[chan_idx];
 
 			/* Increment the TLV header length by size appended */
 			le16_unaligned_add_cpu(&chan_list_tlv->header.len,
-					       sizeof(
-					       chan_list_tlv->chan_scan_param));
+					       sizeof(*chan_list_tlv->chan_scan_param));
 
 			temp_chan->chan_number =
 				bgscan_cfg_in->chan_list[chan_idx].chan_number;
@@ -2424,7 +2412,7 @@ int mwifiex_cmd_802_11_bg_scan_config(struct mwifiex_private *priv,
 							   chan_scan_param);
 		le16_unaligned_add_cpu(&chan_list_tlv->header.len,
 				       chan_num *
-			     sizeof(chan_list_tlv->chan_scan_param[0]));
+			     sizeof(*chan_list_tlv->chan_scan_param));
 	}
 
 	tlv_pos += (sizeof(chan_list_tlv->header)
@@ -2461,7 +2449,7 @@ int mwifiex_stop_bg_scan(struct mwifiex_private *priv)
 		return 0;
 	}
 
-	bgscan_cfg = kzalloc(sizeof(*bgscan_cfg), GFP_KERNEL);
+	bgscan_cfg = kzalloc_obj(*bgscan_cfg);
 	if (!bgscan_cfg)
 		return -ENOMEM;
 
@@ -2543,8 +2531,7 @@ int mwifiex_ret_802_11_scan_ext(struct mwifiex_private *priv,
 	ext_scan_resp = &resp->params.ext_scan;
 
 	tlv = (void *)ext_scan_resp->tlv_buffer;
-	buf_left = le16_to_cpu(resp->size) - (sizeof(*ext_scan_resp) + S_DS_GEN
-					      - 1);
+	buf_left = le16_to_cpu(resp->size) - (sizeof(*ext_scan_resp) + S_DS_GEN);
 
 	while (buf_left >= sizeof(struct mwifiex_ie_types_header)) {
 		type = le16_to_cpu(tlv->type);
@@ -2789,7 +2776,7 @@ static int mwifiex_scan_specific_ssid(struct mwifiex_private *priv,
 		return -EBUSY;
 	}
 
-	scan_cfg = kzalloc(sizeof(struct mwifiex_user_scan_cfg), GFP_KERNEL);
+	scan_cfg = kzalloc_obj(struct mwifiex_user_scan_cfg);
 	if (!scan_cfg)
 		return -ENOMEM;
 

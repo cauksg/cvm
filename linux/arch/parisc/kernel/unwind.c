@@ -35,6 +35,8 @@
 
 #define KERNEL_START (KERNEL_BINARY_TEXT_START)
 
+#define ALIGNMENT_OK(ptr, type) (((ptr) & (sizeof(type) - 1)) == 0)
+
 extern struct unwind_table_entry __start___unwind[];
 extern struct unwind_table_entry __stop___unwind[];
 
@@ -155,7 +157,7 @@ unwind_table_add(const char *name, unsigned long base_addr,
 
 	unwind_table_sort(s, e);
 
-	table = kmalloc(sizeof(struct unwind_table), GFP_USER);
+	table = kmalloc_obj(struct unwind_table, GFP_USER);
 	if (table == NULL)
 		return NULL;
 	unwind_table_init(table, name, base_addr, gp, start, end);
@@ -228,10 +230,8 @@ static int unwind_special(struct unwind_frame_info *info, unsigned long pc, int 
 #ifdef CONFIG_IRQSTACKS
 	extern void * const _call_on_stack;
 #endif /* CONFIG_IRQSTACKS */
-	void *ptr;
 
-	ptr = dereference_kernel_function_descriptor(&handle_interruption);
-	if (pc_is_kernel_fn(pc, ptr)) {
+	if (pc_is_kernel_fn(pc, handle_interruption)) {
 		struct pt_regs *regs = (struct pt_regs *)(info->sp - frame_size - PT_SZ_ALGN);
 		dbg("Unwinding through handle_interruption()\n");
 		info->prev_sp = regs->gr[30];
@@ -239,13 +239,13 @@ static int unwind_special(struct unwind_frame_info *info, unsigned long pc, int 
 		return 1;
 	}
 
-	if (pc_is_kernel_fn(pc, ret_from_kernel_thread) ||
-	    pc_is_kernel_fn(pc, syscall_exit)) {
+	if (pc == (unsigned long)&ret_from_kernel_thread ||
+	    pc == (unsigned long)&syscall_exit) {
 		info->prev_sp = info->prev_ip = 0;
 		return 1;
 	}
 
-	if (pc_is_kernel_fn(pc, intr_return)) {
+	if (pc == (unsigned long)&intr_return) {
 		struct pt_regs *regs;
 
 		dbg("Found intr_return()\n");
@@ -257,14 +257,17 @@ static int unwind_special(struct unwind_frame_info *info, unsigned long pc, int 
 	}
 
 	if (pc_is_kernel_fn(pc, _switch_to) ||
-	    pc_is_kernel_fn(pc, _switch_to_ret)) {
+	    pc == (unsigned long)&_switch_to_ret) {
 		info->prev_sp = info->sp - CALLEE_SAVE_FRAME_SIZE;
-		info->prev_ip = *(unsigned long *)(info->prev_sp - RP_OFFSET);
+		if (ALIGNMENT_OK(info->prev_sp, long))
+			info->prev_ip = *(unsigned long *)(info->prev_sp - RP_OFFSET);
+		else
+			info->prev_ip = info->prev_sp = 0;
 		return 1;
 	}
 
 #ifdef CONFIG_IRQSTACKS
-	if (pc_is_kernel_fn(pc, _call_on_stack)) {
+	if (pc == (unsigned long)&_call_on_stack && ALIGNMENT_OK(info->sp, long)) {
 		info->prev_sp = *(unsigned long *)(info->sp - FRAME_SIZE - REG_SZ);
 		info->prev_ip = *(unsigned long *)(info->sp - FRAME_SIZE - RP_OFFSET);
 		return 1;
@@ -372,8 +375,10 @@ static void unwind_frame_regs(struct unwind_frame_info *info)
 			info->prev_sp = info->sp - frame_size;
 			if (e->Millicode)
 				info->rp = info->r31;
-			else if (rpoffset)
+			else if (rpoffset && ALIGNMENT_OK(info->prev_sp, long))
 				info->rp = *(unsigned long *)(info->prev_sp - rpoffset);
+			else
+				info->rp = 0;
 			info->prev_ip = info->rp;
 			info->rp = 0;
 		}
@@ -403,7 +408,7 @@ void unwind_frame_init_from_blocked_task(struct unwind_frame_info *info, struct 
 	struct pt_regs *r = &t->thread.regs;
 	struct pt_regs *r2;
 
-	r2 = kmalloc(sizeof(struct pt_regs), GFP_ATOMIC);
+	r2 = kmalloc_obj(struct pt_regs, GFP_ATOMIC);
 	if (!r2)
 		return;
 	*r2 = *r;

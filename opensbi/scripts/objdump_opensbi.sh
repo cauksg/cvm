@@ -1,1 +1,0 @@
-riscv64-linux-gnu-objdump -D ~/riscv-kvm/opensbi/build/platform/generic/firmware/fw_jump.elf > fw_jump.dmp

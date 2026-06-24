@@ -327,7 +327,7 @@ static int vcap_find_keystream_typegroup_sw(struct vcap_control *vctrl,
 }
 
 /* Verify that the typegroup information, subword count, keyset and type id
- * are in sync and correct, return the list of matchin keysets
+ * are in sync and correct, return the list of matching keysets
  */
 int
 vcap_find_keystream_keysets(struct vcap_control *vctrl,
@@ -1004,7 +1004,7 @@ static struct vcap_rule_internal *vcap_dup_rule(struct vcap_rule_internal *ri,
 	struct vcap_rule_internal *duprule;
 
 	/* Allocate the client part */
-	duprule = kzalloc(sizeof(*duprule), GFP_KERNEL);
+	duprule = kzalloc_obj(*duprule);
 	if (!duprule)
 		return ERR_PTR(-ENOMEM);
 	*duprule = *ri;
@@ -1309,7 +1309,7 @@ static void vcap_rule_alloc_keyfield(struct vcap_rule_internal *ri,
 {
 	struct vcap_client_keyfield *field;
 
-	field = kzalloc(sizeof(*field), GFP_KERNEL);
+	field = kzalloc_obj(*field);
 	if (!field)
 		return;
 	INIT_LIST_HEAD(&field->ctrl.list);
@@ -1418,7 +1418,7 @@ static void vcap_rule_alloc_actionfield(struct vcap_rule_internal *ri,
 {
 	struct vcap_client_actionfield *field;
 
-	field = kzalloc(sizeof(*field), GFP_KERNEL);
+	field = kzalloc_obj(*field);
 	if (!field)
 		return;
 	INIT_LIST_HEAD(&field->ctrl.list);
@@ -2345,7 +2345,7 @@ struct vcap_rule *vcap_alloc_rule(struct vcap_control *vctrl,
 	}
 
 	/* Create a container for the rule and return it */
-	ri = kzalloc(sizeof(*ri), GFP_KERNEL);
+	ri = kzalloc_obj(*ri);
 	if (!ri) {
 		err = -ENOMEM;
 		goto out_unlock;
@@ -2689,7 +2689,7 @@ static int vcap_rule_add_key(struct vcap_rule *rule,
 		return -EINVAL;
 	}
 
-	field = kzalloc(sizeof(*field), GFP_KERNEL);
+	field = kzalloc_obj(*field);
 	if (!field)
 		return -ENOMEM;
 	memcpy(&field->data, data, sizeof(field->data));
@@ -2857,7 +2857,7 @@ static int vcap_rule_add_action(struct vcap_rule *rule,
 		return -EINVAL;
 	}
 
-	field = kzalloc(sizeof(*field), GFP_KERNEL);
+	field = kzalloc_obj(*field);
 	if (!field)
 		return -ENOMEM;
 	memcpy(&field->data, data, sizeof(field->data));
@@ -2907,6 +2907,18 @@ int vcap_rule_add_action_u32(struct vcap_rule *rule,
 }
 EXPORT_SYMBOL_GPL(vcap_rule_add_action_u32);
 
+/* Add a 72 bit action field with value to the rule */
+int vcap_rule_add_action_u72(struct vcap_rule *rule,
+			     enum vcap_action_field action,
+			     struct vcap_u72_action *fieldval)
+{
+	struct vcap_client_actionfield_data data;
+
+	memcpy(&data.u72, fieldval, sizeof(data.u72));
+	return vcap_rule_add_action(rule, action, VCAP_FIELD_U72, &data);
+}
+EXPORT_SYMBOL_GPL(vcap_rule_add_action_u72);
+
 static int vcap_read_counter(struct vcap_rule_internal *ri,
 			     struct vcap_counter *ctr)
 {
@@ -2931,7 +2943,7 @@ void vcap_netbytes_copy(u8 *dst, u8 *src, int count)
 }
 EXPORT_SYMBOL_GPL(vcap_netbytes_copy);
 
-/* Convert validation error code into tc extact error message */
+/* Convert validation error code into tc extack error message */
 void vcap_set_tc_exterr(struct flow_cls_offload *fco, struct vcap_rule *vrule)
 {
 	switch (vrule->exterr) {
@@ -3113,7 +3125,7 @@ static int vcap_enable(struct vcap_control *vctrl, struct net_device *ndev,
 	if (!admin)
 		return -ENOENT;
 
-	eport = kzalloc(sizeof(*eport), GFP_KERNEL);
+	eport = kzalloc_obj(*eport);
 	if (!eport)
 		return -ENOMEM;
 

@@ -82,7 +82,7 @@
  *  - has multiple clocks.
  *  - has no usable clock due to jitter or packet loss (VoIP).
  * In this case the system's clock is used. The clock resolution depends on
- * the jiffie resolution.
+ * the jiffy resolution.
  *
  * If a member joins a conference:
  *
@@ -226,7 +226,7 @@ dsp_cmx_add_conf_member(struct dsp *dsp, struct dsp_conf *conf)
 		return -EINVAL;
 	}
 
-	member = kzalloc(sizeof(struct dsp_conf_member), GFP_ATOMIC);
+	member = kzalloc_obj(struct dsp_conf_member, GFP_ATOMIC);
 	if (!member) {
 		printk(KERN_ERR "kzalloc struct dsp_conf_member failed\n");
 		return -ENOMEM;
@@ -305,7 +305,7 @@ static struct dsp_conf
 		return NULL;
 	}
 
-	conf = kzalloc(sizeof(struct dsp_conf), GFP_ATOMIC);
+	conf = kzalloc_obj(struct dsp_conf, GFP_ATOMIC);
 	if (!conf) {
 		printk(KERN_ERR "kzalloc struct dsp_conf failed\n");
 		return NULL;

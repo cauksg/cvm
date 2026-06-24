@@ -16,6 +16,7 @@
 #include <linux/kthread.h>
 #include <linux/module.h>
 #include <linux/rcupdate.h>
+#include <linux/rcupdate_wait.h>
 #include <linux/rhashtable.h>
 #include <linux/slab.h>
 #include <linux/sched.h>
@@ -523,7 +524,7 @@ static int __init test_insert_dup(struct test_obj_rhl *rhl_test_objects,
 	const char *key;
 	int err = 0;
 
-	rhlt = kmalloc(sizeof(*rhlt), GFP_KERNEL);
+	rhlt = kmalloc_obj(*rhlt);
 	if (WARN_ON(!rhlt))
 		return -EINVAL;
 
@@ -810,4 +811,5 @@ static void __exit test_rht_exit(void)
 module_init(test_rht_init);
 module_exit(test_rht_exit);
 
+MODULE_DESCRIPTION("Resizable, Scalable, Concurrent Hash Table test module");
 MODULE_LICENSE("GPL v2");

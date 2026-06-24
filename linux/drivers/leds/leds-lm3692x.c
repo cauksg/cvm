@@ -104,6 +104,9 @@
  * @regulator: LED supply regulator pointer
  * @led_enable: LED sync to be enabled
  * @model_id: Current device model ID enumerated
+ * @boost_ctrl: Cached configuration for the boost control register
+ * @brightness_ctrl: Cached configuration for brightness/brightness control
+ * @enabled: Cached enable state of the device
  */
 struct lm3692x_led {
 	struct mutex lock;
@@ -139,7 +142,7 @@ static const struct regmap_config lm3692x_regmap_config = {
 	.max_register = LM3692X_FAULT_FLAGS,
 	.reg_defaults = lm3692x_reg_defs,
 	.num_reg_defaults = ARRAY_SIZE(lm3692x_reg_defs),
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 };
 
 static int lm3692x_fault_check(struct lm3692x_led *led)

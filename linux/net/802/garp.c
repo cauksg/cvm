@@ -16,11 +16,12 @@
 #include <net/llc.h>
 #include <net/llc_pdu.h>
 #include <net/garp.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 static unsigned int garp_join_time __read_mostly = 200;
 module_param(garp_join_time, uint, 0644);
 MODULE_PARM_DESC(garp_join_time, "Join time in ms (default 200ms)");
+MODULE_DESCRIPTION("IEEE 802.1D Generic Attribute Registration Protocol (GARP)");
 MODULE_LICENSE("GPL");
 
 static const struct garp_state_trans {
@@ -413,7 +414,7 @@ static void garp_join_timer_arm(struct garp_applicant *app)
 
 static void garp_join_timer(struct timer_list *t)
 {
-	struct garp_applicant *app = from_timer(app, t, join_timer);
+	struct garp_applicant *app = timer_container_of(app, t, join_timer);
 
 	spin_lock(&app->lock);
 	garp_gid_event(app, GARP_EVENT_TRANSMIT_PDU);
@@ -546,7 +547,7 @@ static int garp_init_port(struct net_device *dev)
 {
 	struct garp_port *port;
 
-	port = kzalloc(sizeof(*port), GFP_KERNEL);
+	port = kzalloc_obj(*port);
 	if (!port)
 		return -ENOMEM;
 	rcu_assign_pointer(dev->garp_port, port);
@@ -580,7 +581,7 @@ int garp_init_applicant(struct net_device *dev, struct garp_application *appl)
 	}
 
 	err = -ENOMEM;
-	app = kzalloc(sizeof(*app), GFP_KERNEL);
+	app = kzalloc_obj(*app);
 	if (!app)
 		goto err2;
 

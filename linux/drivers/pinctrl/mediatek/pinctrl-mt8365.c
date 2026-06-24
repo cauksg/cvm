@@ -456,7 +456,6 @@ static const struct mtk_pinctrl_devdata mt8365_pinctrl_data = {
 	.smt_offset = 0x0470,
 	.pullen_offset = 0x0860,
 	.pullsel_offset = 0x0900,
-	.drv_offset = 0x0710,
 	.type1_start = 145,
 	.type1_end = 145,
 	.port_shf = 4,
@@ -484,7 +483,7 @@ static struct platform_driver mtk_pinctrl_driver = {
 	.driver = {
 		.name = "mediatek-mt8365-pinctrl",
 		.of_match_table = mt8365_pctrl_match,
-		.pm = &mtk_eint_pm_ops,
+		.pm = pm_sleep_ptr(&mtk_eint_pm_ops),
 	},
 };
 

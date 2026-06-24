@@ -681,7 +681,7 @@ static int si2168_probe(struct i2c_client *client)
 
 	dev_dbg(&client->dev, "\n");
 
-	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
+	dev = kzalloc_obj(*dev);
 	if (!dev) {
 		ret = -ENOMEM;
 		goto err;
@@ -744,7 +744,7 @@ static int si2168_probe(struct i2c_client *client)
 		goto err_kfree;
 	}
 	dev->muxc->priv = client;
-	ret = i2c_mux_add_adapter(dev->muxc, 0, 0, 0);
+	ret = i2c_mux_add_adapter(dev->muxc, 0, 0);
 	if (ret)
 		goto err_kfree;
 
@@ -788,7 +788,7 @@ static void si2168_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id si2168_id_table[] = {
-	{"si2168", 0},
+	{ "si2168" },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, si2168_id_table);

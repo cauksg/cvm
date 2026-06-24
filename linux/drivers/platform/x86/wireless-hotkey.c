@@ -14,11 +14,13 @@
 #include <linux/acpi.h>
 #include <acpi/acpi_bus.h>
 
+MODULE_DESCRIPTION("Airplane mode button for AMD, HP & Xiaomi laptops");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Alex Hung");
 MODULE_ALIAS("acpi*:HPQ6001:*");
 MODULE_ALIAS("acpi*:WSTADEF:*");
 MODULE_ALIAS("acpi*:AMDI0051:*");
+MODULE_ALIAS("acpi*:LGEX0815:*");
 
 struct wl_button {
 	struct input_dev *input_dev;
@@ -29,6 +31,7 @@ static const struct acpi_device_id wl_ids[] = {
 	{"HPQ6001", 0},
 	{"WSTADEF", 0},
 	{"AMDI0051", 0},
+	{"LGEX0815", 0},
 	{"", 0},
 };
 
@@ -88,7 +91,7 @@ static int wl_add(struct acpi_device *device)
 	struct wl_button *button;
 	int err;
 
-	button = kzalloc(sizeof(struct wl_button), GFP_KERNEL);
+	button = kzalloc_obj(struct wl_button);
 	if (!button)
 		return -ENOMEM;
 
@@ -110,7 +113,6 @@ static void wl_remove(struct acpi_device *device)
 
 static struct acpi_driver wl_driver = {
 	.name	= "wireless-hotkey",
-	.owner	= THIS_MODULE,
 	.ids	= wl_ids,
 	.ops	= {
 		.add	= wl_add,

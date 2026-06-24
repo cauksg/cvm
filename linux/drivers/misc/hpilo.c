@@ -570,7 +570,7 @@ static int ilo_open(struct inode *ip, struct file *fp)
 	hw = container_of(ip->i_cdev, struct ilo_hwinfo, cdev);
 
 	/* new ccb allocation */
-	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	data = kzalloc_obj(*data);
 	if (!data)
 		return -ENOMEM;
 
@@ -770,7 +770,7 @@ static void ilo_remove(struct pci_dev *pdev)
 static int ilo_probe(struct pci_dev *pdev,
 			       const struct pci_device_id *ent)
 {
-	int devnum, minor, start, error = 0;
+	int devnum, slot, start, error = 0;
 	struct ilo_hwinfo *ilo_hw;
 
 	if (pci_match_id(ilo_blacklist, pdev)) {
@@ -798,7 +798,7 @@ static int ilo_probe(struct pci_dev *pdev,
 
 	/* track global allocations for this device */
 	error = -ENOMEM;
-	ilo_hw = kzalloc(sizeof(*ilo_hw), GFP_KERNEL);
+	ilo_hw = kzalloc_obj(*ilo_hw);
 	if (!ilo_hw)
 		goto out;
 
@@ -839,11 +839,11 @@ static int ilo_probe(struct pci_dev *pdev,
 		goto remove_isr;
 	}
 
-	for (minor = 0 ; minor < max_ccb; minor++) {
+	for (slot = 0; slot < max_ccb; slot++) {
 		struct device *dev;
 		dev = device_create(&ilo_class, &pdev->dev,
-				    MKDEV(ilo_major, minor), NULL,
-				    "hpilo!d%dccb%d", devnum, minor);
+				    MKDEV(ilo_major, start + slot), NULL,
+				    "hpilo!d%dccb%d", devnum, slot);
 		if (IS_ERR(dev))
 			dev_err(&pdev->dev, "Could not create files\n");
 	}

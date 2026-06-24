@@ -58,7 +58,7 @@ static int sbi_ecall_cvm_handler(unsigned long extid, unsigned long funcid,
 	case SBI_EXT_CVM_INIT_SWIOTLB:
 		ret = init_swiotlb_params((void *)regs->a0, (void *)regs->a1);
 		break;
-	case SBI_EXT_REFILL_MEMORY_POOL:
+	case SBI_EXT_CVM_REFILL_MEMORY_POOL:
 		ret = refill_memory_pool((void *)regs->a0);
 		break;
 	case SBI_EXT_CVM_RETRY_LOAD:
@@ -87,4 +87,3 @@ struct sbi_ecall_extension ecall_cvm = {
     // exception handler 地址
     .handle = sbi_ecall_cvm_handler,
 };
-

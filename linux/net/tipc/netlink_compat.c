@@ -102,6 +102,7 @@ static int tipc_add_tlv(struct sk_buff *skb, u16 type, void *data, u16 len)
 		return -EMSGSIZE;
 
 	skb_put(skb, TLV_SPACE(len));
+	memset(tlv, 0, TLV_SPACE(len));
 	tlv->tlv_type = htons(type);
 	tlv->tlv_len = htons(TLV_LENGTH(len));
 	if (len && data)
@@ -167,7 +168,7 @@ static struct sk_buff *tipc_get_err_tlv(char *str)
 	int str_len = strlen(str) + 1;
 	struct sk_buff *buf;
 
-	buf = tipc_tlv_alloc(TLV_SPACE(str_len));
+	buf = tipc_tlv_alloc(str_len);
 	if (buf)
 		tipc_add_tlv(buf, TIPC_TLV_ERROR_STRING, str, str_len);
 
@@ -201,8 +202,7 @@ static int __tipc_nl_compat_dumpit(struct tipc_nl_compat_cmd_dump *cmd,
 		return -ENOMEM;
 	}
 
-	attrbuf = kcalloc(tipc_genl_family.maxattr + 1,
-			  sizeof(struct nlattr *), GFP_KERNEL);
+	attrbuf = kzalloc_objs(struct nlattr *, tipc_genl_family.maxattr + 1);
 	if (!attrbuf) {
 		err = -ENOMEM;
 		goto err_out;
@@ -337,9 +337,7 @@ static int __tipc_nl_compat_doit(struct tipc_nl_compat_cmd_doit *cmd,
 	if (!trans_buf)
 		return -ENOMEM;
 
-	attrbuf = kmalloc_array(tipc_genl_family.maxattr + 1,
-				sizeof(struct nlattr *),
-				GFP_KERNEL);
+	attrbuf = kmalloc_objs(struct nlattr *, tipc_genl_family.maxattr + 1);
 	if (!attrbuf) {
 		err = -ENOMEM;
 		goto trans_out;

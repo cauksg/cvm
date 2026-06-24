@@ -4,7 +4,7 @@
  *
  *  Copyright (C) 2008  Qumranet, Inc.
  *  Copyright (C) 2008  SGI
- *             Christoph Lameter <cl@linux.com>
+ *             Christoph Lameter <cl@gentwo.org>
  */
 
 #include <linux/rculist.h>
@@ -18,6 +18,8 @@
 #include <linux/sched.h>
 #include <linux/sched/mm.h>
 #include <linux/slab.h>
+
+#include "vma.h"
 
 /* global SRCU for all MMs */
 DEFINE_STATIC_SRCU(srcu);
@@ -424,23 +426,6 @@ int __mmu_notifier_test_young(struct mm_struct *mm,
 	return young;
 }
 
-void __mmu_notifier_change_pte(struct mm_struct *mm, unsigned long address,
-			       pte_t pte)
-{
-	struct mmu_notifier *subscription;
-	int id;
-
-	id = srcu_read_lock(&srcu);
-	hlist_for_each_entry_rcu(subscription,
-				 &mm->notifier_subscriptions->list, hlist,
-				 srcu_read_lock_held(&srcu)) {
-		if (subscription->ops->change_pte)
-			subscription->ops->change_pte(subscription, mm, address,
-						      pte);
-	}
-	srcu_read_unlock(&srcu, id);
-}
-
 static int mn_itree_invalidate(struct mmu_notifier_subscriptions *subscriptions,
 			       const struct mmu_notifier_range *range)
 {
@@ -633,8 +618,7 @@ int __mmu_notifier_register(struct mmu_notifier *subscription,
 		 * know that mm->notifier_subscriptions can't change while we
 		 * hold the write side of the mmap_lock.
 		 */
-		subscriptions = kzalloc(
-			sizeof(struct mmu_notifier_subscriptions), GFP_KERNEL);
+		subscriptions = kzalloc_obj(struct mmu_notifier_subscriptions);
 		if (!subscriptions)
 			return -ENOMEM;
 

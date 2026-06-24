@@ -1810,10 +1810,10 @@ doc_probe_device(struct docg3_cascade *cascade, int floor, struct device *dev)
 	struct mtd_info *mtd;
 
 	ret = -ENOMEM;
-	docg3 = kzalloc(sizeof(struct docg3), GFP_KERNEL);
+	docg3 = kzalloc_obj(struct docg3);
 	if (!docg3)
 		goto nomem1;
-	mtd = kzalloc(sizeof(struct mtd_info), GFP_KERNEL);
+	mtd = kzalloc_obj(struct mtd_info);
 	if (!mtd)
 		goto nomem2;
 	mtd->priv = docg3;
@@ -2046,7 +2046,7 @@ err_probe:
  *
  * Returns 0
  */
-static int docg3_release(struct platform_device *pdev)
+static void docg3_release(struct platform_device *pdev)
 {
 	struct docg3_cascade *cascade = platform_get_drvdata(pdev);
 	struct docg3 *docg3 = cascade->floors[0]->priv;
@@ -2058,7 +2058,6 @@ static int docg3_release(struct platform_device *pdev)
 			doc_release_device(cascade->floors[floor]);
 
 	bch_free(docg3->cascade->bch);
-	return 0;
 }
 
 #ifdef CONFIG_OF

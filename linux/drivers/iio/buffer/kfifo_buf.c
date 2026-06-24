@@ -204,7 +204,7 @@ struct iio_buffer *iio_kfifo_allocate(void)
 {
 	struct iio_kfifo *kf;
 
-	kf = kzalloc(sizeof(*kf), GFP_KERNEL);
+	kf = kzalloc_obj(*kf);
 	if (!kf)
 		return NULL;
 
@@ -287,4 +287,5 @@ int devm_iio_kfifo_buffer_setup_ext(struct device *dev,
 }
 EXPORT_SYMBOL_GPL(devm_iio_kfifo_buffer_setup_ext);
 
+MODULE_DESCRIPTION("Industrial I/O buffering based on kfifo");
 MODULE_LICENSE("GPL");

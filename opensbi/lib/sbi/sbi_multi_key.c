@@ -1,4 +1,6 @@
 #include <mkey/multi_key.h>
+#include <sbi/sbi_console.h>
+#include <sbi/sbi_heap.h>
 #include <sbi/sbi_string.h>
 
 bool key_id_used[KEY_ID_NUM];

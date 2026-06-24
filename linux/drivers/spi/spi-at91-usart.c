@@ -132,28 +132,14 @@ static int at91_usart_spi_configure_dma(struct spi_controller *ctlr,
 	dma_cap_set(DMA_SLAVE, mask);
 
 	ctlr->dma_tx = dma_request_chan(dev, "tx");
-	if (IS_ERR_OR_NULL(ctlr->dma_tx)) {
-		if (IS_ERR(ctlr->dma_tx)) {
-			err = PTR_ERR(ctlr->dma_tx);
-			goto at91_usart_spi_error_clear;
-		}
-
-		dev_dbg(dev,
-			"DMA TX channel not available, SPI unable to use DMA\n");
-		err = -EBUSY;
+	if (IS_ERR(ctlr->dma_tx)) {
+		err = PTR_ERR(ctlr->dma_tx);
 		goto at91_usart_spi_error_clear;
 	}
 
 	ctlr->dma_rx = dma_request_chan(dev, "rx");
-	if (IS_ERR_OR_NULL(ctlr->dma_rx)) {
-		if (IS_ERR(ctlr->dma_rx)) {
-			err = PTR_ERR(ctlr->dma_rx);
-			goto at91_usart_spi_error;
-		}
-
-		dev_dbg(dev,
-			"DMA RX channel not available, SPI unable to use DMA\n");
-		err = -EBUSY;
+	if (IS_ERR(ctlr->dma_rx)) {
+		err = PTR_ERR(ctlr->dma_rx);
 		goto at91_usart_spi_error;
 	}
 
@@ -378,7 +364,7 @@ static int at91_usart_spi_setup(struct spi_device *spi)
 		mr &= ~US_MR_LOOP;
 
 	if (!ausd) {
-		ausd = kzalloc(sizeof(*ausd), GFP_KERNEL);
+		ausd = kzalloc_obj(*ausd);
 		if (!ausd)
 			return -ENOMEM;
 
@@ -664,7 +650,7 @@ static struct platform_driver at91_usart_spi_driver = {
 		.pm = &at91_usart_spi_pm_ops,
 	},
 	.probe = at91_usart_spi_probe,
-	.remove_new = at91_usart_spi_remove,
+	.remove = at91_usart_spi_remove,
 };
 
 module_platform_driver(at91_usart_spi_driver);

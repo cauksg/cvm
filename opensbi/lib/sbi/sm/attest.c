@@ -187,12 +187,16 @@ void hash_cvm(struct sbi_cvm *cvm, void* hash, uintptr_t nonce_arg)
 
 int attest_cvm(unsigned long vmid, uintptr_t report_ptr, uintptr_t nonce)
 {
+	struct cvm_node *cvm_node = NULL;
 	struct sbi_cvm* cvm = NULL;
 	int attestable = 1;
 	// struct report_t *report = (struct report_t *)sbi_malloc(sizeof(struct report_t));
     struct report_t report;
 	
-    cvm = get_cvm(vmid);
+    cvm_node = get_cvm(vmid);
+    if (!cvm_node)
+        return -1;
+    cvm = &cvm_node->cvm;
     // acquire_big_metadata_lock(__func__);
     spin_lock(&cvm_metadata_lock);
 

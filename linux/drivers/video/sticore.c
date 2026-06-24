@@ -529,7 +529,7 @@ sti_select_fbfont(struct sti_cooked_rom *cooked_rom, const char *fbfont_name)
 	if (fbfont_name && strlen(fbfont_name))
 		fbfont = find_font(fbfont_name);
 	if (!fbfont)
-		fbfont = get_default_font(1024,768, ~(u32)0, ~(u32)0);
+		fbfont = get_default_font(1024, 768, NULL, NULL);
 	if (!fbfont)
 		return NULL;
 
@@ -558,7 +558,7 @@ sti_select_fbfont(struct sti_cooked_rom *cooked_rom, const char *fbfont_name)
 	dest += sizeof(struct sti_rom_font);
 	memcpy(dest, fbfont->data, bpc * fbfont->charcount);
 
-	cooked_font = kzalloc(sizeof(*cooked_font), GFP_KERNEL);
+	cooked_font = kzalloc_obj(*cooked_font);
 	if (!cooked_font) {
 		kfree(nf);
 		return NULL;
@@ -678,7 +678,7 @@ static int sti_cook_fonts(struct sti_cooked_rom *cooked_rom,
 	struct sti_rom_font *raw_font, *font_start;
 	struct sti_cooked_font *cooked_font;
 
-	cooked_font = kzalloc(sizeof(*cooked_font), GFP_KERNEL);
+	cooked_font = kzalloc_obj(*cooked_font);
 	if (!cooked_font)
 		return 0;
 
@@ -692,7 +692,7 @@ static int sti_cook_fonts(struct sti_cooked_rom *cooked_rom,
 	while (raw_font->next_font) {
 		raw_font = ((void *)font_start) + (raw_font->next_font);
 
-		cooked_font->next_font = kzalloc(sizeof(*cooked_font), GFP_KERNEL);
+		cooked_font->next_font = kzalloc_obj(*cooked_font);
 		if (!cooked_font->next_font)
 			return 1;
 
@@ -806,7 +806,7 @@ static int sti_read_rom(int wordmode, struct sti_struct *sti,
 	struct sti_rom *raw = NULL;
 	unsigned long revno;
 
-	cooked = kmalloc(sizeof *cooked, GFP_KERNEL);
+	cooked = kmalloc_obj(*cooked);
 	if (!cooked)
 		goto out_err;
 
@@ -915,7 +915,7 @@ static struct sti_struct *sti_try_rom_generic(unsigned long address,
 		return NULL;
 	}
 
-	sti = kzalloc(sizeof(*sti), GFP_KERNEL);
+	sti = kzalloc_obj(*sti);
 	if (!sti)
 		return NULL;
 
@@ -1041,6 +1041,9 @@ static int __init sticore_pa_init(struct parisc_device *dev)
 
 	print_pa_hwpath(dev, sti->pa_path);
 	sticore_check_for_default_sti(sti, sti->pa_path);
+
+	sti->dev = &dev->dev;
+
 	return 0;
 }
 
@@ -1084,6 +1087,8 @@ static int sticore_pci_init(struct pci_dev *pd, const struct pci_device_id *ent)
 		pr_warn("Unable to handle STI device '%s'\n", pci_name(pd));
 		return -ENODEV;
 	}
+
+	sti->dev = &pd->dev;
 #endif /* CONFIG_PCI */
 
 	return 0;

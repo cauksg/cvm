@@ -385,6 +385,7 @@ static void __exit lance_cleanup_module(void)
 }
 module_exit(lance_cleanup_module);
 #endif /* MODULE */
+MODULE_DESCRIPTION("AMD LANCE/PCnet Ethernet driver");
 MODULE_LICENSE("GPL");
 
 
@@ -550,7 +551,7 @@ static int __init lance_probe1(struct net_device *dev, int ioaddr, int irq, int 
 	dev->base_addr = ioaddr;
 	/* Make certain the data structures used by the LANCE are aligned and DMAble. */
 
-	lp = kzalloc(sizeof(*lp), GFP_DMA | GFP_KERNEL);
+	lp = kzalloc_obj(*lp, GFP_DMA | GFP_KERNEL);
 	if (!lp)
 		return -ENOMEM;
 	if (lance_debug > 6) printk(" (#0x%05lx)", (unsigned long)lp);

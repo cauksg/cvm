@@ -621,8 +621,7 @@ static inline int qla_mapq_alloc_qp_cpu_map(struct qla_hw_data *ha)
 	scsi_qla_host_t *vha = pci_get_drvdata(ha->pdev);
 
 	if (!ha->qp_cpu_map) {
-		ha->qp_cpu_map = kcalloc(NR_CPUS, sizeof(struct qla_qpair *),
-					 GFP_KERNEL);
+		ha->qp_cpu_map = kzalloc_objs(struct qla_qpair *, NR_CPUS);
 		if (!ha->qp_cpu_map) {
 			ql_log(ql_log_fatal, vha, 0x0180,
 			       "Unable to allocate memory for qp_cpu_map ptrs.\n");
@@ -630,4 +629,12 @@ static inline int qla_mapq_alloc_qp_cpu_map(struct qla_hw_data *ha)
 		}
 	}
 	return 0;
+}
+
+static inline bool val_is_in_range(u32 val, u32 start, u32 end)
+{
+	if (val >= start && val <= end)
+		return true;
+	else
+		return false;
 }

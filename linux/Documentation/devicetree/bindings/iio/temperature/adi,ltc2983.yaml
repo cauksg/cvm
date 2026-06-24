@@ -39,7 +39,6 @@ $defs:
       - reg
       - adi,sensor-type
 
-
 properties:
   compatible:
     oneOf:
@@ -56,6 +55,8 @@ properties:
 
   interrupts:
     maxItems: 1
+
+  vdd-supply: true
 
   adi,mux-delay-config-us:
     description: |
@@ -86,7 +87,7 @@ properties:
     const: 0
 
 patternProperties:
-  "^thermocouple@":
+  '^thermocouple@':
     $ref: '#/$defs/sensor-node'
     unevaluatedProperties: false
 
@@ -144,7 +145,7 @@ patternProperties:
           required:
             - adi,custom-thermocouple
 
-  "^diode@":
+  '^diode@':
     $ref: '#/$defs/sensor-node'
     unevaluatedProperties: false
 
@@ -189,7 +190,7 @@ patternProperties:
         $ref: /schemas/types.yaml#/definitions/uint32
         default: 0
 
-  "^rtd@":
+  '^rtd@':
     $ref: '#/$defs/sensor-node'
     unevaluatedProperties: false
     description: RTD sensor.
@@ -278,7 +279,7 @@ patternProperties:
               type: boolean
 
           dependencies:
-            adi,current-rotate: [ "adi,rsense-share" ]
+            adi,current-rotate: [ 'adi,rsense-share' ]
 
       - if:
           properties:
@@ -288,7 +289,7 @@ patternProperties:
           required:
             - adi,custom-rtd
 
-  "^thermistor@":
+  '^thermistor@':
     $ref: '#/$defs/sensor-node'
     unevaluatedProperties: false
     description: Thermistor sensor.
@@ -362,7 +363,7 @@ patternProperties:
       - adi,rsense-handle
 
     dependencies:
-      adi,current-rotate: [ "adi,rsense-share" ]
+      adi,current-rotate: [ 'adi,rsense-share' ]
 
     allOf:
       - if:
@@ -390,7 +391,7 @@ patternProperties:
           required:
             - adi,custom-thermistor
 
-  "^adc@":
+  '^adc@':
     $ref: '#/$defs/sensor-node'
     unevaluatedProperties: false
     description: Direct ADC sensor.
@@ -405,7 +406,7 @@ patternProperties:
         description: Whether the sensor is single-ended.
         type: boolean
 
-  "^temp@":
+  '^temp@':
     $ref: '#/$defs/sensor-node'
     unevaluatedProperties: false
     description: Active analog temperature sensor.
@@ -435,7 +436,7 @@ patternProperties:
     required:
       - adi,custom-temp
 
-  "^rsense@":
+  '^rsense@':
     $ref: '#/$defs/sensor-node'
     unevaluatedProperties: false
     description: Sense resistor sensor.
@@ -460,6 +461,7 @@ required:
   - compatible
   - reg
   - interrupts
+  - vdd-supply
 
 additionalProperties: false
 
@@ -473,7 +475,7 @@ allOf:
               - adi,ltc2984
     then:
       patternProperties:
-        "^temp@": false
+        '^temp@': false
 
 examples:
   - |
@@ -489,6 +491,7 @@ examples:
             #address-cells = <1>;
             #size-cells = <0>;
 
+            vdd-supply = <&supply>;
             interrupts = <20 IRQ_TYPE_EDGE_RISING>;
             interrupt-parent = <&gpio>;
 

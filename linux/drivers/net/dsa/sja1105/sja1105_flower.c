@@ -41,7 +41,7 @@ static int sja1105_setup_bcast_policer(struct sja1105_private *priv,
 	int rc;
 
 	if (!rule) {
-		rule = kzalloc(sizeof(*rule), GFP_KERNEL);
+		rule = kzalloc_obj(*rule);
 		if (!rule)
 			return -ENOMEM;
 
@@ -112,7 +112,7 @@ static int sja1105_setup_tc_policer(struct sja1105_private *priv,
 	int rc;
 
 	if (!rule) {
-		rule = kzalloc(sizeof(*rule), GFP_KERNEL);
+		rule = kzalloc_obj(*rule);
 		if (!rule)
 			return -ENOMEM;
 
@@ -213,6 +213,9 @@ static int sja1105_flower_parse_key(struct sja1105_private *priv,
 				   "Unsupported keys used");
 		return -EOPNOTSUPP;
 	}
+
+	if (flow_rule_match_has_control_flags(rule, extack))
+		return -EOPNOTSUPP;
 
 	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_BASIC)) {
 		struct flow_match_basic match;

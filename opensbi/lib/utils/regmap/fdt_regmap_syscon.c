@@ -159,7 +159,7 @@ static int regmap_syscon_write_be32(struct regmap *rmap, unsigned int reg,
 	return 0;
 }
 
-static int regmap_syscon_init(void *fdt, int nodeoff, u32 phandle,
+static int regmap_syscon_init(const void *fdt, int nodeoff,
 			      const struct fdt_match *match)
 {
 	struct syscon_regmap *srm;
@@ -188,9 +188,9 @@ static int regmap_syscon_init(void *fdt, int nodeoff, u32 phandle,
 		goto fail_free_syscon;
 	srm->addr = addr;
 
-	srm->rmap.id = phandle;
+	srm->rmap.id = nodeoff;
 	srm->rmap.reg_shift = 0;
-	srm->rmap.reg_stride = srm->reg_io_width * 8;
+	srm->rmap.reg_stride = srm->reg_io_width;
 	srm->rmap.reg_base = 0;
 	srm->rmap.reg_max = size / srm->reg_io_width;
 	switch (srm->reg_io_width) {
@@ -263,7 +263,7 @@ static const struct fdt_match regmap_syscon_match[] = {
 	{ },
 };
 
-struct fdt_regmap fdt_regmap_syscon = {
+const struct fdt_driver fdt_regmap_syscon = {
 	.match_table = regmap_syscon_match,
 	.init = regmap_syscon_init,
 };

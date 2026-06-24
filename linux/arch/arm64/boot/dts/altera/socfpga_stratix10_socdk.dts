@@ -50,30 +50,17 @@
 		regulator-min-microvolt = <330000>;
 		regulator-max-microvolt = <330000>;
 	};
-
-	soc {
-		eccmgr {
-			sdmmca-ecc@ff8c8c00 {
-				compatible = "altr,socfpga-s10-sdmmc-ecc",
-					     "altr,socfpga-sdmmc-ecc";
-				reg = <0xff8c8c00 0x100>;
-				altr,ecc-parent = <&mmc>;
-				interrupts = <14 4>,
-					     <15 4>;
-			};
-		};
-	};
 };
 
 &pinctrl0 {
-	i2c1_pmx_func: i2c1-pmx-func {
+	i2c1_pmx_func: i2c1-pmx-func-pins {
 		pinctrl-single,pins = <
 			0x78   0x4   /* I2C1_SDA (IO6-B) PIN30SEL) */
 			0x7c   0x4   /* I2C1_SCL (IO7-B) PIN31SEL */
 		>;
 	};
 
-	i2c1_pmx_func_gpio: i2c1-pmx-func-gpio {
+	i2c1_pmx_func_gpio: i2c1-pmx-func-gpio-pins {
 		pinctrl-single,pins = <
 			0x78   0x8   /* I2C1_SDA (IO6-B) PIN30SEL) */
 			0x7c   0x8   /* I2C1_SCL (IO7-B) PIN31SEL */
@@ -180,20 +167,18 @@
 &qspi {
 	status = "okay";
 	flash@0 {
-		#address-cells = <1>;
-		#size-cells = <1>;
 		compatible = "micron,mt25qu02g", "jedec,spi-nor";
 		reg = <0>;
 		spi-max-frequency = <100000000>;
 
 		m25p,fast-read;
-		cdns,page-size = <256>;
-		cdns,block-size = <16>;
 		cdns,read-delay = <1>;
 		cdns,tshsl-ns = <50>;
 		cdns,tsd2d-ns = <50>;
 		cdns,tchsh-ns = <4>;
 		cdns,tslch-ns = <4>;
+		spi-tx-bus-width = <4>;
+		spi-rx-bus-width = <4>;
 
 		partitions {
 			compatible = "fixed-partitions";
@@ -207,7 +192,7 @@
 
 			root: partition@4200000 {
 				label = "Root Filesystem - UBIFS";
-				reg = <0x04200000 0x0BE00000>;
+				reg = <0x04200000 0x0be00000>;
 			};
 		};
 	};

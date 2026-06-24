@@ -12,6 +12,7 @@
 #define __IRQCHIP_APLIC_H__
 
 #include <sbi/sbi_types.h>
+#include <sbi/sbi_irqchip.h>
 
 #define APLIC_MAX_DELEGATE	16
 
@@ -30,6 +31,11 @@ struct aplic_delegate_data {
 };
 
 struct aplic_data {
+	/* Private members */
+	struct sbi_irqchip_device irqchip;
+	struct sbi_dlist node;
+	/* Public members */
+	u32 unique_id;
 	unsigned long addr;
 	unsigned long size;
 	unsigned long num_idc;
@@ -40,8 +46,11 @@ struct aplic_data {
 	bool has_msicfg_smode;
 	struct aplic_msicfg_data msicfg_smode;
 	struct aplic_delegate_data delegate[APLIC_MAX_DELEGATE];
+	u32 *idc_map;
 };
 
 int aplic_cold_irqchip_init(struct aplic_data *aplic);
+
+void aplic_reinit_all(void);
 
 #endif

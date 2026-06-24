@@ -29,7 +29,7 @@ static unsigned long tlb_fifo_off;
 static unsigned long tlb_fifo_mem_off;
 static unsigned long tlb_range_flush_limit;
 
-static void tlb_flush_all(void)
+void __sbi_sfence_vma_all(void)
 {
 	__asm__ __volatile("sfence.vma");
 }
@@ -86,7 +86,7 @@ static void sbi_tlb_local_sfence_vma(struct sbi_tlb_info *tinfo)
 	sbi_pmu_ctr_incr_fw(SBI_PMU_FW_SFENCE_VMA_RCVD);
 
 	if ((start == 0 && size == 0) || (size == SBI_TLB_FLUSH_ALL)) {
-		tlb_flush_all();
+		__sbi_sfence_vma_all();
 		return;
 	}
 
@@ -343,7 +343,6 @@ static int tlb_update(struct sbi_scratch *scratch,
 	 * then just do a local flush and return;
 	 */
 	if (sbi_hartindex_to_hartid(remote_hartindex) == curr_hartid) {
-
 		tlb_entry_local_process(tinfo);
 		return SBI_IPI_UPDATE_BREAK;
 	}
@@ -352,7 +351,8 @@ static int tlb_update(struct sbi_scratch *scratch,
 
 	ret = sbi_fifo_inplace_update(tlb_fifo_r, data, tlb_update_cb);
 
-	if (ret == SBI_FIFO_UNCHANGED && sbi_fifo_enqueue(tlb_fifo_r, data) < 0) {
+	if (ret == SBI_FIFO_UNCHANGED &&
+	    sbi_fifo_enqueue(tlb_fifo_r, data, false) < 0) {
 		/**
 		 * For now, Busy loop until there is space in the fifo.
 		 * There may be case where target hart is also

@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
 
-#ifdef HAVE_PERF_REGS_SUPPORT
-
 #include "../perf_regs.h"
-#include "../../../arch/riscv/include/uapi/asm/perf_regs.h"
+#include "../../arch/riscv/include/perf_regs.h"
+
+uint64_t __perf_reg_mask_riscv(bool intr __maybe_unused)
+{
+	return PERF_REGS_MASK;
+}
 
 const char *__perf_reg_name_riscv(int id)
 {
@@ -88,5 +91,3 @@ uint64_t __perf_reg_sp_riscv(void)
 {
 	return PERF_REG_RISCV_SP;
 }
-
-#endif

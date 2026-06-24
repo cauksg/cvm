@@ -6,6 +6,7 @@ export skip_rc=4
 export timeout_rc=124
 export logfile=/dev/stdout
 export per_test_logging=
+export RUN_IN_NETNS=
 
 # Defaults for "settings" file fields:
 # "timeout" how many seconds to let each test run before running
@@ -43,11 +44,17 @@ tap_timeout()
 	fi
 }
 
+report_failure()
+{
+	echo "not ok $*"
+	echo "$*" >> "$kselftest_failures_file"
+}
+
 run_one()
 {
 	DIR="$1"
 	TEST="$2"
-	NUM="$3"
+	local test_num="$3"
 
 	BASENAME_TEST=$(basename $TEST)
 
@@ -104,14 +111,17 @@ run_one()
 	echo "# $TEST_HDR_MSG"
 	if [ ! -e "$TEST" ]; then
 		echo "# Warning: file $TEST is missing!"
-		echo "not ok $test_num $TEST_HDR_MSG"
+		report_failure "$test_num $TEST_HDR_MSG"
 	else
 		if [ -x /usr/bin/stdbuf ]; then
 			stdbuf="/usr/bin/stdbuf --output=L "
 		fi
 		eval kselftest_cmd_args="\$${kselftest_cmd_args_ref:-}"
-		cmd="$stdbuf ./$BASENAME_TEST $kselftest_cmd_args"
-		if [ ! -x "$TEST" ]; then
+		if [ -x "$TEST" ]; then
+			cmd="$stdbuf ./$BASENAME_TEST $kselftest_cmd_args"
+		elif [ -x "./ksft_runner.sh" ]; then
+			cmd="$stdbuf ./ksft_runner.sh ./$BASENAME_TEST"
+		else
 			echo "# Warning: file $TEST is not executable"
 
 			if [ $(head -n 1 "$TEST" | cut -c -2) = "#!" ]
@@ -119,7 +129,7 @@ run_one()
 				interpreter=$(head -n 1 "$TEST" | cut -c 3-)
 				cmd="$stdbuf $interpreter ./$BASENAME_TEST"
 			else
-				echo "not ok $test_num $TEST_HDR_MSG"
+				report_failure "$test_num $TEST_HDR_MSG"
 				return
 			fi
 		fi
@@ -133,12 +143,39 @@ run_one()
 			echo "ok $test_num $TEST_HDR_MSG # SKIP"
 		elif [ $rc -eq $timeout_rc ]; then \
 			echo "#"
-			echo "not ok $test_num $TEST_HDR_MSG # TIMEOUT $kselftest_timeout seconds"
+			report_failure "$test_num $TEST_HDR_MSG # TIMEOUT $kselftest_timeout seconds"
 		else
-			echo "not ok $test_num $TEST_HDR_MSG # exit=$rc"
+			report_failure "$test_num $TEST_HDR_MSG # exit=$rc"
 		fi)
 		cd - >/dev/null
 	fi
+}
+
+in_netns()
+{
+	local name=$1
+	ip netns exec $name bash <<-EOF
+		BASE_DIR=$BASE_DIR
+		source $BASE_DIR/kselftest/runner.sh
+		logfile=$logfile
+		run_one $DIR $TEST $test_num
+	EOF
+}
+
+run_in_netns()
+{
+	local netns=$(mktemp -u ${BASENAME_TEST}-XXXXXX)
+	local tmplog="/tmp/$(mktemp -u ${BASENAME_TEST}-XXXXXX)"
+	ip netns add $netns
+	if [ $? -ne 0 ]; then
+		echo "# Warning: Create namespace failed for $BASENAME_TEST"
+		echo "not ok $test_num selftests: $DIR: $BASENAME_TEST # Create NS failed"
+	fi
+	ip -n $netns link set lo up
+	in_netns $netns &> $tmplog
+	ip netns del $netns &> /dev/null
+	cat $tmplog
+	rm -f $tmplog
 }
 
 run_many()
@@ -155,6 +192,12 @@ run_many()
 			logfile="/tmp/$BASENAME_TEST"
 			cat /dev/null > "$logfile"
 		fi
-		run_one "$DIR" "$TEST" "$test_num"
+		if [ -n "$RUN_IN_NETNS" ]; then
+			run_in_netns &
+		else
+			run_one "$DIR" "$TEST" "$test_num"
+		fi
 	done
+
+	wait
 }

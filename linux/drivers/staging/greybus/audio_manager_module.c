@@ -144,7 +144,7 @@ static struct attribute *gb_audio_module_default_attrs[] = {
 };
 ATTRIBUTE_GROUPS(gb_audio_module_default);
 
-static struct kobj_type gb_audio_module_type = {
+static const struct kobj_type gb_audio_module_type = {
 	.sysfs_ops = &gb_audio_module_sysfs_ops,
 	.release = gb_audio_module_release,
 	.default_groups = gb_audio_module_default_groups,
@@ -188,7 +188,7 @@ int gb_audio_manager_module_create(struct gb_audio_manager_module **module,
 	int err;
 	struct gb_audio_manager_module *m;
 
-	m = kzalloc(sizeof(*m), GFP_ATOMIC);
+	m = kzalloc_obj(*m, GFP_ATOMIC);
 	if (!m)
 		return -ENOMEM;
 

@@ -1,22 +1,22 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: BSD-2-Clause
 /*
  * Copyright (C) 2022 Renesas Electronics Corp.
  *
  */
 
-#include <andes/andes45_pma.h>
+#include <andes/andes_pma.h>
 #include <andes/andes_pmu.h>
 #include <andes/andes_sbi.h>
 #include <platform_override.h>
 #include <sbi/sbi_domain.h>
 #include <sbi_utils/fdt/fdt_helper.h>
 
-static const struct andes45_pma_region renesas_rzfive_pma_regions[] = {
+static const struct andes_pma_region renesas_rzfive_pma_regions[] = {
 	{
 		.pa = 0x58000000,
 		.size = 0x8000000,
-		.flags = ANDES45_PMACFG_ETYP_NAPOT |
-			 ANDES45_PMACFG_MTYP_MEM_NON_CACHE_BUF,
+		.flags = ANDES_PMACFG_ETYP_NAPOT |
+			 ANDES_PMACFG_MTYP_MEM_NON_CACHE_BUF,
 		.dt_populate = true,
 		.shared_dma = true,
 		.no_map = true,
@@ -24,14 +24,30 @@ static const struct andes45_pma_region renesas_rzfive_pma_regions[] = {
 	},
 };
 
-static int renesas_rzfive_final_init(bool cold_boot, const struct fdt_match *match)
+static int renesas_rzfive_final_init(bool cold_boot)
 {
-	return andes45_pma_setup_regions(renesas_rzfive_pma_regions,
-					 array_size(renesas_rzfive_pma_regions));
+	int rc;
+
+	if (cold_boot) {
+		void *fdt = fdt_get_address_rw();
+
+		rc = andes_pma_setup_regions(fdt, renesas_rzfive_pma_regions,
+					     array_size(renesas_rzfive_pma_regions));
+		if (rc)
+			return rc;
+	}
+
+	return generic_final_init(cold_boot);
 }
 
-static int renesas_rzfive_early_init(bool cold_boot, const struct fdt_match *match)
+static int renesas_rzfive_early_init(bool cold_boot)
 {
+	int rc;
+
+	rc = generic_early_init(cold_boot);
+	if (rc)
+		return rc;
+
 	/*
 	 * Renesas RZ/Five RISC-V SoC has Instruction local memory and
 	 * Data local memory (ILM & DLM) mapped between region 0x30000
@@ -48,16 +64,24 @@ static int renesas_rzfive_early_init(bool cold_boot, const struct fdt_match *mat
 					    SBI_DOMAIN_MEMREGION_M_RWX);
 }
 
+static int renesas_rzfive_platform_init(const void *fdt, int nodeoff,
+					const struct fdt_match *match)
+{
+	generic_platform_ops.early_init = renesas_rzfive_early_init;
+	generic_platform_ops.final_init = renesas_rzfive_final_init;
+	generic_platform_ops.extensions_init = andes_pmu_extensions_init;
+	generic_platform_ops.pmu_init = andes_pmu_init;
+	generic_platform_ops.vendor_ext_provider = andes_sbi_vendor_ext_provider;
+
+	return 0;
+}
+
 static const struct fdt_match renesas_rzfive_match[] = {
 	{ .compatible = "renesas,r9a07g043f01" },
 	{ /* sentinel */ }
 };
 
-const struct platform_override renesas_rzfive = {
+const struct fdt_driver renesas_rzfive = {
 	.match_table = renesas_rzfive_match,
-	.early_init = renesas_rzfive_early_init,
-	.final_init = renesas_rzfive_final_init,
-	.vendor_ext_provider = andes_sbi_vendor_ext_provider,
-	.extensions_init = andes_pmu_extensions_init,
-	.pmu_init = andes_pmu_init,
+	.init = renesas_rzfive_platform_init,
 };

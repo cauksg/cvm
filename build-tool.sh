@@ -3,8 +3,28 @@ set -e
 
 #git submodule update --init
 
-export ARCH=riscv
-export CROSS_COMPILE=riscv64-linux-gnu-
+TOP_DIR=$(pwd)
+
+export ARCH=${ARCH:-riscv}
+if [ -z "${CROSS_COMPILE:-}" ]; then
+	if [ -n "${RISCV:-}" ]; then
+		export CROSS_COMPILE="$RISCV/bin/riscv64-unknown-linux-gnu-"
+	else
+		export CROSS_COMPILE=riscv64-linux-gnu-
+	fi
+fi
+
+LINUX_DIR=${LINUX_DIR:-linux}
+BUILD_DIR=${BUILD_DIR:-build-riscv64}
+case "$LINUX_DIR" in
+	/*) ;;
+	*) LINUX_DIR="$TOP_DIR/$LINUX_DIR" ;;
+esac
+case "$BUILD_DIR" in
+	/*) BUILD_PATH="$BUILD_DIR" ;;
+	*) BUILD_PATH="$TOP_DIR/$BUILD_DIR" ;;
+esac
+CONFIG_FILE="$BUILD_PATH/.config"
 
 #Compiling the toolchain
 #mkdir ~/riscv
@@ -45,11 +65,12 @@ cd ..
 
 #compile Linux with RISC-V KVM support
 #git clone https://github.com/kvm-riscv/linux.git
-mkdir -p build-riscv64
-make -C linux O=`pwd`/build-riscv64 defconfig
-sed -i 's|^CONFIG_NET_9P_VIRTIO=.*$|CONFIG_NET_9P_VIRTIO=n|' ./build-riscv64/.config
-sed -i 's|^CONFIG_VIRTIO_NET=.*$|CONFIG_VIRTIO_NET=n|' ./build-riscv64/.config
-make -C linux O=`pwd`/build-riscv64 -j $(nproc)
+mkdir -p "$BUILD_PATH"
+make -C "$LINUX_DIR" O="$BUILD_PATH" defconfig
+sed -i 's|^CONFIG_NET_9P_VIRTIO=.*$|CONFIG_NET_9P_VIRTIO=n|' "$CONFIG_FILE"
+sed -i 's|^CONFIG_VIRTIO_NET=.*$|CONFIG_VIRTIO_NET=n|' "$CONFIG_FILE"
+sed -i 's|.*CONFIG_KVM=.*$|CONFIG_KVM=y|' "$CONFIG_FILE"
+make -C "$LINUX_DIR" O="$BUILD_PATH" -j $(nproc)
 
 #KVM tool depends on dtc at runtime. So we first compile it.
 cd dtc

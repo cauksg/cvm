@@ -13,6 +13,7 @@
 #include <asm/mmu.h>
 #include <asm/rtas.h>
 #include <asm/topology.h>
+#include "pseries.h"
 
 static struct device suspend_dev;
 
@@ -125,7 +126,7 @@ static ssize_t show_hibernate(struct device *dev,
 
 static DEVICE_ATTR(hibernate, 0644, show_hibernate, store_hibernate);
 
-static struct bus_type suspend_subsys = {
+static const struct bus_type suspend_subsys = {
 	.name = "power",
 	.dev_name = "power",
 };

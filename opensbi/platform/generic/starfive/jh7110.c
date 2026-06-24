@@ -12,12 +12,13 @@
 #include <platform_override.h>
 #include <sbi/sbi_error.h>
 #include <sbi/sbi_bitops.h>
+#include <sbi/sbi_hart.h>
 #include <sbi/sbi_system.h>
 #include <sbi/sbi_console.h>
 #include <sbi/sbi_timer.h>
 #include <sbi/riscv_io.h>
+#include <sbi_utils/fdt/fdt_driver.h>
 #include <sbi_utils/fdt/fdt_helper.h>
-#include <sbi_utils/reset/fdt_reset.h>
 #include <sbi_utils/i2c/fdt_i2c.h>
 
 struct pmic {
@@ -186,9 +187,9 @@ static struct sbi_system_reset_device pm_reset = {
 	.system_reset = pm_system_reset
 };
 
-static int starfive_jh7110_inst_init(void *fdt);
+static int starfive_jh7110_inst_init(const void *fdt);
 
-static int pm_reset_init(void *fdt, int nodeoff,
+static int pm_reset_init(const void *fdt, int nodeoff,
 			 const struct fdt_match *match)
 {
 	int rc;
@@ -227,12 +228,17 @@ static const struct fdt_match pm_reset_match[] = {
 	{ },
 };
 
-static struct fdt_reset fdt_reset_pmic = {
+static const struct fdt_driver fdt_reset_pmic = {
 	.match_table = pm_reset_match,
 	.init = pm_reset_init,
 };
 
-static int starfive_jh7110_inst_init(void *fdt)
+static const struct fdt_driver *const starfive_jh7110_reset_drivers[] = {
+	&fdt_reset_pmic,
+	NULL
+};
+
+static int starfive_jh7110_inst_init(const void *fdt)
 {
 	int noff, rc = 0;
 	const fdt32_t *val;
@@ -277,28 +283,27 @@ err:
 	return rc;
 }
 
-static int starfive_jh7110_final_init(bool cold_boot,
-				      const struct fdt_match *match)
+static int starfive_jh7110_final_init(bool cold_boot)
 {
-	void *fdt = fdt_get_address();
-
 	if (cold_boot) {
-		fdt_reset_driver_init(fdt, &fdt_reset_pmic);
+		const void *fdt = fdt_get_address();
+
+		fdt_driver_init_one(fdt, starfive_jh7110_reset_drivers);
 	}
 
-	return 0;
+	return generic_final_init(cold_boot);
 }
 
-static bool starfive_jh7110_cold_boot_allowed(u32 hartid,
-				   const struct fdt_match *match)
+static bool starfive_jh7110_cold_boot_allowed(u32 hartid)
 {
 	if (selected_hartid != -1)
 		return (selected_hartid == hartid);
 
-	return true;
+	return generic_cold_boot_allowed(hartid);
 }
 
-static void starfive_jh7110_fw_init(void *fdt, const struct fdt_match *match)
+static int starfive_jh7110_platform_init(const void *fdt, int nodeoff,
+					 const struct fdt_match *match)
 {
 	const fdt32_t *val;
 	int len, coff;
@@ -309,16 +314,20 @@ static void starfive_jh7110_fw_init(void *fdt, const struct fdt_match *match)
 		if (val && len >= sizeof(fdt32_t))
 			selected_hartid = (u32) fdt32_to_cpu(*val);
 	}
+
+	generic_platform_ops.cold_boot_allowed = starfive_jh7110_cold_boot_allowed;
+	generic_platform_ops.final_init = starfive_jh7110_final_init;
+
+	return 0;
 }
 
 static const struct fdt_match starfive_jh7110_match[] = {
 	{ .compatible = "starfive,jh7110" },
+	{ .compatible = "starfive,jh7110s" },
 	{ },
 };
 
-const struct platform_override starfive_jh7110 = {
+const struct fdt_driver starfive_jh7110 = {
 	.match_table = starfive_jh7110_match,
-	.cold_boot_allowed = starfive_jh7110_cold_boot_allowed,
-	.fw_init = starfive_jh7110_fw_init,
-	.final_init = starfive_jh7110_final_init,
+	.init = starfive_jh7110_platform_init,
 };

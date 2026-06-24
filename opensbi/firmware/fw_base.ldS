@@ -7,7 +7,8 @@
  *   Anup Patel <anup.patel@wdc.com>
  */
 
-	/* Don't add any section before _fw_start */
+	. = FW_TEXT_START;
+	/* Don't add any section between FW_TEXT_START and _fw_start */
 	PROVIDE(_fw_start = .);
 
 	. = ALIGN(0x1000); /* Need this to create proper sections */
@@ -19,6 +20,7 @@
 		PROVIDE(_text_start = .);
 		*(.entry)
 		*(.text)
+		*(.text.*)
 		. = ALIGN(8);
 		PROVIDE(_text_end = .);
 	}
@@ -45,9 +47,9 @@
 	. = ALIGN(0x1000); /* Ensure next section is page aligned */
 
 	.rela.dyn : {
-		PROVIDE(__rel_dyn_start = .);
+		PROVIDE(__rela_dyn_start = .);
 		*(.rela*)
-		PROVIDE(__rel_dyn_end = .);
+		PROVIDE(__rela_dyn_end = .);
 	}
 
 	PROVIDE(_rodata_end = .);

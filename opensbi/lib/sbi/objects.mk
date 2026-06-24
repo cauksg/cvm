@@ -13,7 +13,7 @@ libsbi-objs-y += riscv_hardfp.o
 libsbi-objs-y += riscv_locks.o
 
 libsbi-objs-y += sbi_ecall.o
-libsbi-objs-y += sbi_ecall_exts.o
+libsbi-objs-y += sbi_ecall_exts.carray.o
 
 # The order of below extensions is performance optimized
 carray-sbi_ecall_exts-$(CONFIG_SBI_ECALL_TIME) += ecall_time
@@ -46,6 +46,9 @@ libsbi-objs-$(CONFIG_SBI_ECALL_DBCN) += sbi_ecall_dbcn.o
 carray-sbi_ecall_exts-$(CONFIG_SBI_ECALL_CPPC) += ecall_cppc
 libsbi-objs-$(CONFIG_SBI_ECALL_CPPC) += sbi_ecall_cppc.o
 
+carray-sbi_ecall_exts-$(CONFIG_SBI_ECALL_FWFT) += ecall_fwft
+libsbi-objs-$(CONFIG_SBI_ECALL_FWFT) += sbi_ecall_fwft.o
+
 carray-sbi_ecall_exts-$(CONFIG_SBI_ECALL_LEGACY) += ecall_legacy
 libsbi-objs-$(CONFIG_SBI_ECALL_LEGACY) += sbi_ecall_legacy.o
 
@@ -58,29 +61,39 @@ libsbi-objs-$(CONFIG_SBI_ECALL_DBTR) += sbi_ecall_dbtr.o
 carray-sbi_ecall_exts-$(CONFIG_SBI_ECALL_SSE) += ecall_sse
 libsbi-objs-$(CONFIG_SBI_ECALL_SSE) += sbi_ecall_sse.o
 
+carray-sbi_ecall_exts-$(CONFIG_SBI_ECALL_MPXY) += ecall_mpxy
+libsbi-objs-$(CONFIG_SBI_ECALL_MPXY) += sbi_ecall_mpxy.o
+
 carray-sbi_ecall_exts-$(CONFIG_SBI_ECALL_CVM) += ecall_cvm
 libsbi-objs-$(CONFIG_SBI_ECALL_CVM) += sbi_ecall_cvm.o
-
 
 libsbi-objs-y += sbi_bitmap.o
 libsbi-objs-y += sbi_bitops.o
 libsbi-objs-y += sbi_console.o
 libsbi-objs-y += sbi_domain_context.o
+libsbi-objs-y += sbi_domain_data.o
 libsbi-objs-y += sbi_domain.o
+libsbi-objs-y += sbi_double_trap.o
 libsbi-objs-y += sbi_emulate_csr.o
 libsbi-objs-y += sbi_fifo.o
+libsbi-objs-y += sbi_fwft.o
 libsbi-objs-y += sbi_hart.o
+libsbi-objs-y += sbi_hart_pmp.o
+libsbi-objs-y += sbi_hart_protection.o
 libsbi-objs-y += sbi_heap.o
 libsbi-objs-y += sbi_math.o
 libsbi-objs-y += sbi_hfence.o
 libsbi-objs-y += sbi_hsm.o
+libsbi-objs-y += sbi_illegal_atomic.o
 libsbi-objs-y += sbi_illegal_insn.o
 libsbi-objs-y += sbi_init.o
 libsbi-objs-y += sbi_ipi.o
 libsbi-objs-y += sbi_irqchip.o
 libsbi-objs-y += sbi_platform.o
+libsbi-objs-y += sbi_pmp.o
 libsbi-objs-y += sbi_pmu.o
 libsbi-objs-y += sbi_dbtr.o
+libsbi-objs-y += sbi_mpxy.o
 libsbi-objs-y += sbi_scratch.o
 libsbi-objs-y += sbi_sse.o
 libsbi-objs-y += sbi_string.o
@@ -89,19 +102,21 @@ libsbi-objs-y += sbi_timer.o
 libsbi-objs-y += sbi_tlb.o
 libsbi-objs-y += sbi_trap.o
 libsbi-objs-y += sbi_trap_ldst.o
+libsbi-objs-y += sbi_trap_v_ldst.o
+ifeq ($(UBSAN), y)
+libsbi-objs-y += sbi_ubsan.o
+endif
 libsbi-objs-y += sbi_unpriv.o
 libsbi-objs-y += sbi_expected_trap.o
 libsbi-objs-y += sbi_cppc.o
-
+libsbi-objs-$(CC_SUPPORT_VECTOR) += sbi_vector.o
+libsbi-objs-y += sbi_fp.o
 libsbi-objs-y += sbi_cvm.o
 libsbi-objs-y += sbi_multi_key.o
-
-
 libsbi-objs-y += sm/sm.o
 libsbi-objs-y += sm/thread.o
 libsbi-objs-y += sm/utils.o
 libsbi-objs-y += sm/attest.o
-
 libsbi-objs-y += sm/gm/miracl/mrcore.o
 libsbi-objs-y += sm/gm/miracl/mrarth0.o
 libsbi-objs-y += sm/gm/miracl/mrarth1.o

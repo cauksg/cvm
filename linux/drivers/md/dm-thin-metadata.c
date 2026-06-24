@@ -249,7 +249,7 @@ struct dm_thin_device {
  */
 #define SUPERBLOCK_CSUM_XOR 160774
 
-static void sb_prepare_for_write(struct dm_block_validator *v,
+static void sb_prepare_for_write(const struct dm_block_validator *v,
 				 struct dm_block *b,
 				 size_t block_size)
 {
@@ -261,7 +261,7 @@ static void sb_prepare_for_write(struct dm_block_validator *v,
 						      SUPERBLOCK_CSUM_XOR));
 }
 
-static int sb_check(struct dm_block_validator *v,
+static int sb_check(const struct dm_block_validator *v,
 		    struct dm_block *b,
 		    size_t block_size)
 {
@@ -294,7 +294,7 @@ static int sb_check(struct dm_block_validator *v,
 	return 0;
 }
 
-static struct dm_block_validator sb_validator = {
+static const struct dm_block_validator sb_validator = {
 	.name = "superblock",
 	.prepare_for_write = sb_prepare_for_write,
 	.check = sb_check
@@ -957,7 +957,7 @@ struct dm_pool_metadata *dm_pool_metadata_open(struct block_device *bdev,
 	int r;
 	struct dm_pool_metadata *pmd;
 
-	pmd = kmalloc(sizeof(*pmd), GFP_KERNEL);
+	pmd = kmalloc_obj(*pmd);
 	if (!pmd) {
 		DMERR("could not allocate metadata struct");
 		return ERR_PTR(-ENOMEM);
@@ -1077,7 +1077,7 @@ static int __open_device(struct dm_pool_metadata *pmd,
 		details_le.snapshotted_time = cpu_to_le32(pmd->time);
 	}
 
-	*td = kmalloc(sizeof(**td), GFP_NOIO);
+	*td = kmalloc_obj(**td, GFP_NOIO);
 	if (!*td)
 		return -ENOMEM;
 

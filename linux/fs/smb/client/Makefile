@@ -12,7 +12,7 @@ cifs-y := trace.o cifsfs.o cifs_debug.o connect.o dir.o file.o \
 	  smb2ops.o smb2maperror.o smb2transport.o \
 	  smb2misc.o smb2pdu.o smb2inode.o smb2file.o cifsacl.o fs_context.o \
 	  dns_resolve.o cifs_spnego_negtokeninit.asn1.o asn1.o \
-	  namespace.o
+	  namespace.o reparse.o
 
 $(obj)/asn1.o: $(obj)/cifs_spnego_negtokeninit.asn1.h
 
@@ -32,4 +32,31 @@ cifs-$(CONFIG_CIFS_SMB_DIRECT) += smbdirect.o
 
 cifs-$(CONFIG_CIFS_ROOT) += cifsroot.o
 
-cifs-$(CONFIG_CIFS_ALLOW_INSECURE_LEGACY) += smb1ops.o cifssmb.o
+cifs-$(CONFIG_CIFS_ALLOW_INSECURE_LEGACY) += \
+	cifssmb.o \
+	smb1debug.o \
+	smb1encrypt.o \
+	smb1maperror.o \
+	smb1misc.o \
+	smb1ops.o \
+	smb1session.o \
+	smb1transport.o
+
+cifs-$(CONFIG_CIFS_COMPRESSION) += compress.o compress/lz77.o
+
+#
+# Build the SMB2 error mapping table from smb2status.h
+#
+$(obj)/smb2_mapping_table.c: $(src)/../common/smb2status.h \
+			     $(src)/gen_smb2_mapping FORCE
+	$(call if_changed,gen_smb2_mapping)
+
+$(obj)/smb2maperror.o: $(obj)/smb2_mapping_table.c
+
+quiet_cmd_gen_smb2_mapping = GEN     $@
+      cmd_gen_smb2_mapping = perl $(src)/gen_smb2_mapping $< $@
+
+obj-$(CONFIG_SMB_KUNIT_TESTS) += smb2maperror_test.o
+
+# Let Kbuild handle tracking and cleaning
+targets += smb2_mapping_table.c

@@ -97,6 +97,7 @@ module_param(backplane, int, 0);
 module_param(clockp, int, 0);
 module_param(clockm, int, 0);
 
+MODULE_DESCRIPTION("ARCnet COM20020 chipset PCMCIA driver");
 MODULE_LICENSE("GPL");
 
 /*====================================================================*/
@@ -118,7 +119,7 @@ static int com20020_probe(struct pcmcia_device *p_dev)
 	dev_dbg(&p_dev->dev, "com20020_attach()\n");
 
 	/* Create new network device */
-	info = kzalloc(sizeof(*info), GFP_KERNEL);
+	info = kzalloc_obj(*info);
 	if (!info)
 		goto fail_alloc_info;
 

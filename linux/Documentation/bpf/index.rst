@@ -21,6 +21,7 @@ that goes into great technical depth about the BPF Architecture.
    helpers
    kfuncs
    cpumasks
+   fs_kfuncs
    programs
    maps
    bpf_prog_run
@@ -32,13 +33,6 @@ that goes into great technical depth about the BPF Architecture.
    linux-notes
    other
    redirect
-
-.. only::  subproject and html
-
-   Indices
-   =======
-
-   * :ref:`genindex`
 
 .. Links:
 .. _BPF and XDP Reference Guide: https://docs.cilium.io/en/latest/bpf/

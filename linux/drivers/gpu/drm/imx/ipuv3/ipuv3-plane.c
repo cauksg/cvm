@@ -14,6 +14,7 @@
 #include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_managed.h>
+#include <drm/drm_print.h>
 
 #include <video/imx-ipu-v3.h>
 
@@ -307,7 +308,7 @@ static void ipu_plane_state_reset(struct drm_plane *plane)
 		plane->state = NULL;
 	}
 
-	ipu_state = kzalloc(sizeof(*ipu_state), GFP_KERNEL);
+	ipu_state = kzalloc_obj(*ipu_state);
 
 	if (ipu_state)
 		__drm_atomic_helper_plane_reset(plane, &ipu_state->base);
@@ -321,7 +322,7 @@ ipu_plane_duplicate_state(struct drm_plane *plane)
 	if (WARN_ON(!plane->state))
 		return NULL;
 
-	state = kmalloc(sizeof(*state), GFP_KERNEL);
+	state = kmalloc_obj(*state);
 	if (state)
 		__drm_atomic_helper_plane_duplicate_state(plane, &state->base);
 
@@ -386,8 +387,7 @@ static int ipu_plane_atomic_check(struct drm_plane *plane,
 		return -EINVAL;
 
 	crtc_state =
-		drm_atomic_get_existing_crtc_state(state,
-						   new_state->crtc);
+		drm_atomic_get_new_crtc_state(state, new_state->crtc);
 	if (WARN_ON(!crtc_state))
 		return -EINVAL;
 
@@ -773,6 +773,13 @@ static const struct drm_plane_helper_funcs ipu_plane_helper_funcs = {
 	.atomic_update = ipu_plane_atomic_update,
 };
 
+static const struct drm_plane_helper_funcs ipu_primary_plane_helper_funcs = {
+	.atomic_check = ipu_plane_atomic_check,
+	.atomic_disable = ipu_plane_atomic_disable,
+	.atomic_update = ipu_plane_atomic_update,
+	.get_scanout_buffer = drm_fb_dma_get_scanout_buffer,
+};
+
 bool ipu_plane_atomic_update_pending(struct drm_plane *plane)
 {
 	struct ipu_plane *ipu_plane = to_ipu_plane(plane);
@@ -916,7 +923,10 @@ struct ipu_plane *ipu_plane_init(struct drm_device *dev, struct ipu_soc *ipu,
 	ipu_plane->dma = dma;
 	ipu_plane->dp_flow = dp;
 
-	drm_plane_helper_add(&ipu_plane->base, &ipu_plane_helper_funcs);
+	if (type == DRM_PLANE_TYPE_PRIMARY)
+		drm_plane_helper_add(&ipu_plane->base, &ipu_primary_plane_helper_funcs);
+	else
+		drm_plane_helper_add(&ipu_plane->base, &ipu_plane_helper_funcs);
 
 	if (dp == IPU_DP_FLOW_SYNC_BG || dp == IPU_DP_FLOW_SYNC_FG)
 		ret = drm_plane_create_zpos_property(&ipu_plane->base, zpos, 0,

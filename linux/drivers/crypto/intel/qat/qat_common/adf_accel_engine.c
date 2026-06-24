@@ -19,7 +19,7 @@ static int adf_ae_fw_load_images(struct adf_accel_dev *accel_dev, void *fw_addr,
 	int i;
 
 	loader = loader_data->fw_loader;
-	num_objs = hw_device->uof_get_num_objs();
+	num_objs = hw_device->uof_get_num_objs(accel_dev);
 
 	for (i = 0; i < num_objs; i++) {
 		obj_name = hw_device->uof_get_name(accel_dev, i);
@@ -178,7 +178,7 @@ int adf_ae_init(struct adf_accel_dev *accel_dev)
 	if (!hw_device->fw_name)
 		return 0;
 
-	loader_data = kzalloc(sizeof(*loader_data), GFP_KERNEL);
+	loader_data = kzalloc_obj(*loader_data);
 	if (!loader_data)
 		return -ENOMEM;
 

@@ -22,7 +22,7 @@
 #define SBI_SCRATCH_FW_RW_OFFSET		(2 * __SIZEOF_POINTER__)
 /** Offset of fw_heap_offset member in sbi_scratch */
 #define SBI_SCRATCH_FW_HEAP_OFFSET		(3 * __SIZEOF_POINTER__)
-/** Offset of fw_heap_size_offset member in sbi_scratch */
+/** Offset of fw_heap_size member in sbi_scratch */
 #define SBI_SCRATCH_FW_HEAP_SIZE_OFFSET		(4 * __SIZEOF_POINTER__)
 /** Offset of next_arg1 member in sbi_scratch */
 #define SBI_SCRATCH_NEXT_ARG1_OFFSET		(5 * __SIZEOF_POINTER__)
@@ -40,10 +40,14 @@
 #define SBI_SCRATCH_TRAP_CONTEXT_OFFSET		(11 * __SIZEOF_POINTER__)
 /** Offset of tmp0 member in sbi_scratch */
 #define SBI_SCRATCH_TMP0_OFFSET			(12 * __SIZEOF_POINTER__)
+/** Offset of tmp1 member in sbi_scratch */
+#define SBI_SCRATCH_TMP1_OFFSET			(13 * __SIZEOF_POINTER__)
 /** Offset of options member in sbi_scratch */
-#define SBI_SCRATCH_OPTIONS_OFFSET		(13 * __SIZEOF_POINTER__)
+#define SBI_SCRATCH_OPTIONS_OFFSET		(14 * __SIZEOF_POINTER__)
+/** Offset of hartindex member in sbi_scratch */
+#define SBI_SCRATCH_HARTINDEX_OFFSET		(15 * __SIZEOF_POINTER__)
 /** Offset of extra space in sbi_scratch */
-#define SBI_SCRATCH_EXTRA_SPACE_OFFSET		(14 * __SIZEOF_POINTER__)
+#define SBI_SCRATCH_EXTRA_SPACE_OFFSET		(16 * __SIZEOF_POINTER__)
 /** Maximum size of sbi_scratch (4KB) */
 #define SBI_SCRATCH_SIZE			(0x1000)
 
@@ -81,69 +85,34 @@ struct sbi_scratch {
 	unsigned long trap_context;
 	/** Temporary storage */
 	unsigned long tmp0;
+	/** Temporary storage */
+	unsigned long tmp1;
 	/** Options for OpenSBI library */
 	unsigned long options;
+	/** Index of the hart */
+	unsigned long hartindex;
 };
 
 /**
  * Prevent modification of struct sbi_scratch from affecting
  * SBI_SCRATCH_xxx_OFFSET
  */
-_Static_assert(
-	offsetof(struct sbi_scratch, fw_start)
-		== SBI_SCRATCH_FW_START_OFFSET,
-	"struct sbi_scratch definition has changed, please redefine "
-	"SBI_SCRATCH_FW_START_OFFSET");
-_Static_assert(
-	offsetof(struct sbi_scratch, fw_size)
-		== SBI_SCRATCH_FW_SIZE_OFFSET,
-	"struct sbi_scratch definition has changed, please redefine "
-	"SBI_SCRATCH_FW_SIZE_OFFSET");
-_Static_assert(
-	offsetof(struct sbi_scratch, next_arg1)
-		== SBI_SCRATCH_NEXT_ARG1_OFFSET,
-	"struct sbi_scratch definition has changed, please redefine "
-	"SBI_SCRATCH_NEXT_ARG1_OFFSET");
-_Static_assert(
-	offsetof(struct sbi_scratch, next_addr)
-		== SBI_SCRATCH_NEXT_ADDR_OFFSET,
-	"struct sbi_scratch definition has changed, please redefine "
-	"SBI_SCRATCH_NEXT_ADDR_OFFSET");
-_Static_assert(
-	offsetof(struct sbi_scratch, next_mode)
-		== SBI_SCRATCH_NEXT_MODE_OFFSET,
-	"struct sbi_scratch definition has changed, please redefine "
-	"SBI_SCRATCH_NEXT_MODE_OFFSET");
-_Static_assert(
-	offsetof(struct sbi_scratch, warmboot_addr)
-		== SBI_SCRATCH_WARMBOOT_ADDR_OFFSET,
-	"struct sbi_scratch definition has changed, please redefine "
-	"SBI_SCRATCH_WARMBOOT_ADDR_OFFSET");
-_Static_assert(
-	offsetof(struct sbi_scratch, platform_addr)
-		== SBI_SCRATCH_PLATFORM_ADDR_OFFSET,
-	"struct sbi_scratch definition has changed, please redefine "
-	"SBI_SCRATCH_PLATFORM_ADDR_OFFSET");
-_Static_assert(
-	offsetof(struct sbi_scratch, hartid_to_scratch)
-		== SBI_SCRATCH_HARTID_TO_SCRATCH_OFFSET,
-	"struct sbi_scratch definition has changed, please redefine "
-	"SBI_SCRATCH_HARTID_TO_SCRATCH_OFFSET");
-_Static_assert(
-	offsetof(struct sbi_scratch, trap_context)
-		== SBI_SCRATCH_TRAP_CONTEXT_OFFSET,
-	"struct sbi_scratch definition has changed, please redefine "
-	"SBI_SCRATCH_TRAP_CONTEXT_OFFSET");
-_Static_assert(
-	offsetof(struct sbi_scratch, tmp0)
-		== SBI_SCRATCH_TMP0_OFFSET,
-	"struct sbi_scratch definition has changed, please redefine "
-	"SBI_SCRATCH_TMP0_OFFSET");
-_Static_assert(
-	offsetof(struct sbi_scratch, options)
-		== SBI_SCRATCH_OPTIONS_OFFSET,
-	"struct sbi_scratch definition has changed, please redefine "
-	"SBI_SCRATCH_OPTIONS_OFFSET");
+assert_member_offset(struct sbi_scratch, fw_start, SBI_SCRATCH_FW_START_OFFSET);
+assert_member_offset(struct sbi_scratch, fw_size, SBI_SCRATCH_FW_SIZE_OFFSET);
+assert_member_offset(struct sbi_scratch, fw_rw_offset, SBI_SCRATCH_FW_RW_OFFSET);
+assert_member_offset(struct sbi_scratch, fw_heap_offset, SBI_SCRATCH_FW_HEAP_OFFSET);
+assert_member_offset(struct sbi_scratch, fw_heap_size, SBI_SCRATCH_FW_HEAP_SIZE_OFFSET);
+assert_member_offset(struct sbi_scratch, next_arg1, SBI_SCRATCH_NEXT_ARG1_OFFSET);
+assert_member_offset(struct sbi_scratch, next_addr, SBI_SCRATCH_NEXT_ADDR_OFFSET);
+assert_member_offset(struct sbi_scratch, next_mode, SBI_SCRATCH_NEXT_MODE_OFFSET);
+assert_member_offset(struct sbi_scratch, warmboot_addr, SBI_SCRATCH_WARMBOOT_ADDR_OFFSET);
+assert_member_offset(struct sbi_scratch, platform_addr, SBI_SCRATCH_PLATFORM_ADDR_OFFSET);
+assert_member_offset(struct sbi_scratch, hartid_to_scratch, SBI_SCRATCH_HARTID_TO_SCRATCH_OFFSET);
+assert_member_offset(struct sbi_scratch, trap_context, SBI_SCRATCH_TRAP_CONTEXT_OFFSET);
+assert_member_offset(struct sbi_scratch, tmp0, SBI_SCRATCH_TMP0_OFFSET);
+assert_member_offset(struct sbi_scratch, tmp1, SBI_SCRATCH_TMP1_OFFSET);
+assert_member_offset(struct sbi_scratch, options, SBI_SCRATCH_OPTIONS_OFFSET);
+assert_member_offset(struct sbi_scratch, hartindex, SBI_SCRATCH_HARTINDEX_OFFSET);
 
 /** Possible options for OpenSBI library */
 enum sbi_scratch_options {
@@ -155,7 +124,7 @@ enum sbi_scratch_options {
 
 /** Get pointer to sbi_scratch for current HART */
 #define sbi_scratch_thishart_ptr() \
-	((struct sbi_scratch *)csr_read(CSR_MSCRATCH))
+	((struct sbi_scratch *)csr_read_relaxed(CSR_MSCRATCH))
 
 /** Get Arg1 of next booting stage for current HART */
 #define sbi_scratch_thishart_arg1_ptr() \
@@ -202,23 +171,32 @@ do {									\
 					= (__type)(__ptr);		\
 } while (0)
 
-/** Last HART index having a sbi_scratch pointer */
-extern u32 last_hartindex_having_scratch;
+/** Get the hart index of a particular sbi_scratch */
+#define sbi_scratch_hartindex(__scratch) ((__scratch)->hartindex)
 
-/** Get last HART index having a sbi_scratch pointer */
-#define sbi_scratch_last_hartindex()	last_hartindex_having_scratch
+/** Get the hart index of the current hart */
+#define current_hartindex() sbi_scratch_hartindex(sbi_scratch_thishart_ptr())
+
+/** Number of harts managed by this OpenSBI instance */
+extern u32 sbi_scratch_hart_count;
+
+/** Get the number of harts managed by this OpenSBI instance */
+#define sbi_hart_count() sbi_scratch_hart_count
+
+/** Iterate over the harts managed by this OpenSBI instance */
+#define sbi_for_each_hartindex(__var) \
+	for (u32 __var = 0; __var < sbi_hart_count(); ++__var)
 
 /** Check whether a particular HART index is valid or not */
-#define sbi_hartindex_valid(__hartindex) \
-(((__hartindex) <= sbi_scratch_last_hartindex()) ? true : false)
+#define sbi_hartindex_valid(__hartindex) ((__hartindex) < sbi_hart_count())
 
 /** HART index to HART id table */
 extern u32 hartindex_to_hartid_table[];
 
-/** Get sbi_scratch from HART index */
+/** Get HART id from HART index */
 #define sbi_hartindex_to_hartid(__hartindex)		\
 ({							\
-	((__hartindex) <= sbi_scratch_last_hartindex()) ?\
+	((__hartindex) < SBI_HARTMASK_MAX_BITS) ?	\
 	hartindex_to_hartid_table[__hartindex] : -1U;	\
 })
 
@@ -228,8 +206,8 @@ extern struct sbi_scratch *hartindex_to_scratch_table[];
 /** Get sbi_scratch from HART index */
 #define sbi_hartindex_to_scratch(__hartindex)		\
 ({							\
-	((__hartindex) <= sbi_scratch_last_hartindex()) ?\
-	hartindex_to_scratch_table[__hartindex] : NULL;\
+	((__hartindex) < SBI_HARTMASK_MAX_BITS) ?	\
+	hartindex_to_scratch_table[__hartindex] : NULL;	\
 })
 
 /**

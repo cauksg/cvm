@@ -16,6 +16,7 @@
 #include <sbi/sbi_scratch.h>
 #include <sbi/sbi_string.h>
 #include <sbi/sbi_error.h>
+#include <sbi/sbi_timer.h>
 #include <sbi_utils/fdt/fdt_fixup.h>
 #include <sbi_utils/fdt/fdt_pmu.h>
 #include <sbi_utils/fdt/fdt_helper.h>
@@ -107,10 +108,21 @@ int fdt_add_cpu_idle_states(void *fdt, const struct sbi_cpu_idle_state *state)
 
 void fdt_cpu_fixup(void *fdt)
 {
+	struct sbi_scratch *scratch = sbi_scratch_thishart_ptr();
 	struct sbi_domain *dom = sbi_domain_thishart_ptr();
 	int err, cpu_offset, cpus_offset, len;
-	const char *mmu_type;
-	u32 hartid;
+	const char *mmu_type, *extensions;
+	u32 hartid, hartindex;
+	bool emulated_zicntr;
+
+	/*
+	 * Claim Zicntr extension in riscv,isa-extensions if
+	 *  1. OpenSBI can emulate time CSR with a timer
+	 *  2. The other two CSRs specified by Zicntr are available
+	 */
+	emulated_zicntr = sbi_timer_get_device() != NULL &&
+			  sbi_hart_has_csr(scratch, SBI_HART_CSR_CYCLE) &&
+			  sbi_hart_has_csr(scratch, SBI_HART_CSR_INSTRET);
 
 	err = fdt_open_into(fdt, fdt, fdt_totalsize(fdt) + 32);
 	if (err < 0)
@@ -134,11 +146,31 @@ void fdt_cpu_fixup(void *fdt)
 		 * 2. MMU is not available for the HART
 		 */
 
+		hartindex = sbi_hartid_to_hartindex(hartid);
 		mmu_type = fdt_getprop(fdt, cpu_offset, "mmu-type", &len);
-		if (!sbi_domain_is_assigned_hart(dom, hartid) ||
+		if (!sbi_domain_is_assigned_hart(dom, hartindex) ||
 		    !mmu_type || !len)
 			fdt_setprop_string(fdt, cpu_offset, "status",
 					   "disabled");
+
+		if (!emulated_zicntr)
+			continue;
+
+		extensions = fdt_getprop(fdt, cpu_offset,
+					 "riscv,isa-extensions", &len);
+		/*
+		 * For legacy devicetrees, don't create riscv,isa-extensions
+		 * property if there hasn't been already one.
+		 */
+		if (extensions &&
+		    !fdt_stringlist_contains(extensions, len, "zicntr")) {
+			err = fdt_open_into(fdt, fdt, fdt_totalsize(fdt) + 16);
+			if (err)
+				continue;
+
+			fdt_appendprop_string(fdt, cpu_offset,
+					      "riscv,isa-extensions", "zicntr");
+		}
 	}
 }
 
@@ -153,7 +185,7 @@ static void fdt_domain_based_fixup_one(void *fdt, int nodeoff)
 		return;
 
 	if (!sbi_domain_check_addr(dom, reg_addr, dom->next_mode,
-				    SBI_DOMAIN_READ | SBI_DOMAIN_WRITE)) {
+				    SBI_DOMAIN_READ | SBI_DOMAIN_WRITE | SBI_DOMAIN_MMIO)) {
 		rc = fdt_open_into(fdt, fdt, fdt_totalsize(fdt) + 32);
 		if (rc < 0)
 			return;
@@ -400,8 +432,37 @@ void fdt_config_fixup(void *fdt)
 	fdt_nop_node(fdt, config_offset);
 }
 
+static SBI_LIST_HEAD(fixup_list);
+
+int fdt_register_general_fixup(struct fdt_general_fixup *fixup)
+{
+	struct fdt_general_fixup *f;
+
+	if (!fixup || !fixup->name || !fixup->do_fixup)
+		return SBI_EINVAL;
+
+	sbi_list_for_each_entry(f, &fixup_list, head) {
+		if (f == fixup)
+			return SBI_EALREADY;
+	}
+
+	sbi_list_add_tail(&fixup->head, &fixup_list);
+
+	return 0;
+}
+
+void fdt_unregister_general_fixup(struct fdt_general_fixup *fixup)
+{
+	if (!fixup)
+		return;
+
+	sbi_list_del(&fixup->head);
+}
+
 void fdt_fixups(void *fdt)
 {
+	struct fdt_general_fixup *f;
+
 	fdt_aplic_fixup(fdt);
 
 	fdt_imsic_fixup(fdt);
@@ -415,4 +476,7 @@ void fdt_fixups(void *fdt)
 #endif
 
 	fdt_config_fixup(fdt);
+
+	sbi_list_for_each_entry(f, &fixup_list, head)
+		f->do_fixup(f, fdt);
 }

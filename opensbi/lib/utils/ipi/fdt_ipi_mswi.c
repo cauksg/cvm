@@ -9,11 +9,11 @@
 
 #include <sbi/sbi_error.h>
 #include <sbi/sbi_heap.h>
+#include <sbi_utils/fdt/fdt_driver.h>
 #include <sbi_utils/fdt/fdt_helper.h>
-#include <sbi_utils/ipi/fdt_ipi.h>
 #include <sbi_utils/ipi/aclint_mswi.h>
 
-static int ipi_mswi_cold_init(void *fdt, int nodeoff,
+static int ipi_mswi_cold_init(const void *fdt, int nodeoff,
 			      const struct fdt_match *match)
 {
 	int rc;
@@ -57,13 +57,12 @@ static const struct fdt_match ipi_mswi_match[] = {
 	{ .compatible = "sifive,clint0", .data = &clint_offset },
 	{ .compatible = "thead,c900-clint", .data = &clint_offset },
 	{ .compatible = "thead,c900-aclint-mswi" },
+	{ .compatible = "mips,p8700-aclint-mswi" },
 	{ .compatible = "riscv,aclint-mswi" },
 	{ },
 };
 
-struct fdt_ipi fdt_ipi_mswi = {
+const struct fdt_driver fdt_ipi_mswi = {
 	.match_table = ipi_mswi_match,
-	.cold_init = ipi_mswi_cold_init,
-	.warm_init = aclint_mswi_warm_init,
-	.exit = NULL,
+	.init = ipi_mswi_cold_init,
 };

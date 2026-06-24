@@ -16,14 +16,45 @@
 #include <sbi_utils/irqchip/fdt_irqchip.h>
 #include <sbi_utils/irqchip/aplic.h>
 
-static int irqchip_aplic_warm_init(void)
+static int irqchip_aplic_update_idc_map(const void *fdt, int nodeoff,
+					struct aplic_data *pd)
 {
-	/* Nothing to do here. */
+	int i, err, count, cpu_offset, cpu_intc_offset;
+	u32 phandle, hartid, hartindex;
+	const fdt32_t *val;
+
+	val = fdt_getprop(fdt, nodeoff, "interrupts-extended", &count);
+	if (!val || count < sizeof(fdt32_t))
+		return SBI_EINVAL;
+	count = count / sizeof(fdt32_t);
+
+	for (i = 0; i < count; i += 2) {
+		phandle = fdt32_to_cpu(val[i]);
+
+		cpu_intc_offset = fdt_node_offset_by_phandle(fdt, phandle);
+		if (cpu_intc_offset < 0)
+			continue;
+
+		cpu_offset = fdt_parent_offset(fdt, cpu_intc_offset);
+		if (cpu_offset < 0)
+			continue;
+
+		err = fdt_parse_hart_id(fdt, cpu_offset, &hartid);
+		if (err)
+			continue;
+
+		hartindex = sbi_hartid_to_hartindex(hartid);
+		if (hartindex == -1U)
+			continue;
+
+		pd->idc_map[i / 2] = hartindex;
+	}
+
 	return 0;
 }
 
-static int irqchip_aplic_cold_init(void *fdt, int nodeoff,
-				  const struct fdt_match *match)
+static int irqchip_aplic_cold_init(const void *fdt, int nodeoff,
+				   const struct fdt_match *match)
 {
 	int rc;
 	struct aplic_data *pd;
@@ -36,12 +67,27 @@ static int irqchip_aplic_cold_init(void *fdt, int nodeoff,
 	if (rc)
 		goto fail_free_data;
 
+	if (pd->num_idc) {
+		pd->idc_map = sbi_zalloc(sizeof(*pd->idc_map) * pd->num_idc);
+		if (!pd->idc_map) {
+			rc = SBI_ENOMEM;
+			goto fail_free_data;
+		}
+
+		rc = irqchip_aplic_update_idc_map(fdt, nodeoff, pd);
+		if (rc)
+			goto fail_free_idc_map;
+	}
+
 	rc = aplic_cold_irqchip_init(pd);
 	if (rc)
-		goto fail_free_data;
+		goto fail_free_idc_map;
 
 	return 0;
 
+fail_free_idc_map:
+	if (pd->num_idc)
+		sbi_free(pd->idc_map);
 fail_free_data:
 	sbi_free(pd);
 	return rc;
@@ -52,9 +98,7 @@ static const struct fdt_match irqchip_aplic_match[] = {
 	{ },
 };
 
-struct fdt_irqchip fdt_irqchip_aplic = {
+const struct fdt_driver fdt_irqchip_aplic = {
 	.match_table = irqchip_aplic_match,
-	.cold_init = irqchip_aplic_cold_init,
-	.warm_init = irqchip_aplic_warm_init,
-	.exit = NULL,
+	.init = irqchip_aplic_cold_init,
 };

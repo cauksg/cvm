@@ -42,6 +42,9 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#undef DEFAULT_SYMBOL_NAMESPACE
+#define DEFAULT_SYMBOL_NAMESPACE "HWMON_NCT6775"
+
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/slab.h>
@@ -56,26 +59,23 @@
 #include "lm75.h"
 #include "nct6775.h"
 
-#undef DEFAULT_SYMBOL_NAMESPACE
-#define DEFAULT_SYMBOL_NAMESPACE HWMON_NCT6775
-
 #define USE_ALTERNATE
 
 /* used to set data->name = nct6775_device_names[data->sio_kind] */
 static const char * const nct6775_device_names[] = {
-	"nct6106",
-	"nct6116",
-	"nct6775",
-	"nct6776",
-	"nct6779",
-	"nct6791",
-	"nct6792",
-	"nct6793",
-	"nct6795",
-	"nct6796",
-	"nct6797",
-	"nct6798",
-	"nct6799",
+	[nct6106] = "nct6106",
+	[nct6116] = "nct6116",
+	[nct6775] = "nct6775",
+	[nct6776] = "nct6776",
+	[nct6779] = "nct6779",
+	[nct6791] = "nct6791",
+	[nct6792] = "nct6792",
+	[nct6793] = "nct6793",
+	[nct6795] = "nct6795",
+	[nct6796] = "nct6796",
+	[nct6797] = "nct6797",
+	[nct6798] = "nct6798",
+	[nct6799] = "nct6799",
 };
 
 /* Common and NCT6775 specific data */
@@ -273,8 +273,8 @@ static const s8 NCT6776_BEEP_BITS[NUM_BEEP_BITS] = {
 static const u16 NCT6776_REG_TOLERANCE_H[] = {
 	0x10c, 0x20c, 0x30c, 0x80c, 0x90c, 0xa0c, 0xb0c };
 
-static const u8 NCT6776_REG_PWM_MODE[] = { 0x04, 0, 0, 0, 0, 0 };
-static const u8 NCT6776_PWM_MODE_MASK[] = { 0x01, 0, 0, 0, 0, 0 };
+static const u8 NCT6776_REG_PWM_MODE[] = { 0x04, 0, 0, 0, 0, 0, 0 };
+static const u8 NCT6776_PWM_MODE_MASK[] = { 0x01, 0, 0, 0, 0, 0, 0 };
 
 static const u16 NCT6776_REG_FAN_MIN[] = {
 	0x63a, 0x63c, 0x63e, 0x640, 0x642, 0x64a, 0x64c };
@@ -767,9 +767,9 @@ static const u16 NCT6106_REG_FAN_MIN[] = { 0xe0, 0xe2, 0xe4 };
 static const u16 NCT6106_REG_FAN_PULSES[] = { 0xf6, 0xf6, 0xf6 };
 static const u16 NCT6106_FAN_PULSE_SHIFT[] = { 0, 2, 4 };
 
-static const u8 NCT6106_REG_PWM_MODE[] = { 0xf3, 0xf3, 0xf3 };
-static const u8 NCT6106_PWM_MODE_MASK[] = { 0x01, 0x02, 0x04 };
-static const u16 NCT6106_REG_PWM_READ[] = { 0x4a, 0x4b, 0x4c };
+static const u8 NCT6106_REG_PWM_MODE[] = { 0xf3, 0xf3, 0xf3, 0, 0 };
+static const u8 NCT6106_PWM_MODE_MASK[] = { 0x01, 0x02, 0x04, 0, 0 };
+static const u16 NCT6106_REG_PWM_READ[] = { 0x4a, 0x4b, 0x4c, 0xd8, 0xd9 };
 static const u16 NCT6106_REG_FAN_MODE[] = { 0x113, 0x123, 0x133 };
 static const u16 NCT6106_REG_TEMP_SOURCE[] = {
 	0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5 };
@@ -1614,17 +1614,21 @@ struct nct6775_data *nct6775_update_device(struct device *dev)
 							  data->fan_div[i]);
 
 			if (data->has_fan_min & BIT(i)) {
-				err = nct6775_read_value(data, data->REG_FAN_MIN[i], &reg);
+				u16 tmp;
+
+				err = nct6775_read_value(data, data->REG_FAN_MIN[i], &tmp);
 				if (err)
 					goto out;
-				data->fan_min[i] = reg;
+				data->fan_min[i] = tmp;
 			}
 
 			if (data->REG_FAN_PULSES[i]) {
-				err = nct6775_read_value(data, data->REG_FAN_PULSES[i], &reg);
+				u16 tmp;
+
+				err = nct6775_read_value(data, data->REG_FAN_PULSES[i], &tmp);
 				if (err)
 					goto out;
-				data->fan_pulses[i] = (reg >> data->FAN_PULSE_SHIFT[i]) & 0x03;
+				data->fan_pulses[i] = (tmp >> data->FAN_PULSE_SHIFT[i]) & 0x03;
 			}
 
 			err = nct6775_select_fan_div(dev, data, i, reg);
@@ -1717,8 +1721,8 @@ show_in_reg(struct device *dev, struct device_attribute *attr, char *buf)
 	if (IS_ERR(data))
 		return PTR_ERR(data);
 
-	return sprintf(buf, "%ld\n",
-		       in_from_reg(data->in[nr][index], nr, data->scale_in));
+	return sysfs_emit(buf, "%ld\n",
+			  in_from_reg(data->in[nr][index], nr, data->scale_in));
 }
 
 static ssize_t
@@ -1753,8 +1757,8 @@ nct6775_show_alarm(struct device *dev, struct device_attribute *attr, char *buf)
 		return PTR_ERR(data);
 
 	nr = data->ALARM_BITS[sattr->index];
-	return sprintf(buf, "%u\n",
-		       (unsigned int)((data->alarms >> nr) & 0x01));
+	return sysfs_emit(buf, "%u\n",
+			  (unsigned int)((data->alarms >> nr) & 0x01));
 }
 EXPORT_SYMBOL_GPL(nct6775_show_alarm);
 
@@ -1796,7 +1800,7 @@ show_temp_alarm(struct device *dev, struct device_attribute *attr, char *buf)
 
 		alarm = (data->alarms >> bit) & 0x01;
 	}
-	return sprintf(buf, "%u\n", alarm);
+	return sysfs_emit(buf, "%u\n", alarm);
 }
 
 ssize_t
@@ -1811,8 +1815,8 @@ nct6775_show_beep(struct device *dev, struct device_attribute *attr, char *buf)
 
 	nr = data->BEEP_BITS[sattr->index];
 
-	return sprintf(buf, "%u\n",
-		       (unsigned int)((data->beeps >> nr) & 0x01));
+	return sysfs_emit(buf, "%u\n",
+			  (unsigned int)((data->beeps >> nr) & 0x01));
 }
 EXPORT_SYMBOL_GPL(nct6775_show_beep);
 
@@ -1866,7 +1870,7 @@ show_temp_beep(struct device *dev, struct device_attribute *attr, char *buf)
 
 		beep = (data->beeps >> bit) & 0x01;
 	}
-	return sprintf(buf, "%u\n", beep);
+	return sysfs_emit(buf, "%u\n", beep);
 }
 
 static ssize_t
@@ -1956,7 +1960,7 @@ show_fan(struct device *dev, struct device_attribute *attr, char *buf)
 	if (IS_ERR(data))
 		return PTR_ERR(data);
 
-	return sprintf(buf, "%d\n", data->rpm[nr]);
+	return sysfs_emit(buf, "%d\n", data->rpm[nr]);
 }
 
 static ssize_t
@@ -1969,9 +1973,9 @@ show_fan_min(struct device *dev, struct device_attribute *attr, char *buf)
 	if (IS_ERR(data))
 		return PTR_ERR(data);
 
-	return sprintf(buf, "%d\n",
-		       data->fan_from_reg_min(data->fan_min[nr],
-					      data->fan_div[nr]));
+	return sysfs_emit(buf, "%d\n",
+			  data->fan_from_reg_min(data->fan_min[nr],
+						 data->fan_div[nr]));
 }
 
 static ssize_t
@@ -1984,7 +1988,7 @@ show_fan_div(struct device *dev, struct device_attribute *attr, char *buf)
 	if (IS_ERR(data))
 		return PTR_ERR(data);
 
-	return sprintf(buf, "%u\n", div_from_reg(data->fan_div[nr]));
+	return sysfs_emit(buf, "%u\n", div_from_reg(data->fan_div[nr]));
 }
 
 static ssize_t
@@ -2094,7 +2098,7 @@ show_fan_pulses(struct device *dev, struct device_attribute *attr, char *buf)
 		return PTR_ERR(data);
 
 	p = data->fan_pulses[sattr->index];
-	return sprintf(buf, "%d\n", p ? : 4);
+	return sysfs_emit(buf, "%d\n", p ? : 4);
 }
 
 static ssize_t
@@ -2193,7 +2197,7 @@ show_temp_label(struct device *dev, struct device_attribute *attr, char *buf)
 	if (IS_ERR(data))
 		return PTR_ERR(data);
 
-	return sprintf(buf, "%s\n", data->temp_label[data->temp_src[nr]]);
+	return sysfs_emit(buf, "%s\n", data->temp_label[data->temp_src[nr]]);
 }
 
 static ssize_t
@@ -2207,7 +2211,8 @@ show_temp(struct device *dev, struct device_attribute *attr, char *buf)
 	if (IS_ERR(data))
 		return PTR_ERR(data);
 
-	return sprintf(buf, "%d\n", LM75_TEMP_FROM_REG(data->temp[index][nr]));
+	return sysfs_emit(buf, "%d\n",
+			  LM75_TEMP_FROM_REG(data->temp[index][nr]));
 }
 
 static ssize_t
@@ -2241,7 +2246,7 @@ show_temp_offset(struct device *dev, struct device_attribute *attr, char *buf)
 	if (IS_ERR(data))
 		return PTR_ERR(data);
 
-	return sprintf(buf, "%d\n", data->temp_offset[sattr->index] * 1000);
+	return sysfs_emit(buf, "%d\n", data->temp_offset[sattr->index] * 1000);
 }
 
 static ssize_t
@@ -2258,7 +2263,7 @@ store_temp_offset(struct device *dev, struct device_attribute *attr,
 	if (err < 0)
 		return err;
 
-	val = clamp_val(DIV_ROUND_CLOSEST(val, 1000), -128, 127);
+	val = DIV_ROUND_CLOSEST(clamp_val(val, -128000, 127000), 1000);
 
 	mutex_lock(&data->update_lock);
 	data->temp_offset[nr] = val;
@@ -2278,7 +2283,7 @@ show_temp_type(struct device *dev, struct device_attribute *attr, char *buf)
 	if (IS_ERR(data))
 		return PTR_ERR(data);
 
-	return sprintf(buf, "%d\n", (int)data->temp_type[nr]);
+	return sysfs_emit(buf, "%d\n", (int)data->temp_type[nr]);
 }
 
 static ssize_t
@@ -2464,7 +2469,7 @@ show_pwm_mode(struct device *dev, struct device_attribute *attr, char *buf)
 	if (IS_ERR(data))
 		return PTR_ERR(data);
 
-	return sprintf(buf, "%d\n", data->pwm_mode[sattr->index]);
+	return sysfs_emit(buf, "%d\n", data->pwm_mode[sattr->index]);
 }
 
 static ssize_t
@@ -2531,7 +2536,7 @@ show_pwm(struct device *dev, struct device_attribute *attr, char *buf)
 		pwm = data->pwm[index][nr];
 	}
 
-	return sprintf(buf, "%d\n", pwm);
+	return sysfs_emit(buf, "%d\n", pwm);
 }
 
 static ssize_t
@@ -2548,6 +2553,13 @@ store_pwm(struct device *dev, struct device_attribute *attr, const char *buf,
 	  = { 255, 255, data->pwm[3][nr] ? : 255, 255, 255, 255, 255 };
 	int err;
 	u16 reg;
+
+	/*
+	 * The fan control mode should be set to manual if the user wants to adjust
+	 * the fan speed. Otherwise, it will fail to set.
+	 */
+	if (index == 0 && data->pwm_enable[nr] > manual)
+		return -EBUSY;
 
 	err = kstrtoul(buf, 10, &val);
 	if (err < 0)
@@ -2656,7 +2668,7 @@ show_pwm_enable(struct device *dev, struct device_attribute *attr, char *buf)
 	if (IS_ERR(data))
 		return PTR_ERR(data);
 
-	return sprintf(buf, "%d\n", data->pwm_enable[sattr->index]);
+	return sysfs_emit(buf, "%d\n", data->pwm_enable[sattr->index]);
 }
 
 static ssize_t
@@ -2725,7 +2737,7 @@ show_pwm_temp_sel_common(struct nct6775_data *data, char *buf, int src)
 		}
 	}
 
-	return sprintf(buf, "%d\n", sel);
+	return sysfs_emit(buf, "%d\n", sel);
 }
 
 static ssize_t
@@ -2850,7 +2862,7 @@ show_target_temp(struct device *dev, struct device_attribute *attr, char *buf)
 	if (IS_ERR(data))
 		return PTR_ERR(data);
 
-	return sprintf(buf, "%d\n", data->target_temp[sattr->index] * 1000);
+	return sysfs_emit(buf, "%d\n", data->target_temp[sattr->index] * 1000);
 }
 
 static ssize_t
@@ -2867,8 +2879,7 @@ store_target_temp(struct device *dev, struct device_attribute *attr,
 	if (err < 0)
 		return err;
 
-	val = clamp_val(DIV_ROUND_CLOSEST(val, 1000), 0,
-			data->target_temp_mask);
+	val = DIV_ROUND_CLOSEST(clamp_val(val, 0, data->target_temp_mask * 1000), 1000);
 
 	mutex_lock(&data->update_lock);
 	data->target_temp[nr] = val;
@@ -2887,9 +2898,9 @@ show_target_speed(struct device *dev, struct device_attribute *attr, char *buf)
 	if (IS_ERR(data))
 		return PTR_ERR(data);
 
-	return sprintf(buf, "%d\n",
-		       fan_from_reg16(data->target_speed[nr],
-				      data->fan_div[nr]));
+	return sysfs_emit(buf, "%d\n",
+			  fan_from_reg16(data->target_speed[nr],
+					 data->fan_div[nr]));
 }
 
 static ssize_t
@@ -2929,7 +2940,7 @@ show_temp_tolerance(struct device *dev, struct device_attribute *attr,
 	if (IS_ERR(data))
 		return PTR_ERR(data);
 
-	return sprintf(buf, "%d\n", data->temp_tolerance[index][nr] * 1000);
+	return sysfs_emit(buf, "%d\n", data->temp_tolerance[index][nr] * 1000);
 }
 
 static ssize_t
@@ -2948,7 +2959,7 @@ store_temp_tolerance(struct device *dev, struct device_attribute *attr,
 		return err;
 
 	/* Limit tolerance as needed */
-	val = clamp_val(DIV_ROUND_CLOSEST(val, 1000), 0, data->tolerance_mask);
+	val = DIV_ROUND_CLOSEST(clamp_val(val, 0, data->tolerance_mask * 1000), 1000);
 
 	mutex_lock(&data->update_lock);
 	data->temp_tolerance[index][nr] = val;
@@ -2996,7 +3007,7 @@ show_speed_tolerance(struct device *dev, struct device_attribute *attr,
 			     - fan_from_reg16(high, data->fan_div[nr])) / 2;
 	}
 
-	return sprintf(buf, "%d\n", tolerance);
+	return sysfs_emit(buf, "%d\n", tolerance);
 }
 
 static ssize_t
@@ -3056,7 +3067,7 @@ show_weight_temp(struct device *dev, struct device_attribute *attr, char *buf)
 	if (IS_ERR(data))
 		return PTR_ERR(data);
 
-	return sprintf(buf, "%d\n", data->weight_temp[index][nr] * 1000);
+	return sysfs_emit(buf, "%d\n", data->weight_temp[index][nr] * 1000);
 }
 
 static ssize_t
@@ -3074,7 +3085,7 @@ store_weight_temp(struct device *dev, struct device_attribute *attr,
 	if (err < 0)
 		return err;
 
-	val = clamp_val(DIV_ROUND_CLOSEST(val, 1000), 0, 255);
+	val = DIV_ROUND_CLOSEST(clamp_val(val, 0, 255000), 1000);
 
 	mutex_lock(&data->update_lock);
 	data->weight_temp[index][nr] = val;
@@ -3105,9 +3116,9 @@ show_fan_time(struct device *dev, struct device_attribute *attr, char *buf)
 	if (IS_ERR(data))
 		return PTR_ERR(data);
 
-	return sprintf(buf, "%d\n",
-		       step_time_from_reg(data->fan_time[index][nr],
-					  data->pwm_mode[nr]));
+	return sysfs_emit(buf, "%d\n",
+			  step_time_from_reg(data->fan_time[index][nr],
+					     data->pwm_mode[nr]));
 }
 
 static ssize_t
@@ -3142,7 +3153,8 @@ show_auto_pwm(struct device *dev, struct device_attribute *attr, char *buf)
 	if (IS_ERR(data))
 		return PTR_ERR(data);
 
-	return sprintf(buf, "%d\n", data->auto_pwm[sattr->nr][sattr->index]);
+	return sysfs_emit(buf, "%d\n",
+			  data->auto_pwm[sattr->nr][sattr->index]);
 }
 
 static ssize_t
@@ -3234,7 +3246,7 @@ show_auto_temp(struct device *dev, struct device_attribute *attr, char *buf)
 	 * We don't know for sure if the temperature is signed or unsigned.
 	 * Assume it is unsigned.
 	 */
-	return sprintf(buf, "%d\n", data->auto_temp[nr][point] * 1000);
+	return sysfs_emit(buf, "%d\n", data->auto_temp[nr][point] * 1000);
 }
 
 static ssize_t
@@ -3501,6 +3513,7 @@ int nct6775_probe(struct device *dev, struct nct6775_data *data,
 	const u16 *reg_temp_mon, *reg_temp_alternate, *reg_temp_crit;
 	const u16 *reg_temp_crit_l = NULL, *reg_temp_crit_h = NULL;
 	int num_reg_temp, num_reg_temp_mon, num_reg_tsi_temp;
+	int num_reg_temp_config;
 	struct device *hwmon_dev;
 	struct sensor_template_group tsi_temp_tg;
 
@@ -3583,6 +3596,7 @@ int nct6775_probe(struct device *dev, struct nct6775_data *data,
 		reg_temp_over = NCT6106_REG_TEMP_OVER;
 		reg_temp_hyst = NCT6106_REG_TEMP_HYST;
 		reg_temp_config = NCT6106_REG_TEMP_CONFIG;
+		num_reg_temp_config = ARRAY_SIZE(NCT6106_REG_TEMP_CONFIG);
 		reg_temp_alternate = NCT6106_REG_TEMP_ALTERNATE;
 		reg_temp_crit = NCT6106_REG_TEMP_CRIT;
 		reg_temp_crit_l = NCT6106_REG_TEMP_CRIT_L;
@@ -3591,7 +3605,7 @@ int nct6775_probe(struct device *dev, struct nct6775_data *data,
 		break;
 	case nct6116:
 		data->in_num = 9;
-		data->pwm_num = 3;
+		data->pwm_num = 5;
 		data->auto_pwm_num = 4;
 		data->temp_fixed_num = 3;
 		data->num_temp_alarms = 3;
@@ -3658,6 +3672,7 @@ int nct6775_probe(struct device *dev, struct nct6775_data *data,
 		reg_temp_over = NCT6106_REG_TEMP_OVER;
 		reg_temp_hyst = NCT6106_REG_TEMP_HYST;
 		reg_temp_config = NCT6106_REG_TEMP_CONFIG;
+		num_reg_temp_config = ARRAY_SIZE(NCT6106_REG_TEMP_CONFIG);
 		reg_temp_alternate = NCT6106_REG_TEMP_ALTERNATE;
 		reg_temp_crit = NCT6106_REG_TEMP_CRIT;
 		reg_temp_crit_l = NCT6106_REG_TEMP_CRIT_L;
@@ -3735,6 +3750,7 @@ int nct6775_probe(struct device *dev, struct nct6775_data *data,
 		reg_temp_over = NCT6775_REG_TEMP_OVER;
 		reg_temp_hyst = NCT6775_REG_TEMP_HYST;
 		reg_temp_config = NCT6775_REG_TEMP_CONFIG;
+		num_reg_temp_config = ARRAY_SIZE(NCT6775_REG_TEMP_CONFIG);
 		reg_temp_alternate = NCT6775_REG_TEMP_ALTERNATE;
 		reg_temp_crit = NCT6775_REG_TEMP_CRIT;
 
@@ -3810,6 +3826,7 @@ int nct6775_probe(struct device *dev, struct nct6775_data *data,
 		reg_temp_over = NCT6775_REG_TEMP_OVER;
 		reg_temp_hyst = NCT6775_REG_TEMP_HYST;
 		reg_temp_config = NCT6776_REG_TEMP_CONFIG;
+		num_reg_temp_config = ARRAY_SIZE(NCT6776_REG_TEMP_CONFIG);
 		reg_temp_alternate = NCT6776_REG_TEMP_ALTERNATE;
 		reg_temp_crit = NCT6776_REG_TEMP_CRIT;
 
@@ -3889,6 +3906,7 @@ int nct6775_probe(struct device *dev, struct nct6775_data *data,
 		reg_temp_over = NCT6779_REG_TEMP_OVER;
 		reg_temp_hyst = NCT6779_REG_TEMP_HYST;
 		reg_temp_config = NCT6779_REG_TEMP_CONFIG;
+		num_reg_temp_config = ARRAY_SIZE(NCT6779_REG_TEMP_CONFIG);
 		reg_temp_alternate = NCT6779_REG_TEMP_ALTERNATE;
 		reg_temp_crit = NCT6779_REG_TEMP_CRIT;
 
@@ -4023,6 +4041,7 @@ int nct6775_probe(struct device *dev, struct nct6775_data *data,
 		reg_temp_over = NCT6779_REG_TEMP_OVER;
 		reg_temp_hyst = NCT6779_REG_TEMP_HYST;
 		reg_temp_config = NCT6779_REG_TEMP_CONFIG;
+		num_reg_temp_config = ARRAY_SIZE(NCT6779_REG_TEMP_CONFIG);
 		reg_temp_alternate = NCT6779_REG_TEMP_ALTERNATE;
 		reg_temp_crit = NCT6779_REG_TEMP_CRIT;
 
@@ -4112,6 +4131,7 @@ int nct6775_probe(struct device *dev, struct nct6775_data *data,
 		reg_temp_over = NCT6798_REG_TEMP_OVER;
 		reg_temp_hyst = NCT6798_REG_TEMP_HYST;
 		reg_temp_config = NCT6779_REG_TEMP_CONFIG;
+		num_reg_temp_config = ARRAY_SIZE(NCT6779_REG_TEMP_CONFIG);
 		reg_temp_alternate = NCT6798_REG_TEMP_ALTERNATE;
 		reg_temp_crit = NCT6798_REG_TEMP_CRIT;
 
@@ -4193,7 +4213,8 @@ int nct6775_probe(struct device *dev, struct nct6775_data *data,
 				  = reg_temp_crit[src - 1];
 			if (reg_temp_crit_l && reg_temp_crit_l[i])
 				data->reg_temp[4][src - 1] = reg_temp_crit_l[i];
-			data->reg_temp_config[src - 1] = reg_temp_config[i];
+			if (i < num_reg_temp_config)
+				data->reg_temp_config[src - 1] = reg_temp_config[i];
 			data->temp_src[src - 1] = src;
 			continue;
 		}
@@ -4206,7 +4227,8 @@ int nct6775_probe(struct device *dev, struct nct6775_data *data,
 		data->reg_temp[0][s] = reg_temp[i];
 		data->reg_temp[1][s] = reg_temp_over[i];
 		data->reg_temp[2][s] = reg_temp_hyst[i];
-		data->reg_temp_config[s] = reg_temp_config[i];
+		if (i < num_reg_temp_config)
+			data->reg_temp_config[s] = reg_temp_config[i];
 		if (reg_temp_crit_h && reg_temp_crit_h[i])
 			data->reg_temp[3][s] = reg_temp_crit_h[i];
 		else if (reg_temp_crit[src - 1])

@@ -1,0 +1,27 @@
+44257507a CVM FINALIZE: Flush all TLB entries.
+ae6517741 add load file ioctl handler function and sbi_ecall
+b05cb646e add ctx switch functions to the enter primitives.
+3afaf364d func get_cvm paras changed
+135ad28c3 fix get_cvm & get_vcpu
+45ac9d350 fix load kernel bugs.
+8901a49ca modification for develop independently.
+ac27c3d36 fix bug in loading fdt, trap MTINST, paging translation.
+da99a7407 update shell script.
+d4976060e CVM destroy related 1.0
+bb8d514ee Merge branch 'cvm-wsw' of https://gitee.com/lubailong/riscv-kvm into cvm-wsw
+1f7aeea11 Attestation & Verification & CVM Destroy. Fix 2 bugs.
+5124421a9 Implement using cm page alloc and reclaim cm structure.
+837a744f6 CVM destroy & Key Management.
+9ec8c2a38 fix init root_pt bug.
+575475df9 add support of swiotlb and virtio
+59f1c1950 fix bug: cvm address translation should be sv39v2 rather than sv39.
+bb6fc94bc support the feature of dynamically resizing bitmap and pageowntable.
+f5d321f04 Add --cvm options.
+31fe09e9e update code form & support swiotlb params configure.
+595c12ad1 Activate CMode to distinguish cvm codes.
+1ef8e912e fix bug of reclaim confidential memory && support configure swiotlb for each CVM.
+44650a3ee fix bug about memory leak.
+2a269748e Support multi-level Ownership table and refilling confidential memory pool.
+00c10ffaa fix the bug:common vm execauted the function of refill_KVM_memory_pool.
+03f3ebb11 modify memory allocation and destroy to support recycle cm dynamically.
+0f3b5948e modify functions return values and cvm metadata allocation.

@@ -97,7 +97,7 @@ static int svc_release(struct socket *sock)
 	return 0;
 }
 
-static int svc_bind(struct socket *sock, struct sockaddr *sockaddr,
+static int svc_bind(struct socket *sock, struct sockaddr_unsized *sockaddr,
 		    int sockaddr_len)
 {
 	DEFINE_WAIT(wait);
@@ -153,7 +153,7 @@ out:
 	return error;
 }
 
-static int svc_connect(struct socket *sock, struct sockaddr *sockaddr,
+static int svc_connect(struct socket *sock, struct sockaddr_unsized *sockaddr,
 		       int sockaddr_len, int flags)
 {
 	DEFINE_WAIT(wait);
@@ -324,8 +324,8 @@ out:
 	return error;
 }
 
-static int svc_accept(struct socket *sock, struct socket *newsock, int flags,
-		      bool kern)
+static int svc_accept(struct socket *sock, struct socket *newsock,
+		      struct proto_accept_arg *arg)
 {
 	struct sock *sk = sock->sk;
 	struct sk_buff *skb;
@@ -336,7 +336,7 @@ static int svc_accept(struct socket *sock, struct socket *newsock, int flags,
 
 	lock_sock(sk);
 
-	error = svc_create(sock_net(sk), newsock, 0, kern);
+	error = svc_create(sock_net(sk), newsock, 0, arg->kern);
 	if (error)
 		goto out;
 
@@ -355,7 +355,7 @@ static int svc_accept(struct socket *sock, struct socket *newsock, int flags,
 				error = -sk->sk_err;
 				break;
 			}
-			if (flags & O_NONBLOCK) {
+			if (arg->flags & O_NONBLOCK) {
 				error = -EAGAIN;
 				break;
 			}

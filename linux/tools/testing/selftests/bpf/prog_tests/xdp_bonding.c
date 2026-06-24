@@ -17,7 +17,7 @@
 #include "network_helpers.h"
 #include <linux/if_bonding.h>
 #include <linux/limits.h>
-#include <linux/udp.h>
+#include <netinet/udp.h>
 #include <uapi/linux/netdev.h>
 
 #include "xdp_dummy.skel.h"
@@ -511,7 +511,7 @@ static void test_xdp_bonding_features(struct skeletons *skeletons)
 	if (!ASSERT_OK(err, "bond bpf_xdp_query"))
 		goto out;
 
-	if (!ASSERT_EQ(query_opts.feature_flags, NETDEV_XDP_ACT_MASK,
+	if (!ASSERT_EQ(query_opts.feature_flags, 0,
 		       "bond query_opts.feature_flags"))
 		goto out;
 
@@ -601,13 +601,68 @@ static void test_xdp_bonding_features(struct skeletons *skeletons)
 	if (!ASSERT_OK(err, "bond bpf_xdp_query"))
 		goto out;
 
-	ASSERT_EQ(query_opts.feature_flags, NETDEV_XDP_ACT_MASK,
+	ASSERT_EQ(query_opts.feature_flags, 0,
 		  "bond query_opts.feature_flags");
 out:
 	bpf_link__destroy(link);
 	system("ip link del veth0");
 	system("ip link del veth2");
 	system("ip link del bond");
+}
+
+/*
+ * Test that changing xmit_hash_policy to vlan+srcmac is rejected when a
+ * native XDP program is loaded on a bond in 802.3ad or balance-xor mode.
+ * These modes support XDP only when xmit_hash_policy != vlan+srcmac; freely
+ * changing the policy creates an inconsistency that triggers a WARNING in
+ * dev_xdp_uninstall() during device teardown.
+ */
+static void test_xdp_bonding_xmit_policy_compat(struct skeletons *skeletons)
+{
+	struct nstoken *nstoken = NULL;
+	int bond_ifindex = -1;
+	int xdp_fd, err;
+
+	SYS(out, "ip netns add ns_xmit_policy");
+	nstoken = open_netns("ns_xmit_policy");
+	if (!ASSERT_OK_PTR(nstoken, "open ns_xmit_policy"))
+		goto out;
+
+	/* 802.3ad with layer2+3 policy: native XDP is supported */
+	SYS(out, "ip link add bond0 type bond mode 802.3ad xmit_hash_policy layer2+3");
+	SYS(out, "ip link add veth0 type veth peer name veth0p");
+	SYS(out, "ip link set veth0 master bond0");
+	SYS(out, "ip link set bond0 up");
+
+	bond_ifindex = if_nametoindex("bond0");
+	if (!ASSERT_GT(bond_ifindex, 0, "bond0 ifindex"))
+		goto out;
+
+	xdp_fd = bpf_program__fd(skeletons->xdp_dummy->progs.xdp_dummy_prog);
+	if (!ASSERT_GE(xdp_fd, 0, "xdp_dummy fd"))
+		goto out;
+
+	err = bpf_xdp_attach(bond_ifindex, xdp_fd, XDP_FLAGS_DRV_MODE, NULL);
+	if (!ASSERT_OK(err, "attach XDP to bond0"))
+		goto out;
+
+	/* With XDP loaded, switching to vlan+srcmac must be rejected */
+	err = system("ip link set bond0 type bond xmit_hash_policy vlan+srcmac 2>/dev/null");
+	ASSERT_NEQ(err, 0, "vlan+srcmac change with XDP loaded should fail");
+
+	/* Detach XDP first, then the same change must succeed */
+	ASSERT_OK(bpf_xdp_detach(bond_ifindex, XDP_FLAGS_DRV_MODE, NULL),
+		  "detach XDP from bond0");
+
+	bond_ifindex = -1;
+	err = system("ip link set bond0 type bond xmit_hash_policy vlan+srcmac 2>/dev/null");
+	ASSERT_OK(err, "vlan+srcmac change without XDP should succeed");
+
+out:
+	if (bond_ifindex > 0)
+		bpf_xdp_detach(bond_ifindex, XDP_FLAGS_DRV_MODE, NULL);
+	close_netns(nstoken);
+	SYS_NOFAIL("ip netns del ns_xmit_policy");
 }
 
 static int libbpf_debug_print(enum libbpf_print_level level,
@@ -676,6 +731,9 @@ void serial_test_xdp_bonding(void)
 				test_case->mode,
 				test_case->xmit_policy);
 	}
+
+	if (test__start_subtest("xdp_bonding_xmit_policy_compat"))
+		test_xdp_bonding_xmit_policy_compat(&skeletons);
 
 	if (test__start_subtest("xdp_bonding_redirect_multi"))
 		test_xdp_bonding_redirect_multi(&skeletons);

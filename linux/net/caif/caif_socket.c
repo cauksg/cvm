@@ -27,6 +27,7 @@
 #include <net/caif/caif_dev.h>
 #include <net/caif/cfpkt.h>
 
+MODULE_DESCRIPTION("ST-Ericsson CAIF modem protocol socket support (AF_CAIF)");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_NETPROTO(AF_CAIF);
 
@@ -733,7 +734,7 @@ bad_sol:
  *  o sock->state: holds the SS_* socket state and is updated by connect and
  *	disconnect.
  */
-static int caif_connect(struct socket *sock, struct sockaddr *uaddr,
+static int caif_connect(struct socket *sock, struct sockaddr_unsized *uaddr,
 			int addr_len, int flags)
 {
 	struct sock *sk = sock->sk;

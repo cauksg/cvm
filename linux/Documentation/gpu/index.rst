@@ -13,17 +13,12 @@ GPU Driver Developer's Guide
    drm-usage-stats
    driver-uapi
    drm-client
+   drm-compute
    drivers
    backlight
    vga-switcheroo
    vgaarbiter
    automated_testing
+   implementation_guidelines
    todo
    rfc/index
-
-.. only::  subproject and html
-
-   Indices
-   =======
-
-   * :ref:`genindex`
