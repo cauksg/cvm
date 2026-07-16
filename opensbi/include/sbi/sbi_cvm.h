@@ -10,6 +10,8 @@
 
 #define TEE_NO_MEMORY 	-1
 #define CVM_ERROR		-2
+#define COVE_IO_VCPU_ANY	(~0ULL)
+#define COVE_IO_IRQ_IID_ANY	(~0ULL)
 
 #define CVM_HASH_SIZE 32
 
@@ -92,6 +94,7 @@ struct iie_cvm_sbi_params {
 	/* SWIOTLB */
 	unsigned long gpa;
 	unsigned long hpa;	
+	unsigned long device_id;
 	// struct kvm_vcpu *vcpu;
 	// struct iie_cvm_vcpu_sbi_params cvm_vcpu_sbi_params;
 };
@@ -103,6 +106,59 @@ struct iie_cvm_sbi_params_load {
 	unsigned long *src_hpa_array;
 	unsigned long des_gpa;
 	unsigned long count;
+};
+
+#define COVE_IO_MAX_TDIS	16
+#define COVE_IO_DEVICE_ANY	0
+#define COVE_IO_DEVICE_INVALID	(~0ULL)
+#define COVE_IO_DEVICE_TYPE_SHIFT	56
+#define COVE_IO_DEVICE_TYPE_MASK	(0xffULL << COVE_IO_DEVICE_TYPE_SHIFT)
+#define COVE_IO_DEVICE_TYPE_VIRTIO_MMIO	1
+#define COVE_IO_DEVICE_TYPE_PCI_RID	2
+
+enum cove_io_tdi_op {
+	COVE_IO_TDI_REGISTER		= 0,
+	COVE_IO_TDI_UNREGISTER		= 1,
+	COVE_IO_TDI_ADD_MMIO		= 2,
+	COVE_IO_TDI_RECLAIM_MMIO	= 3,
+	COVE_IO_TDI_BIND		= 4,
+	COVE_IO_TDI_UNBIND		= 5,
+	COVE_IO_TDI_DMA_MAP		= 6,
+	COVE_IO_TDI_DMA_UNMAP		= 7,
+	COVE_IO_TDI_IRQ_BIND		= 8,
+	COVE_IO_TDI_IRQ_UNBIND		= 9,
+	COVE_IO_TDI_ACCEPT_START		= 10,
+	COVE_IO_TDI_STOP		= 11,
+	COVE_IO_TDI_GET_STATE		= 12,
+	COVE_IO_TDI_FIND_DMA		= 13,
+	COVE_IO_TDI_FIND_IRQ		= 14,
+	COVE_IO_TDI_FIND_MMIO		= 15,
+};
+
+enum cove_io_tdi_state {
+	COVE_IO_TDI_STATE_FREE		= 0,
+	COVE_IO_TDI_STATE_REGISTERED	= 1,
+	COVE_IO_TDI_STATE_BOUND		= 2,
+	COVE_IO_TDI_STATE_STARTED	= 3,
+	COVE_IO_TDI_STATE_STOPPING	= 4,
+};
+
+struct cove_io_tdi_sbi_params {
+	struct kvm_vmid *vmid_ptr;
+	u32 op;
+	u32 flags;
+	u64 tdi_id;
+	u64 generation;
+	u64 mmio_gpa;
+	u64 mmio_size;
+	u64 dma_gpa;
+	u64 dma_size;
+	u64 irq_id;
+	u64 irq_num;
+	u64 vcpu_id;
+	u64 irq_iid;
+	u64 device_id;
+	u64 state;
 };
 
 struct multi_key_manage_t {
@@ -268,6 +324,7 @@ struct cvm_list_params {
 struct iie_cvm_sbi_params_swiotlb{
 	unsigned long addr;
 	unsigned long size;
+	unsigned long device_id;
 };
 
 
@@ -306,6 +363,11 @@ int init_page_own_table(struct cvm_list_params* own_table);
 void mfree_cvm_page_only(paddr_t paddr, paddr_t* vmid_addr);
 int mfree_cvm_page(struct sbi_cvm* cvm, struct cvm_list_params *recycle_list);
 int init_swiotlb_params(struct iie_cvm_sbi_params_swiotlb *swiotlb, struct kvm_vmid *vmid_ptr);
+int cove_io_tdi_op(struct cove_io_tdi_sbi_params *params);
+int cove_io_dma_allowed(struct kvm_vmid *vmid_ptr, unsigned long device_id,
+			unsigned long gpa);
+int cove_io_irq_allowed(struct kvm_vmid *vmid_ptr, unsigned long irq);
+void cove_io_destroy_cvm(struct kvm_vmid *vmid_ptr);
 int recycle_memory(struct iie_cvm_sbi_params *cvm_sbi_params, struct cvm_list_params *recycle_list);
 int init_cvm_vcpu_rootptAndChunk(struct iie_cvm_sbi_params *cvm_sbi_params);
 

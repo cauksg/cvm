@@ -1672,9 +1672,67 @@ struct load_file {
 struct swiotlb {
 	unsigned long addr;
 	unsigned long size;
+	unsigned long device_id;
+	unsigned long iommu_group;
+};
+
+#define KVM_COVE_IO_MAX_TDIS	16
+#define KVM_COVE_IO_DEVICE_ANY	0
+#define KVM_COVE_IO_DEVICE_INVALID	(~0ULL)
+#define KVM_COVE_IO_IOMMU_GROUP_INVALID	(~0ULL)
+#define KVM_COVE_IO_DEVICE_TYPE_SHIFT	56
+#define KVM_COVE_IO_DEVICE_TYPE_MASK	(0xffULL << KVM_COVE_IO_DEVICE_TYPE_SHIFT)
+#define KVM_COVE_IO_DEVICE_TYPE_VIRTIO_MMIO	1
+#define KVM_COVE_IO_DEVICE_TYPE_PCI_RID		2
+#define KVM_COVE_IO_IRQ_IID_ANY	(~0ULL)
+
+enum kvm_cove_io_tdi_op {
+	KVM_COVE_IO_TDI_REGISTER	= 0,
+	KVM_COVE_IO_TDI_UNREGISTER	= 1,
+	KVM_COVE_IO_TDI_ADD_MMIO	= 2,
+	KVM_COVE_IO_TDI_RECLAIM_MMIO	= 3,
+	KVM_COVE_IO_TDI_BIND		= 4,
+	KVM_COVE_IO_TDI_UNBIND		= 5,
+	KVM_COVE_IO_TDI_DMA_MAP		= 6,
+	KVM_COVE_IO_TDI_DMA_UNMAP	= 7,
+	KVM_COVE_IO_TDI_IRQ_BIND	= 8,
+	KVM_COVE_IO_TDI_IRQ_UNBIND	= 9,
+	KVM_COVE_IO_TDI_ACCEPT_START	= 10,
+	KVM_COVE_IO_TDI_STOP		= 11,
+	KVM_COVE_IO_TDI_GET_STATE	= 12,
+	KVM_COVE_IO_TDI_FIND_DMA	= 13,
+	KVM_COVE_IO_TDI_FIND_IRQ	= 14,
+	KVM_COVE_IO_TDI_FIND_MMIO	= 15,
+};
+
+enum kvm_cove_io_tdi_state {
+	KVM_COVE_IO_TDI_STATE_FREE		= 0,
+	KVM_COVE_IO_TDI_STATE_REGISTERED	= 1,
+	KVM_COVE_IO_TDI_STATE_BOUND		= 2,
+	KVM_COVE_IO_TDI_STATE_STARTED		= 3,
+	KVM_COVE_IO_TDI_STATE_STOPPING		= 4,
+};
+
+struct kvm_cove_io_tdi {
+	__u32 op;
+	__u32 flags;
+	__u64 tdi_id;
+	__u64 generation;
+	__u64 mmio_gpa;
+	__u64 mmio_size;
+	__u64 dma_gpa;
+	__u64 dma_size;
+	__u64 irq_id;
+	__u64 irq_num;
+	__u64 vcpu_id;
+	__u64 device_id;
+	__u64 iommu_group;
+	__u64 state;
+	__u64 irq_iid;
 };
 
 #define KVM_LOAD_FILE		_IOWR(KVMIO, 0xf0, struct load_file)
 #define KVM_SET_SWIOTLB		_IOWR(KVMIO, 0xf1, struct swiotlb)
+#define KVM_COVE_IO_TDI_OP	_IOWR(KVMIO, 0xf2, struct kvm_cove_io_tdi)
 
 #endif /* __LINUX_KVM_H */

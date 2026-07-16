@@ -9,6 +9,7 @@
 
 #include <asm/cpufeature.h>
 #include <asm/insn.h>
+#include <cvm/iie-cvm-sbi.h>
 
 struct insn_func {
 	unsigned long mask;
@@ -453,6 +454,8 @@ int kvm_riscv_vcpu_mmio_load(struct kvm_vcpu *vcpu, struct kvm_run *run,
 	/* Fault address should be aligned to length of MMIO */
 	if (fault_addr & (len - 1))
 		return -EIO;
+	if (!kvm_riscv_cove_io_mmio_allowed(vcpu->kvm, fault_addr, len))
+		return -EACCES;
 
 	/* Save instruction decode info */
 	vcpu->arch.mmio_decode.insn = insn;
@@ -570,6 +573,8 @@ int kvm_riscv_vcpu_mmio_store(struct kvm_vcpu *vcpu, struct kvm_run *run,
 	/* Fault address should be aligned to length of MMIO */
 	if (fault_addr & (len - 1))
 		return -EIO;
+	if (!kvm_riscv_cove_io_mmio_allowed(vcpu->kvm, fault_addr, len))
+		return -EACCES;
 
 	/* Save instruction decode info */
 	vcpu->arch.mmio_decode.insn = insn;

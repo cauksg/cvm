@@ -11,6 +11,7 @@
 
 #include <linux/iommu.h>
 #include <linux/mm.h>
+#include <linux/errno.h>
 #include <linux/workqueue.h>
 #include <linux/poll.h>
 #include <linux/cdev.h>
@@ -203,6 +204,20 @@ static inline bool vfio_device_cdev_opened(struct vfio_device *device)
 {
 	return device->cdev_opened;
 }
+
+#if IS_ENABLED(CONFIG_VFIO_GROUP) && \
+	(IS_ENABLED(CONFIG_VFIO_CONTAINER) || IS_ENABLED(CONFIG_IOMMUFD))
+int vfio_device_dma_fault_recover(struct device *dev, dma_addr_t iova,
+				  int prot, phys_addr_t *phys, size_t *size);
+#else
+static inline int vfio_device_dma_fault_recover(struct device *dev,
+						dma_addr_t iova, int prot,
+						phys_addr_t *phys,
+						size_t *size)
+{
+	return -EOPNOTSUPP;
+}
+#endif
 
 /**
  * struct vfio_migration_ops - VFIO bus device driver migration callbacks

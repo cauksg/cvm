@@ -662,6 +662,7 @@ __iommu_copy_struct_to_user(const struct iommu_user_data *dst_data,
  */
 struct iommu_ops {
 	bool (*capable)(struct device *dev, enum iommu_cap);
+	bool (*cove_io_isolated_msi)(struct device *dev);
 	void *(*hw_info)(struct device *dev, u32 *length,
 			 enum iommu_hw_info_type *type);
 
@@ -899,6 +900,7 @@ static inline void iommu_iotlb_gather_init(struct iommu_iotlb_gather *gather)
 
 extern bool device_iommu_capable(struct device *dev, enum iommu_cap cap);
 extern bool iommu_group_has_isolated_msi(struct iommu_group *group);
+extern bool iommu_group_has_cove_io_isolated_msi(struct iommu_group *group);
 struct iommu_domain *iommu_paging_domain_alloc_flags(struct device *dev, unsigned int flags);
 static inline struct iommu_domain *iommu_paging_domain_alloc(struct device *dev)
 {
@@ -1205,6 +1207,11 @@ struct iommu_dirty_bitmap {};
 struct iommu_dirty_ops {};
 
 static inline bool device_iommu_capable(struct device *dev, enum iommu_cap cap)
+{
+	return false;
+}
+
+static inline bool iommu_group_has_cove_io_isolated_msi(struct iommu_group *group)
 {
 	return false;
 }

@@ -220,6 +220,7 @@ struct iommufd_device *iommufd_device_bind(struct iommufd_ctx *ictx,
 {
 	struct iommufd_device *idev;
 	struct iommufd_group *igroup;
+	bool isolated_msi, cove_io_isolated_msi;
 	int rc;
 
 	/*
@@ -239,8 +240,11 @@ struct iommufd_device *iommufd_device_bind(struct iommufd_ctx *ictx,
 	 * MemWr operation from the device (eg a simple DMA) cannot trigger an
 	 * interrupt outside this iommufd context.
 	 */
-	if (!iommufd_selftest_is_mock_dev(dev) &&
-	    !iommu_group_has_isolated_msi(igroup->group)) {
+	isolated_msi = iommufd_selftest_is_mock_dev(dev) ||
+		       iommu_group_has_isolated_msi(igroup->group);
+	cove_io_isolated_msi = !isolated_msi &&
+			       iommu_group_has_cove_io_isolated_msi(igroup->group);
+	if (!isolated_msi && !cove_io_isolated_msi) {
 		if (!allow_unsafe_interrupts) {
 			rc = -EPERM;
 			goto out_group_put;
@@ -252,6 +256,9 @@ struct iommufd_device *iommufd_device_bind(struct iommufd_ctx *ictx,
 			"Check that platform features like interrupt remapping are enabled. "
 			"Use the \"allow_unsafe_interrupts\" module parameter to override\n");
 	}
+	if (cove_io_isolated_msi)
+		dev_warn(dev,
+			 "using experimental COVE-IO RISC-V IOMMU MSI remap instead of generic isolated MSI\n");
 
 	rc = iommu_device_claim_dma_owner(dev, ictx);
 	if (rc)
@@ -321,6 +328,95 @@ bool iommufd_ctx_has_group(struct iommufd_ctx *ictx, struct iommu_group *group)
 	return false;
 }
 EXPORT_SYMBOL_NS_GPL(iommufd_ctx_has_group, "IOMMUFD");
+
+static struct iommufd_device *
+iommufd_get_device_by_dev(struct iommufd_ctx *ictx, struct device *dev)
+{
+	struct iommufd_object *obj;
+	struct iommufd_device *idev = NULL;
+	unsigned long index;
+
+	if (!ictx || !dev)
+		return ERR_PTR(-EINVAL);
+
+	xa_lock(&ictx->objects);
+	xa_for_each(&ictx->objects, index, obj) {
+		if (obj->type != IOMMUFD_OBJ_DEVICE)
+			continue;
+
+		idev = container_of(obj, struct iommufd_device, obj);
+		if (idev->dev != dev) {
+			idev = NULL;
+			continue;
+		}
+
+		if (!iommufd_lock_obj(obj))
+			idev = ERR_PTR(-ENODEV);
+		break;
+	}
+	xa_unlock(&ictx->objects);
+
+	return idev ?: ERR_PTR(-ENODEV);
+}
+
+int iommufd_device_dma_fault_recover(struct iommufd_ctx *ictx,
+				     struct device *dev, dma_addr_t iova,
+				     int prot, phys_addr_t *phys,
+				     size_t *size)
+{
+	struct iommufd_hwpt_paging *hwpt_paging;
+	struct iommufd_attach *attach;
+	struct iommufd_device *idev;
+	int rc;
+
+	if (phys)
+		*phys = 0;
+	if (size)
+		*size = 0;
+	if (!phys || !size)
+		return -EINVAL;
+
+	idev = iommufd_get_device_by_dev(ictx, dev);
+	if (IS_ERR(idev))
+		return PTR_ERR(idev);
+
+	mutex_lock(&idev->igroup->lock);
+	if (idev->destroying) {
+		rc = -ENODEV;
+		goto out_unlock;
+	}
+
+	attach = xa_load(&idev->igroup->pasid_attach, IOMMU_NO_PASID);
+	if (!attach || !xa_load(&attach->device_array, idev->obj.id)) {
+		rc = -ENODEV;
+		goto out_unlock;
+	}
+
+	hwpt_paging = find_hwpt_paging(attach->hwpt);
+	if (!hwpt_paging) {
+		rc = -EOPNOTSUPP;
+		goto out_unlock;
+	}
+	if (atomic_read(&attach->hwpt->attached_devices) != 1) {
+		/*
+		 * A recovered IOMMU PTE is installed into the HWPT/domain and
+		 * would become visible to every device sharing that domain.
+		 * Keep this prototype to one requester per recovered HWPT.
+		 */
+		rc = -EOPNOTSUPP;
+		goto out_unlock;
+	}
+
+	rc = iopt_cove_io_dma_fault_recover(&hwpt_paging->ioas->iopt,
+					    attach->hwpt->domain, iova, prot,
+					    phys, size);
+
+out_unlock:
+	mutex_unlock(&idev->igroup->lock);
+	iommufd_put_object(ictx, &idev->obj);
+	return rc;
+}
+EXPORT_SYMBOL_NS_GPL(iommufd_device_dma_fault_recover, "IOMMUFD");
 
 /**
  * iommufd_device_unbind - Undo iommufd_device_bind()
@@ -665,6 +761,7 @@ int iommufd_hw_pagetable_attach(struct iommufd_hw_pagetable *hwpt,
 	refcount_inc(&hwpt->obj.users);
 	WARN_ON(xa_is_err(xa_store(&attach->device_array, idev->obj.id,
 				   idev, GFP_KERNEL)));
+	atomic_inc(&hwpt->attached_devices);
 	mutex_unlock(&igroup->lock);
 	return 0;
 err_unresv:
@@ -690,6 +787,7 @@ iommufd_hw_pagetable_detach(struct iommufd_device *idev, ioasid_t pasid)
 	struct iommufd_hwpt_paging *hwpt_paging;
 	struct iommufd_hw_pagetable *hwpt;
 	struct iommufd_attach *attach;
+	struct iommufd_device *cur;
 
 	mutex_lock(&igroup->lock);
 	attach = xa_load(&igroup->pasid_attach, pasid);
@@ -701,7 +799,12 @@ iommufd_hw_pagetable_detach(struct iommufd_device *idev, ioasid_t pasid)
 	hwpt = attach->hwpt;
 	hwpt_paging = find_hwpt_paging(hwpt);
 
-	xa_erase(&attach->device_array, idev->obj.id);
+	cur = xa_erase(&attach->device_array, idev->obj.id);
+	if (!cur) {
+		mutex_unlock(&igroup->lock);
+		return NULL;
+	}
+	atomic_dec(&hwpt->attached_devices);
 	if (xa_empty(&attach->device_array)) {
 		iommufd_hwpt_detach_device(hwpt, idev, pasid);
 		xa_erase(&igroup->pasid_attach, pasid);
@@ -838,6 +941,8 @@ iommufd_device_do_replace(struct iommufd_device *idev, ioasid_t pasid,
 	if (num_devices > 1)
 		WARN_ON(refcount_sub_and_test(num_devices - 1,
 					      &old_hwpt->obj.users));
+	atomic_add(num_devices, &hwpt->attached_devices);
+	atomic_sub(num_devices, &old_hwpt->attached_devices);
 	mutex_unlock(&igroup->lock);
 
 	/* Caller must destroy old_hwpt */

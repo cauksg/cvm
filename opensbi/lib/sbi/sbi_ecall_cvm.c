@@ -26,7 +26,7 @@ static int sbi_ecall_cvm_handler(unsigned long extid, unsigned long funcid,
 		break;
 	case SBI_EXT_CVM_RUN_VCPU:
 		ret = sbi_cvm_run_vcpu(regs, (void *)regs->a0, regs->a1, regs->a2, regs->a3);
-		out->skip_regs_update = true;
+		out->skip_regs_update = !ret;
 		break;
 	case SBI_EXT_CVM_FINALIZE:
 		ret = sbi_cvm_create_finalize((void *)regs->a0);
@@ -66,6 +66,10 @@ static int sbi_ecall_cvm_handler(unsigned long extid, unsigned long funcid,
 		break;
 	case SBI_EXT_RECYCLE_MEMORY:
 		ret = recycle_memory((void *)regs->a0, (void *)regs->a1);
+		break;
+	case SBI_EXT_CVM_COVE_IO_TDI_OP:
+		ret = cove_io_tdi_op((void *)regs->a0);
+		break;
 	default:
 		break;
 	}

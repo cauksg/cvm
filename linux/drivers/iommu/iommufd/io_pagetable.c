@@ -314,6 +314,7 @@ static int iopt_alloc_area_pages(struct io_pagetable *iopt,
 				      elm->start_byte, elm->length, iommu_prot);
 		if (rc)
 			goto out_unlock;
+		elm->area->cove_io_lazy = flags & IOPT_COVE_IO_LAZY;
 		iova += elm->length;
 	}
 
@@ -371,6 +372,19 @@ err_undo:
 	return rc;
 }
 
+static bool iopt_has_cove_io_lazy_area(struct io_pagetable *iopt)
+{
+	struct iopt_area *area;
+
+	lockdep_assert_held(&iopt->iova_rwsem);
+
+	for (area = iopt_area_iter_first(iopt, 0, ULONG_MAX); area;
+	     area = iopt_area_iter_next(area, 0, ULONG_MAX))
+		if (area->cove_io_lazy)
+			return true;
+	return false;
+}
+
 int iopt_map_pages(struct io_pagetable *iopt, struct list_head *pages_list,
 		   unsigned long length, unsigned long *dst_iova,
 		   int iommu_prot, unsigned int flags)
@@ -384,9 +398,19 @@ int iopt_map_pages(struct io_pagetable *iopt, struct list_head *pages_list,
 		return rc;
 
 	down_read(&iopt->domains_rwsem);
-	rc = iopt_fill_domains_pages(pages_list);
-	if (rc)
+	if (!(flags & IOPT_COVE_IO_LAZY)) {
+		rc = iopt_fill_domains_pages(pages_list);
+		if (rc)
+			goto out_unlock_domains;
+	} else if (iopt->next_domain_id > 1) {
+		/*
+		 * Runtime COVE-IO recovery authorizes one requester/domain at a
+		 * time. Do not create lazy ranges in an IOAS whose recovered
+		 * pages would need to be replicated across multiple HWPTs.
+		 */
+		rc = -EOPNOTSUPP;
 		goto out_unlock_domains;
+	}
 
 	down_write(&iopt->iova_rwsem);
 	list_for_each_entry(elm, pages_list, next) {
@@ -659,6 +683,9 @@ static int iopt_clear_dirty_data(struct io_pagetable *iopt,
 	for (area = iopt_area_iter_first(iopt, 0, ULONG_MAX); area;
 	     area = iopt_area_iter_next(area, 0, ULONG_MAX)) {
 		if (!area->pages)
+			continue;
+
+		if (!area->storage_domain)
 			continue;
 
 		ret = ops->read_and_clear_dirty(domain, iopt_area_iova(area),
@@ -990,7 +1017,7 @@ static void iopt_unfill_domain(struct io_pagetable *iopt,
 		     area = iopt_area_iter_next(area, 0, ULONG_MAX)) {
 			struct iopt_pages *pages = area->pages;
 
-			if (!pages)
+			if (!pages || !area->storage_domain)
 				continue;
 
 			mutex_lock(&pages->mutex);
@@ -1015,7 +1042,7 @@ static void iopt_unfill_domain(struct io_pagetable *iopt,
 	     area = iopt_area_iter_next(area, 0, ULONG_MAX)) {
 		struct iopt_pages *pages = area->pages;
 
-		if (!pages)
+		if (!pages || !area->storage_domain)
 			continue;
 
 		mutex_lock(&pages->mutex);
@@ -1051,7 +1078,7 @@ static int iopt_fill_domain(struct io_pagetable *iopt,
 	     area = iopt_area_iter_next(area, 0, ULONG_MAX)) {
 		struct iopt_pages *pages = area->pages;
 
-		if (!pages)
+		if (!pages || (area->cove_io_lazy && !area->storage_domain))
 			continue;
 
 		guard(mutex)(&pages->mutex);
@@ -1145,6 +1172,17 @@ int iopt_table_add_domain(struct io_pagetable *iopt,
 			rc = -EEXIST;
 			goto out_unlock;
 		}
+	}
+
+	if (iopt->next_domain_id && iopt_has_cove_io_lazy_area(iopt)) {
+		/*
+		 * Lazy COVE-IO areas may contain pages authorized for the
+		 * existing requester. The iopt storage-domain model assumes a
+		 * filled area is mirrored into every domain, so keep such IOASes
+		 * single-domain until requester-scoped recovery is implemented.
+		 */
+		rc = -EOPNOTSUPP;
+		goto out_unlock;
 	}
 
 	/*
@@ -1367,8 +1405,10 @@ static int iopt_area_split(struct iopt_area *area, unsigned long iova)
 
 	lhs->storage_domain = area->storage_domain;
 	lhs->pages = area->pages;
+	lhs->cove_io_lazy = area->cove_io_lazy;
 	rhs->storage_domain = area->storage_domain;
 	rhs->pages = area->pages;
+	rhs->cove_io_lazy = area->cove_io_lazy;
 	kref_get(&rhs->pages->kref);
 	kfree(area);
 	mutex_unlock(&pages->mutex);
@@ -1388,6 +1428,115 @@ err_unlock:
 	kfree(rhs);
 err_free_lhs:
 	kfree(lhs);
+	return rc;
+}
+
+static bool iopt_domain_contains(struct io_pagetable *iopt,
+				 struct iommu_domain *domain)
+{
+	struct iommu_domain *iter_domain;
+	unsigned long index;
+
+	lockdep_assert_held(&iopt->domains_rwsem);
+
+	xa_for_each(&iopt->domains, index, iter_domain)
+		if (iter_domain == domain)
+			return true;
+	return false;
+}
+
+int iopt_cove_io_dma_fault_recover(struct io_pagetable *iopt,
+				   struct iommu_domain *domain,
+				   unsigned long user_iova, int prot,
+				   phys_addr_t *phys, size_t *size)
+{
+	unsigned long iova = ALIGN_DOWN(user_iova, PAGE_SIZE);
+	unsigned long last = iova + PAGE_SIZE - 1;
+	struct iopt_area *area;
+	int rc = 0;
+
+	if (!domain || !phys || !size)
+		return -EINVAL;
+
+	*phys = 0;
+	*size = 0;
+
+	if (last < iova)
+		return -EOVERFLOW;
+
+	down_read(&iopt->domains_rwsem);
+	down_write(&iopt->iova_rwsem);
+
+	if (!iopt_domain_contains(iopt, domain)) {
+		rc = -ENODEV;
+		goto out_unlock;
+	}
+	if (iopt->next_domain_id != 1) {
+		/*
+		 * COVE-IO authorizes one requester at a time. The io_pagetable
+		 * domain-fill helpers replicate a recovered area into all IOAS
+		 * domains, so keep this prototype to a single attached HWPT.
+		 */
+		rc = -EOPNOTSUPP;
+		goto out_unlock;
+	}
+
+	area = iopt_area_iter_first(iopt, iova, iova);
+	if (!area || !area->pages || iopt_area_iova(area) > iova ||
+	    iopt_area_last_iova(area) < last) {
+		rc = area && !area->pages ? -EBUSY : -ENOENT;
+		goto out_unlock;
+	}
+
+	if (!area->cove_io_lazy) {
+		rc = -EOPNOTSUPP;
+		goto out_unlock;
+	}
+
+	if ((area->iommu_prot & prot) != prot) {
+		rc = -EPERM;
+		goto out_unlock;
+	}
+
+	if (iova > iopt_area_iova(area)) {
+		rc = iopt_area_split(area, iova - 1);
+		if (rc)
+			goto out_unlock;
+		area = iopt_area_iter_first(iopt, iova, iova);
+		if (WARN_ON(!area)) {
+			rc = -EINVAL;
+			goto out_unlock;
+		}
+	}
+
+	if (last < iopt_area_last_iova(area)) {
+		rc = iopt_area_split(area, last);
+		if (rc)
+			goto out_unlock;
+		area = iopt_area_iter_first(iopt, iova, iova);
+		if (WARN_ON(!area)) {
+			rc = -EINVAL;
+			goto out_unlock;
+		}
+	}
+
+	if (WARN_ON(iopt_area_length(area) != PAGE_SIZE)) {
+		rc = -EINVAL;
+		goto out_unlock;
+	}
+
+	if (!area->storage_domain) {
+		rc = iopt_area_fill_domains(area, area->pages);
+		if (rc)
+			goto out_unlock;
+	}
+
+	*phys = iommu_iova_to_phys(domain, iova);
+	*size = PAGE_SIZE;
+
+out_unlock:
+	up_write(&iopt->iova_rwsem);
+	up_read(&iopt->domains_rwsem);
 	return rc;
 }
 

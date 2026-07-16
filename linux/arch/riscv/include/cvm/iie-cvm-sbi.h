@@ -24,6 +24,7 @@
 #define SBI_EXT_CVM_REFILL_MEMORY_POOL		0xf
 #define SBI_EXT_CVM_RETRY_LOAD			0x10
 #define SBI_EXT_RECYCLE_MEMORY			0x11
+#define SBI_EXT_CVM_COVE_IO_TDI_OP		0x12
 #define SBI_EXT_CVM_TEST			0xffff
 
 struct iie_cvm_vcpu_sbi_params {
@@ -42,6 +43,7 @@ struct iie_cvm_sbi_params {
 
 	unsigned long gpa;
 	unsigned long hpa;
+	unsigned long device_id;
 };
 
 struct cvm_list_params {
@@ -61,8 +63,27 @@ struct iie_cvm_sbi_params_load {
 
 struct swiotlb_node {
 	struct swiotlb sw;
+	struct kvm *kvm;
 	unsigned long *vmid;
 	struct swiotlb_node *next;
+};
+
+struct cove_io_tdi_sbi_params {
+	struct kvm_vmid *vmid_ptr;
+	u32 op;
+	u32 flags;
+	u64 tdi_id;
+	u64 generation;
+	u64 mmio_gpa;
+	u64 mmio_size;
+	u64 dma_gpa;
+	u64 dma_size;
+	u64 irq_id;
+	u64 irq_num;
+	u64 vcpu_id;
+	u64 irq_iid;
+	u64 device_id;
+	u64 state;
 };
 
 struct cvm_mem_chunk_infor {
@@ -83,13 +104,47 @@ struct cvm_mem_chunk_infor {
 #define K(x) ((x) << (PAGE_SHIFT - 10))
 #endif
 
-#define TEE_NO_MEMORY		-1
-#define CVM_ERROR		-2
+	#define TEE_NO_MEMORY		-1
+	#define CVM_ERROR		-2
+	#define KVM_COVE_IO_VCPU_ANY	(~0ULL)
 
 int cvm_mem_manege_init(void);
 int refill_KVM_memory_pool(void);
 void reset_KVM_memory_pool_refill_count(void);
 int kvm_vm_ioctl_swiotlb(struct kvm *kvm, void __user *argp);
+int kvm_vm_ioctl_cove_io_tdi(struct kvm *kvm, void __user *argp);
 int kvm_riscv_destroy_sw_node(struct kvm *kvm);
+bool kvm_riscv_cove_io_mmio_allowed(struct kvm *kvm, unsigned long gpa,
+				    unsigned long len);
+bool kvm_riscv_cove_io_dma_allowed(struct kvm *kvm, unsigned long device_id,
+				   unsigned long gpa);
+bool kvm_riscv_cove_io_irq_allowed(struct kvm *kvm, unsigned int irq);
+bool kvm_riscv_cove_io_irq_target_allowed(struct kvm *kvm, unsigned int irq,
+					  u64 vcpu_id, u64 irq_iid);
+bool kvm_riscv_cove_io_irq_target_device_allowed(struct kvm *kvm,
+						 unsigned int irq,
+						 u64 vcpu_id,
+						 u64 irq_iid,
+						 u64 device_id);
+int kvm_riscv_cove_io_iommu_fault_check(u32 devid, unsigned long iova);
+void kvm_riscv_cove_io_destroy_vm(struct kvm *kvm);
+
+#if IS_ENABLED(CONFIG_RISCV_IOMMU)
+int riscv_iommu_cove_io_mrif_bind(u64 device_id, struct kvm *kvm,
+				  u64 vcpu_id, u64 irq_iid);
+void riscv_iommu_cove_io_mrif_unbind(u64 device_id);
+void riscv_iommu_cove_io_mrif_unbind_vm(struct kvm *kvm);
+void riscv_iommu_cove_io_mrif_refresh(struct kvm *kvm, u64 vcpu_id);
+#else
+static inline int riscv_iommu_cove_io_mrif_bind(u64 device_id, struct kvm *kvm,
+						u64 vcpu_id, u64 irq_iid)
+{
+	return 0;
+}
+static inline void riscv_iommu_cove_io_mrif_unbind(u64 device_id) { }
+static inline void riscv_iommu_cove_io_mrif_unbind_vm(struct kvm *kvm) { }
+static inline void riscv_iommu_cove_io_mrif_refresh(struct kvm *kvm,
+						    u64 vcpu_id) { }
+#endif
 
 #endif

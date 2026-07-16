@@ -61,6 +61,7 @@ void kvm_arch_destroy_vm(struct kvm *kvm)
 		unsigned long i;
 
 		reset_KVM_memory_pool_refill_count();
+		kvm_riscv_cove_io_destroy_vm(kvm);
 
 		cvm_sbi_params = kzalloc(sizeof(*cvm_sbi_params), GFP_KERNEL);
 		ret_params = kzalloc(sizeof(*ret_params), GFP_KERNEL);
@@ -119,7 +120,20 @@ int kvm_vm_ioctl_irq_line(struct kvm *kvm, struct kvm_irq_level *irql,
 	if (!irqchip_in_kernel(kvm))
 		return -ENXIO;
 
+	if (!kvm_riscv_cove_io_irq_allowed(kvm, irql->irq))
+		return -EPERM;
+
 	return kvm_riscv_aia_inject_irq(kvm, irql->irq, irql->level);
+}
+
+static u64 kvm_riscv_cove_io_msi_device_id(
+	struct kvm_kernel_irq_routing_entry *e)
+{
+	if (!(e->msi.flags & KVM_MSI_VALID_DEVID))
+		return KVM_COVE_IO_DEVICE_ANY;
+
+	return ((u64)KVM_COVE_IO_DEVICE_TYPE_PCI_RID <<
+		KVM_COVE_IO_DEVICE_TYPE_SHIFT) | e->msi.devid;
 }
 
 int kvm_set_msi(struct kvm_kernel_irq_routing_entry *e,
@@ -137,6 +151,22 @@ int kvm_set_msi(struct kvm_kernel_irq_routing_entry *e,
 	msi.flags = e->msi.flags;
 	msi.devid = e->msi.devid;
 
+	if (kvm->cmode && irqchip_in_kernel(kvm)) {
+		u64 vcpu_id;
+		u64 device_id = kvm_riscv_cove_io_msi_device_id(e);
+
+		if (kvm_riscv_aia_msi_target_vcpu(kvm, &msi, &vcpu_id))
+			return -EPERM;
+		if (!kvm_riscv_cove_io_irq_target_device_allowed(kvm,
+								  e->gsi,
+								  vcpu_id,
+								  msi.data,
+								  device_id))
+			return -EPERM;
+	} else if (!kvm_riscv_cove_io_irq_allowed(kvm, e->gsi)) {
+		return -EPERM;
+	}
+
 	return kvm_riscv_aia_inject_msi(kvm, &msi);
 }
 
@@ -144,6 +174,9 @@ static int kvm_riscv_set_irq(struct kvm_kernel_irq_routing_entry *e,
 			     struct kvm *kvm, int irq_source_id,
 			     int level, bool line_status)
 {
+	if (!kvm_riscv_cove_io_irq_allowed(kvm, e->irqchip.pin))
+		return -EPERM;
+
 	return kvm_riscv_aia_inject_irq(kvm, e->irqchip.pin, level);
 }
 
@@ -209,6 +242,8 @@ int kvm_arch_set_irq_inatomic(struct kvm_kernel_irq_routing_entry *e,
 			      bool line_status)
 {
 	if (!level)
+		return -EWOULDBLOCK;
+	if (kvm->cmode)
 		return -EWOULDBLOCK;
 
 	switch (e->type) {

@@ -5927,6 +5927,12 @@ static long kvm_vm_ioctl(struct file *filp,
 		else
 			r = kvm_vm_ioctl_swiotlb(kvm, argp);
 		break;
+	case KVM_COVE_IO_TDI_OP:
+		if (!kvm->cmode)
+			r = -EINVAL;
+		else
+			r = kvm_vm_ioctl_cove_io_tdi(kvm, argp);
+		break;
 #endif
 #ifdef CONFIG_KVM_GUEST_MEMFD
 	case KVM_CREATE_GUEST_MEMFD: {

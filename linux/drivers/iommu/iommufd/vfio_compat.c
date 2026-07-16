@@ -159,11 +159,13 @@ int iommufd_vfio_ioas(struct iommufd_ucmd *ucmd)
 static int iommufd_vfio_map_dma(struct iommufd_ctx *ictx, unsigned int cmd,
 				void __user *arg)
 {
-	u32 supported_flags = VFIO_DMA_MAP_FLAG_READ | VFIO_DMA_MAP_FLAG_WRITE;
+	u32 supported_flags = VFIO_DMA_MAP_FLAG_READ | VFIO_DMA_MAP_FLAG_WRITE |
+			      VFIO_DMA_MAP_FLAG_COVE_IO_LAZY;
 	size_t minsz = offsetofend(struct vfio_iommu_type1_dma_map, size);
 	struct vfio_iommu_type1_dma_map map;
 	int iommu_prot = IOMMU_CACHE;
 	struct iommufd_ioas *ioas;
+	unsigned int flags = 0;
 	unsigned long iova;
 	int rc;
 
@@ -177,6 +179,8 @@ static int iommufd_vfio_map_dma(struct iommufd_ctx *ictx, unsigned int cmd,
 		iommu_prot |= IOMMU_READ;
 	if (map.flags & VFIO_DMA_MAP_FLAG_WRITE)
 		iommu_prot |= IOMMU_WRITE;
+	if (map.flags & VFIO_DMA_MAP_FLAG_COVE_IO_LAZY)
+		flags |= IOPT_COVE_IO_LAZY;
 
 	ioas = get_compat_ioas(ictx);
 	if (IS_ERR(ioas))
@@ -189,7 +193,7 @@ static int iommufd_vfio_map_dma(struct iommufd_ctx *ictx, unsigned int cmd,
 	 */
 	iova = map.iova;
 	rc = iopt_map_user_pages(ictx, &ioas->iopt, &iova, u64_to_user_ptr(map.vaddr),
-				 map.size, iommu_prot, 0);
+				 map.size, iommu_prot, flags);
 	iommufd_put_object(ictx, &ioas->obj);
 	return rc;
 }

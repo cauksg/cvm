@@ -569,6 +569,39 @@ int kvm_riscv_aia_inject_msi_by_id(struct kvm *kvm, u32 hart_index,
 	return 0;
 }
 
+int kvm_riscv_aia_msi_target_vcpu(struct kvm *kvm, struct kvm_msi *msi,
+				  u64 *vcpu_id)
+{
+	gpa_t tppn, ippn;
+	unsigned long idx;
+	struct kvm_vcpu *vcpu;
+	struct kvm_aia *aia = &kvm->arch.aia;
+	gpa_t target = (((gpa_t)msi->address_hi) << 32) | msi->address_lo;
+
+	/* Proceed only if AIA was initialized successfully */
+	if (!kvm_riscv_aia_initialized(kvm))
+		return -EBUSY;
+
+	/* Convert target address to target PPN */
+	tppn = target >> IMSIC_MMIO_PAGE_SHIFT;
+
+	/* Extract and clear Guest ID from target PPN */
+	tppn &= ~((gpa_t)(BIT(aia->nr_guest_bits) - 1));
+
+	/* Inject MSI to matching VCPU */
+	kvm_for_each_vcpu(idx, vcpu, kvm) {
+		ippn = vcpu->arch.aia_context.imsic_addr >>
+					IMSIC_MMIO_PAGE_SHIFT;
+		if (ippn == tppn) {
+			if (vcpu_id)
+				*vcpu_id = vcpu->vcpu_id;
+			return 0;
+		}
+	}
+
+	return -ENOENT;
+}
+
 int kvm_riscv_aia_inject_msi(struct kvm *kvm, struct kvm_msi *msi)
 {
 	gpa_t tppn, ippn;

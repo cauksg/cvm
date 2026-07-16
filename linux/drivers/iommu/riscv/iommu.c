@@ -14,17 +14,36 @@
 
 #include <linux/acpi.h>
 #include <linux/acpi_rimt.h>
+#include <linux/bitops.h>
 #include <linux/compiler.h>
 #include <linux/crash_dump.h>
 #include <linux/init.h>
 #include <linux/iommu.h>
 #include <linux/iopoll.h>
+#include <linux/kconfig.h>
 #include <linux/kernel.h>
+#include <linux/moduleparam.h>
+#include <linux/mm.h>
+#include <linux/overflow.h>
 #include <linux/pci.h>
+#include <linux/pci-ats.h>
+#include <linux/irqchip/riscv-imsic.h>
+#include <linux/vfio.h>
+
+#if IS_REACHABLE(CONFIG_KVM)
+#include <asm/kvm_aia.h>
+#include <cvm/iie-cvm-sbi.h>
+#endif
 
 #include "../iommu-pages.h"
 #include "iommu-bits.h"
 #include "iommu.h"
+
+#if IS_REACHABLE(CONFIG_KVM)
+static int riscv_iommu_cove_io_fault_recover(struct riscv_iommu_device *iommu,
+					     u32 devid, unsigned long iova,
+					     phys_addr_t *phys, size_t *size);
+#endif
 
 /* Timeouts in [us] */
 #define RISCV_IOMMU_QCSR_TIMEOUT	150000
@@ -35,6 +54,21 @@
 /* Number of entries per CMD/FLT queue, should be <= INT_MAX */
 #define RISCV_IOMMU_DEF_CQ_COUNT	8192
 #define RISCV_IOMMU_DEF_FQ_COUNT	4096
+#define RISCV_IOMMU_DEF_PQ_COUNT	4096
+
+static bool cove_io_isolated_msi;
+module_param(cove_io_isolated_msi, bool, 0644);
+MODULE_PARM_DESC(cove_io_isolated_msi,
+		 "Enable experimental COVE-IO isolated MSI reporting using RISC-V IOMMU MSI basic-mode remap. This is not a generic VFIO interrupt-remapping replacement.");
+static bool cove_io_mrif;
+module_param(cove_io_mrif, bool, 0644);
+MODULE_PARM_DESC(cove_io_mrif,
+		 "Enable experimental COVE-IO RISC-V IOMMU MRIF posted-interrupt remap for VFIO PCI devices.");
+static bool cove_io_pri;
+module_param(cove_io_pri, bool, 0644);
+MODULE_PARM_DESC(cove_io_pri,
+		 "Enable experimental COVE-IO PCIe PRI page-request recovery on RISC-V IOMMU.");
+static DEFINE_MUTEX(riscv_iommu_cove_io_msi_lock);
 
 /* RISC-V IOMMU PPN <> PHYS address conversions, PHYS <=> PPN[53:10] */
 #define phys_to_ppn(pa)  (((pa) >> 2) & (((1ULL << 44) - 1) << 10))
@@ -516,12 +550,163 @@ static void riscv_iommu_fault(struct riscv_iommu_device *iommu,
 {
 	unsigned int err = FIELD_GET(RISCV_IOMMU_FQ_HDR_CAUSE, event->hdr);
 	unsigned int devid = FIELD_GET(RISCV_IOMMU_FQ_HDR_DID, event->hdr);
+#if IS_REACHABLE(CONFIG_KVM)
+	int cove_io;
+	phys_addr_t phys = 0;
+	size_t map_size = 0;
+	int rc;
+#endif
 
-	/* Placeholder for future fault handling implementation, report only. */
-	if (err)
+	if (!err)
+		return;
+
+#if IS_REACHABLE(CONFIG_KVM)
+	cove_io = kvm_riscv_cove_io_iommu_fault_check(devid, event->iotval);
+	if (cove_io >= 0) {
+		if (cove_io) {
+			rc = riscv_iommu_cove_io_fault_recover(iommu, devid,
+							       event->iotval,
+							       &phys,
+							       &map_size);
+			dev_warn_ratelimited(iommu->dev,
+					     "Fault %d devid: 0x%x iotval: %llx iotval2: %llx cove_io=allow-vfio-map phys=%pa size=0x%zx rc=%d\n",
+					     err, devid, event->iotval,
+					     event->iotval2, &phys, map_size,
+					     rc);
+		} else {
+			dev_warn_ratelimited(iommu->dev,
+					     "Fault %d devid: 0x%x iotval: %llx iotval2: %llx cove_io=deny-observe\n",
+					     err, devid, event->iotval,
+					     event->iotval2);
+		}
+		return;
+	}
+#endif
+
+	dev_warn_ratelimited(iommu->dev,
+			     "Fault %d devid: 0x%x iotval: %llx iotval2: %llx\n",
+			     err, devid, event->iotval, event->iotval2);
+}
+
+#if IS_REACHABLE(CONFIG_KVM)
+static void riscv_iommu_prgr_response(struct riscv_iommu_device *iommu,
+				      unsigned int devid, unsigned int pasid,
+				      bool pasid_valid, unsigned int prgi,
+				      unsigned int response_code)
+{
+	struct riscv_iommu_command cmd;
+
+	if (pasid_valid ||
+	    response_code != RISCV_IOMMU_CMD_ATS_PRGR_RESP_SUCCESS)
+		dev_warn(iommu->dev,
+			 "COVE-IO PRI PRGR response: devid=0x%x pasid=0x%x pv:%d prgi:%u resp=%u\n",
+			 devid, pasid, pasid_valid, prgi, response_code);
+
+	riscv_iommu_cmd_ats_prgr(&cmd, devid, pasid, pasid_valid, prgi,
+				 response_code);
+	riscv_iommu_cmd_send(iommu, &cmd);
+	riscv_iommu_cmd_sync(iommu, RISCV_IOMMU_IOTINVAL_TIMEOUT);
+}
+
+static void riscv_iommu_page_request(struct riscv_iommu_device *iommu,
+				     struct riscv_iommu_pq_record *pr)
+{
+	unsigned int devid = FIELD_GET(RISCV_IOMMU_PQ_HDR_DID, pr->hdr);
+	unsigned int pasid = FIELD_GET(RISCV_IOMMU_PQ_HDR_PID, pr->hdr);
+	bool pasid_valid = pr->hdr & RISCV_IOMMU_PQ_HDR_PV;
+	unsigned int prgi = FIELD_GET(RISCV_IOMMU_PQ_PAYLOAD_PRGI, pr->payload);
+	unsigned long iova = FIELD_GET(RISCV_IOMMU_PQ_PAYLOAD_ADDR,
+				       pr->payload) << PAGE_SHIFT;
+	unsigned int response = RISCV_IOMMU_CMD_ATS_PRGR_RESP_INVALID_REQUEST;
+	phys_addr_t phys = 0;
+	size_t map_size = 0;
+	int cove_io, rc = -EPERM;
+
+	if (pasid_valid)
+		dev_warn(iommu->dev,
+			 "COVE-IO PRI PASID request: devid=0x%x pasid=0x%x pv:%d prgi:%u iova:%lx\n",
+			 devid, pasid, pasid_valid, prgi, iova);
+
+	cove_io = kvm_riscv_cove_io_iommu_fault_check(devid, iova);
+	if (cove_io > 0) {
+		rc = riscv_iommu_cove_io_fault_recover(iommu, devid, iova,
+						       &phys, &map_size);
+		response = rc ? RISCV_IOMMU_CMD_ATS_PRGR_RESP_FAILURE :
+				RISCV_IOMMU_CMD_ATS_PRGR_RESP_SUCCESS;
 		dev_warn_ratelimited(iommu->dev,
-				     "Fault %d devid: 0x%x iotval: %llx iotval2: %llx\n",
-				     err, devid, event->iotval, event->iotval2);
+				     "Page request devid: 0x%x pasid: 0x%x pv:%d prgi:%u iova:%lx perms:%llx cove_io=pri-vfio-map phys=%pa size=0x%zx rc=%d resp=%u\n",
+				     devid, pasid, pasid_valid, prgi, iova,
+				     pr->payload & RISCV_IOMMU_PQ_PAYLOAD_RWL_MASK,
+				     &phys, map_size, rc, response);
+	} else if (!cove_io) {
+		dev_warn_ratelimited(iommu->dev,
+				     "Page request devid: 0x%x pasid: 0x%x pv:%d prgi:%u iova:%lx perms:%llx cove_io=pri-deny\n",
+				     devid, pasid, pasid_valid, prgi, iova,
+				     pr->payload & RISCV_IOMMU_PQ_PAYLOAD_RWL_MASK);
+	} else {
+		dev_warn_ratelimited(iommu->dev,
+				     "Page request devid: 0x%x pasid: 0x%x pv:%d prgi:%u iova:%lx perms:%llx cove_io=pri-unmatched rc=%d\n",
+				     devid, pasid, pasid_valid, prgi, iova,
+				     pr->payload & RISCV_IOMMU_PQ_PAYLOAD_RWL_MASK,
+				     cove_io);
+	}
+
+	riscv_iommu_prgr_response(iommu, devid, pasid, pasid_valid, prgi,
+				  response);
+}
+#else
+static void riscv_iommu_page_request(struct riscv_iommu_device *iommu,
+				     struct riscv_iommu_pq_record *pr)
+{
+	unsigned int devid = FIELD_GET(RISCV_IOMMU_PQ_HDR_DID, pr->hdr);
+	unsigned int pasid = FIELD_GET(RISCV_IOMMU_PQ_HDR_PID, pr->hdr);
+	unsigned int prgi = FIELD_GET(RISCV_IOMMU_PQ_PAYLOAD_PRGI, pr->payload);
+
+	dev_warn_ratelimited(iommu->dev,
+			     "Page request devid: 0x%x pasid: 0x%x prgi:%u dropped because KVM COVE-IO is unavailable\n",
+			     devid, pasid, prgi);
+}
+#endif
+
+/* Page-request queue interrupt handler thread function */
+static irqreturn_t riscv_iommu_prq_process(int irq, void *data)
+{
+	struct riscv_iommu_queue *queue = (struct riscv_iommu_queue *)data;
+	struct riscv_iommu_device *iommu = queue->iommu;
+	struct riscv_iommu_pq_record *events;
+	unsigned int ctrl, idx;
+	int cnt, len;
+
+	events = (struct riscv_iommu_pq_record *)queue->base;
+
+	/* Clear page-request interrupt pending and process all requests. */
+	riscv_iommu_writel(iommu, RISCV_IOMMU_REG_IPSR, Q_IPSR(queue));
+
+	do {
+		cnt = riscv_iommu_queue_consume(queue, &idx);
+		if (cnt > 0)
+			dev_warn(iommu->dev,
+				 "COVE-IO PRQ interrupt: consuming %d page request(s) at idx=%u head=0x%x tail=0x%x\n",
+				 cnt, idx,
+				 riscv_iommu_readl(iommu, Q_HEAD(queue)),
+				 riscv_iommu_readl(iommu, Q_TAIL(queue)));
+		for (len = 0; len < cnt; idx++, len++)
+			riscv_iommu_page_request(iommu,
+						 &events[Q_ITEM(queue, idx)]);
+		riscv_iommu_queue_release(queue, cnt);
+	} while (cnt > 0);
+
+	ctrl = riscv_iommu_readl(iommu, queue->qcr);
+	if (ctrl & (RISCV_IOMMU_PQCSR_PQMF | RISCV_IOMMU_PQCSR_PQOF)) {
+		riscv_iommu_writel(iommu, queue->qcr, ctrl);
+		dev_warn(iommu->dev,
+			 "Queue #%u error; memory fault:%d overflow:%d\n",
+			 queue->qid,
+			 !!(ctrl & RISCV_IOMMU_PQCSR_PQMF),
+			 !!(ctrl & RISCV_IOMMU_PQCSR_PQOF));
+	}
+
+	return IRQ_HANDLED;
 }
 
 /* Fault queue interrupt handler thread function */
@@ -822,6 +1007,21 @@ struct riscv_iommu_domain {
 /* Private IOMMU data for managed devices, dev_iommu_priv_* */
 struct riscv_iommu_info {
 	struct riscv_iommu_domain *domain;
+	struct riscv_iommu_msipte *cove_io_msipt;
+	dma_addr_t cove_io_msipt_phys;
+	u64 cove_io_msi_addr_mask;
+	u64 cove_io_msi_addr_pattern;
+	u64 cove_io_msi_entries;
+	bool cove_io_mrif_active;
+#if IS_REACHABLE(CONFIG_KVM)
+	struct kvm *cove_io_mrif_kvm;
+	u64 cove_io_mrif_vcpu_id;
+	u64 cove_io_mrif_irq_iid;
+#endif
+	bool cove_io_isolated_msi;
+	bool cove_io_pri_enabled;
+	bool pci_ats_enabled;
+	bool pci_pri_enabled;
 };
 
 /*
@@ -995,7 +1195,222 @@ static void riscv_iommu_iotlb_inval(struct riscv_iommu_domain *domain,
 	rcu_read_unlock();
 }
 
+#if IS_REACHABLE(CONFIG_KVM)
+struct riscv_iommu_devid_lookup {
+	struct riscv_iommu_device *iommu;
+	u32 devid;
+	struct device *dev;
+};
+
+static int riscv_iommu_match_devid(struct device *dev, void *data)
+{
+	struct riscv_iommu_devid_lookup *lookup = data;
+	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
+	int i;
+
+	if (!fwspec || !fwspec->num_ids || !fwspec->iommu_fwnode ||
+	    !fwspec->iommu_fwnode->dev)
+		return 0;
+	if (dev_get_drvdata(fwspec->iommu_fwnode->dev) != lookup->iommu)
+		return 0;
+
+	for (i = 0; i < fwspec->num_ids; i++) {
+		if (fwspec->ids[i] == lookup->devid) {
+			lookup->dev = get_device(dev);
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+static struct device *riscv_iommu_find_device_by_devid(
+	struct riscv_iommu_device *iommu, u32 devid)
+{
+	struct riscv_iommu_devid_lookup lookup = {
+		.iommu = iommu,
+		.devid = devid,
+	};
+
+	bus_for_each_dev(&pci_bus_type, NULL, &lookup,
+			 riscv_iommu_match_devid);
+
+	return lookup.dev;
+}
+
+static int riscv_iommu_cove_io_fault_recover(struct riscv_iommu_device *iommu,
+					     u32 devid, unsigned long iova,
+					     phys_addr_t *phys, size_t *size)
+{
+	struct device *dev;
+	int ret;
+
+	dev = riscv_iommu_find_device_by_devid(iommu, devid);
+	if (!dev)
+		return -ENODEV;
+
+	ret = vfio_device_dma_fault_recover(dev, iova, IOMMU_READ | IOMMU_WRITE,
+					    phys, size);
+
+	put_device(dev);
+	return ret;
+}
+#endif
+
 #define RISCV_IOMMU_FSC_BARE 0
+
+static u64 riscv_iommu_cove_io_pdep(u64 value, u64 mask)
+{
+	u64 ret = 0;
+
+	while (mask) {
+		u64 bit = mask & -mask;
+
+		if (value & 1)
+			ret |= bit;
+		value >>= 1;
+		mask &= ~bit;
+	}
+
+	return ret;
+}
+
+static u64 riscv_iommu_imsic_mask_from_global(const struct imsic_global_config *global)
+{
+	u64 mask = 0;
+
+	if (global->hart_index_bits) {
+		u32 low = global->guest_index_bits;
+		u32 high = low + global->hart_index_bits - 1;
+
+		mask |= GENMASK_ULL(high, low);
+	}
+
+	if (global->group_index_bits) {
+		u32 low = global->group_index_shift - IMSIC_MMIO_PAGE_SHIFT;
+		u32 high = low + global->group_index_bits - 1;
+
+		mask |= GENMASK_ULL(high, low);
+	}
+
+	return mask;
+}
+
+static void riscv_iommu_cove_io_init_msi_remap(struct riscv_iommu_device *iommu)
+{
+	const struct imsic_global_config *global;
+	u64 mask, pattern, entries, i;
+	size_t table_size;
+	unsigned int bits;
+
+	mutex_lock(&riscv_iommu_cove_io_msi_lock);
+
+	if (iommu->cove_io_isolated_msi)
+		goto out_unlock;
+
+	if (!cove_io_isolated_msi)
+		goto out_unlock;
+
+	if (!(iommu->caps & RISCV_IOMMU_CAPABILITIES_MSI_FLAT)) {
+		dev_warn(iommu->dev,
+			 "COVE-IO isolated MSI requested but MSI_FLAT is not supported\n");
+		goto out_unlock;
+	}
+
+	global = imsic_get_global_config();
+	if (!global) {
+		dev_warn(iommu->dev,
+			 "COVE-IO isolated MSI requested but IMSIC global config is unavailable\n");
+		goto out_unlock;
+	}
+
+	if (global->group_index_bits &&
+	    global->group_index_shift < IMSIC_MMIO_PAGE_SHIFT) {
+		dev_warn(iommu->dev,
+			 "COVE-IO isolated MSI requested but IMSIC group-index shift is invalid\n");
+		goto out_unlock;
+	}
+
+	mask = riscv_iommu_imsic_mask_from_global(global);
+
+	bits = hweight64(mask);
+	if (bits >= BITS_PER_LONG) {
+		dev_warn(iommu->dev,
+			 "COVE-IO isolated MSI requested but %u IMSIC target bits exceed host table sizing\n",
+			 bits);
+		goto out_unlock;
+	}
+	entries = BIT_ULL(bits);
+	table_size = size_mul((size_t)entries,
+			      sizeof(struct riscv_iommu_msipte));
+	if (table_size == SIZE_MAX ||
+	    table_size > roundup_pow_of_two(table_size)) {
+		dev_warn(iommu->dev,
+			 "COVE-IO isolated MSI requested but MSI PTE table sizing overflowed\n");
+		goto out_unlock;
+	}
+	table_size = max_t(size_t, SZ_4K, roundup_pow_of_two(table_size));
+
+	iommu->cove_io_msipt = riscv_iommu_get_pages(iommu, table_size);
+	if (!iommu->cove_io_msipt) {
+		dev_warn(iommu->dev,
+			 "COVE-IO isolated MSI requested but MSI PTE allocation failed\n");
+		goto out_unlock;
+	}
+
+	pattern = (global->base_addr >> IMSIC_MMIO_PAGE_SHIFT) & ~mask;
+
+	for (i = 0; i < entries; i++) {
+		u64 ppn = pattern | riscv_iommu_cove_io_pdep(i, mask);
+		phys_addr_t target = ppn << IMSIC_MMIO_PAGE_SHIFT;
+
+		iommu->cove_io_msipt[i].pte =
+			RISCV_IOMMU_MSIPTE_V |
+			FIELD_PREP(RISCV_IOMMU_MSIPTE_M,
+				   RISCV_IOMMU_MSIPTE_M_BASIC) |
+			phys_to_ppn(target);
+	}
+
+	dma_wmb();
+	iommu->cove_io_msipt_phys = __pa(iommu->cove_io_msipt);
+	iommu->cove_io_msipt_size = table_size;
+	iommu->cove_io_msi_entries = entries;
+	iommu->cove_io_msi_addr_mask = mask;
+	iommu->cove_io_msi_addr_pattern = pattern;
+	iommu->cove_io_isolated_msi = true;
+
+	dev_warn(iommu->dev,
+		 "COVE-IO experimental MSI basic-mode remap enabled: entries=%llu table_size=%zu pattern=0x%llx mask=0x%llx\n",
+		 entries, table_size, pattern, mask);
+
+out_unlock:
+	mutex_unlock(&riscv_iommu_cove_io_msi_lock);
+}
+
+static bool riscv_iommu_cove_io_msipt_context(struct riscv_iommu_device *iommu,
+					      struct riscv_iommu_info *info,
+					      dma_addr_t *msipt_phys,
+					      u64 *msi_addr_mask,
+					      u64 *msi_addr_pattern)
+{
+	if (!info || !info->cove_io_isolated_msi)
+		return false;
+
+	if (info->cove_io_msipt) {
+		*msipt_phys = info->cove_io_msipt_phys;
+		*msi_addr_mask = info->cove_io_msi_addr_mask;
+		*msi_addr_pattern = info->cove_io_msi_addr_pattern;
+		return true;
+	}
+
+	if (!iommu->cove_io_isolated_msi)
+		return false;
+
+	*msipt_phys = iommu->cove_io_msipt_phys;
+	*msi_addr_mask = iommu->cove_io_msi_addr_mask;
+	*msi_addr_pattern = iommu->cove_io_msi_addr_pattern;
+	return true;
+}
 
 /*
  * Update IODIR for the device.
@@ -1013,10 +1428,13 @@ static void riscv_iommu_iodir_update(struct riscv_iommu_device *iommu,
 				     struct device *dev, u64 fsc, u64 ta)
 {
 	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
+	struct riscv_iommu_info *info = dev_iommu_priv_get(dev);
 	struct riscv_iommu_dc *dc;
 	struct riscv_iommu_command cmd;
 	bool sync_required = false;
 	u64 tc;
+	dma_addr_t msipt_phys;
+	u64 msi_addr_mask, msi_addr_pattern;
 	int i;
 
 	for (i = 0; i < fwspec->num_ids; i++) {
@@ -1045,9 +1463,31 @@ static void riscv_iommu_iodir_update(struct riscv_iommu_device *iommu,
 		dc = riscv_iommu_get_dc(iommu, fwspec->ids[i]);
 		tc = READ_ONCE(dc->tc);
 		tc |= ta & RISCV_IOMMU_DC_TC_V;
+		if (info && info->cove_io_pri_enabled)
+			tc |= RISCV_IOMMU_DC_TC_EN_ATS |
+			      RISCV_IOMMU_DC_TC_EN_PRI |
+			      RISCV_IOMMU_DC_TC_PRPR;
 
 		WRITE_ONCE(dc->fsc, fsc);
 		WRITE_ONCE(dc->ta, ta & RISCV_IOMMU_PC_TA_PSCID);
+		if (riscv_iommu_cove_io_msipt_context(iommu, info,
+						      &msipt_phys,
+						      &msi_addr_mask,
+						      &msi_addr_pattern)) {
+			WRITE_ONCE(dc->msiptp,
+				   FIELD_PREP(RISCV_IOMMU_DC_MSIPTP_MODE,
+					      RISCV_IOMMU_DC_MSIPTP_MODE_FLAT) |
+				   FIELD_PREP(RISCV_IOMMU_DC_MSIPTP_PPN,
+					      PFN_DOWN(msipt_phys)));
+			WRITE_ONCE(dc->msi_addr_mask,
+				   msi_addr_mask);
+			WRITE_ONCE(dc->msi_addr_pattern,
+				   msi_addr_pattern);
+		} else if (iommu->caps & RISCV_IOMMU_CAPABILITIES_MSI_FLAT) {
+			WRITE_ONCE(dc->msiptp, 0);
+			WRITE_ONCE(dc->msi_addr_mask, 0);
+			WRITE_ONCE(dc->msi_addr_pattern, 0);
+		}
 		/* Update device context, write TC.V as the last step. */
 		dma_wmb();
 		WRITE_ONCE(dc->tc, tc);
@@ -1059,6 +1499,528 @@ static void riscv_iommu_iodir_update(struct riscv_iommu_device *iommu,
 	}
 
 	riscv_iommu_cmd_sync(iommu, RISCV_IOMMU_IOTINVAL_TIMEOUT);
+}
+
+#if IS_REACHABLE(CONFIG_KVM)
+static u64 riscv_iommu_cove_io_pext(u64 value, u64 mask)
+{
+	u64 ret = 0;
+	u64 out = 1;
+
+	while (mask) {
+		u64 bit = mask & -mask;
+
+		if (value & bit)
+			ret |= out;
+		out <<= 1;
+		mask &= ~bit;
+	}
+
+	return ret;
+}
+
+static struct device *riscv_iommu_cove_io_find_pci_device(u64 device_id)
+{
+	struct iommu_fwspec *fwspec;
+	struct pci_dev *pdev;
+	u16 segment, rid;
+	u8 bus, devfn;
+	int i;
+
+	if (((device_id & KVM_COVE_IO_DEVICE_TYPE_MASK) >>
+	     KVM_COVE_IO_DEVICE_TYPE_SHIFT) != KVM_COVE_IO_DEVICE_TYPE_PCI_RID)
+		return NULL;
+
+	segment = (device_id >> 16) & 0xffff;
+	rid = device_id & 0xffff;
+	bus = rid >> 8;
+	devfn = rid & 0xff;
+
+	pdev = pci_get_domain_bus_and_slot(segment, bus, devfn);
+	if (!pdev)
+		return NULL;
+
+	fwspec = dev_iommu_fwspec_get(&pdev->dev);
+	if (!fwspec || !fwspec->num_ids) {
+		pci_dev_put(pdev);
+		return NULL;
+	}
+
+	for (i = 0; i < fwspec->num_ids; i++) {
+		if (fwspec->ids[i] == rid)
+			return &pdev->dev;
+	}
+
+	pci_dev_put(pdev);
+	return NULL;
+}
+
+static int riscv_iommu_cove_io_alloc_device_msipt(
+	struct riscv_iommu_device *iommu, struct riscv_iommu_info *info)
+{
+	if (info->cove_io_msipt)
+		return 0;
+	if (!iommu->cove_io_isolated_msi || !iommu->cove_io_msipt ||
+	    !iommu->cove_io_msipt_size || !iommu->cove_io_msi_entries)
+		return -ENODEV;
+
+	info->cove_io_msipt = riscv_iommu_get_pages(iommu,
+						    iommu->cove_io_msipt_size);
+	if (!info->cove_io_msipt)
+		return -ENOMEM;
+
+	memcpy(info->cove_io_msipt, iommu->cove_io_msipt,
+	       iommu->cove_io_msipt_size);
+	info->cove_io_msipt_phys = __pa(info->cove_io_msipt);
+	info->cove_io_msi_addr_mask = iommu->cove_io_msi_addr_mask;
+	info->cove_io_msi_addr_pattern = iommu->cove_io_msi_addr_pattern;
+	info->cove_io_msi_entries = iommu->cove_io_msi_entries;
+	return 0;
+}
+
+static void riscv_iommu_cove_io_block_device_msipt(
+	struct riscv_iommu_device *iommu, struct riscv_iommu_info *info)
+{
+	if (!info->cove_io_msipt || !iommu->cove_io_msipt_size)
+		return;
+
+	memset(info->cove_io_msipt, 0, iommu->cove_io_msipt_size);
+	dma_wmb();
+}
+
+static void riscv_iommu_cove_io_update_msipt_context(
+	struct riscv_iommu_device *iommu, struct device *dev)
+{
+	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
+	struct riscv_iommu_info *info = dev_iommu_priv_get(dev);
+	struct riscv_iommu_command cmd;
+	struct riscv_iommu_dc *dc;
+	dma_addr_t msipt_phys;
+	u64 mask, pattern;
+	u64 tc;
+	bool valid;
+	int i;
+
+	if (!fwspec || !info)
+		return;
+
+	for (i = 0; i < fwspec->num_ids; i++) {
+		dc = riscv_iommu_get_dc(iommu, fwspec->ids[i]);
+		tc = READ_ONCE(dc->tc);
+		valid = tc & RISCV_IOMMU_DC_TC_V;
+
+		if (valid) {
+			WRITE_ONCE(dc->tc, tc & ~RISCV_IOMMU_DC_TC_V);
+			riscv_iommu_cmd_iodir_inval_ddt(&cmd);
+			riscv_iommu_cmd_iodir_set_did(&cmd, fwspec->ids[i]);
+			riscv_iommu_cmd_send(iommu, &cmd);
+			riscv_iommu_cmd_sync(iommu,
+					     RISCV_IOMMU_IOTINVAL_TIMEOUT);
+		}
+
+		if (riscv_iommu_cove_io_msipt_context(iommu, info,
+						      &msipt_phys, &mask,
+						      &pattern)) {
+			WRITE_ONCE(dc->msiptp,
+				   FIELD_PREP(RISCV_IOMMU_DC_MSIPTP_MODE,
+					      RISCV_IOMMU_DC_MSIPTP_MODE_FLAT) |
+				   FIELD_PREP(RISCV_IOMMU_DC_MSIPTP_PPN,
+					      PFN_DOWN(msipt_phys)));
+			WRITE_ONCE(dc->msi_addr_mask, mask);
+			WRITE_ONCE(dc->msi_addr_pattern, pattern);
+		} else {
+			WRITE_ONCE(dc->msiptp, 0);
+			WRITE_ONCE(dc->msi_addr_mask, 0);
+			WRITE_ONCE(dc->msi_addr_pattern, 0);
+		}
+
+		dma_wmb();
+		if (valid)
+			WRITE_ONCE(dc->tc, tc);
+
+		riscv_iommu_cmd_iodir_inval_ddt(&cmd);
+		riscv_iommu_cmd_iodir_set_did(&cmd, fwspec->ids[i]);
+		riscv_iommu_cmd_send(iommu, &cmd);
+	}
+
+	riscv_iommu_cmd_sync(iommu, RISCV_IOMMU_IOTINVAL_TIMEOUT);
+}
+
+static int riscv_iommu_cove_io_install_mrif_pte(
+	struct riscv_iommu_device *iommu, struct riscv_iommu_info *info,
+	const struct kvm_riscv_aia_mrif_info *mrif)
+{
+	u64 index, mrif_info;
+
+	if (!info->cove_io_msipt || !info->cove_io_msi_entries)
+		return -ENODEV;
+	if (!mrif->mrif_pa || !mrif->notice_pa || !mrif->imsic_addr)
+		return -EINVAL;
+	if (mrif->mrif_pa & (SZ_512 - 1))
+		return -EINVAL;
+	if (mrif->notice_iid > 2047)
+		return -EINVAL;
+
+	index = riscv_iommu_cove_io_pext(mrif->imsic_addr >>
+					 IMSIC_MMIO_PAGE_SHIFT,
+					 info->cove_io_msi_addr_mask);
+	if (index >= info->cove_io_msi_entries)
+		return -EINVAL;
+
+	mrif_info = phys_to_ppn(mrif->notice_pa) |
+		    FIELD_PREP(RISCV_IOMMU_MSIPTE_MRIF_NID,
+			       mrif->notice_iid & 0x3ff);
+	if (mrif->notice_iid & BIT(10))
+		mrif_info |= RISCV_IOMMU_MSIPTE_MRIF_NID_MSB;
+
+	WRITE_ONCE(info->cove_io_msipt[index].pte,
+		   RISCV_IOMMU_MSIPTE_V |
+		   FIELD_PREP(RISCV_IOMMU_MSIPTE_M,
+			      RISCV_IOMMU_MSIPTE_M_MRIF) |
+		   FIELD_PREP(RISCV_IOMMU_MSIPTE_MRIF_ADDR,
+			      mrif->mrif_pa >> 9));
+	WRITE_ONCE(info->cove_io_msipt[index].mrif_info, mrif_info);
+	dma_wmb();
+
+	return index;
+}
+
+static void riscv_iommu_cove_io_deactivate_mrif(struct device *dev)
+{
+	struct riscv_iommu_device *iommu = dev_to_iommu(dev);
+	struct riscv_iommu_info *info = dev_iommu_priv_get(dev);
+	struct kvm *old_kvm = NULL;
+	u64 old_vcpu_id = 0;
+
+	if (!info || !info->cove_io_mrif_active)
+		return;
+
+	old_kvm = info->cove_io_mrif_kvm;
+	old_vcpu_id = info->cove_io_mrif_vcpu_id;
+	info->cove_io_mrif_active = false;
+	info->cove_io_mrif_kvm = NULL;
+	info->cove_io_mrif_vcpu_id = 0;
+	info->cove_io_mrif_irq_iid = 0;
+
+	if (info->cove_io_msipt && iommu->cove_io_msipt)
+		memcpy(info->cove_io_msipt, iommu->cove_io_msipt,
+		       iommu->cove_io_msipt_size);
+	dma_wmb();
+	riscv_iommu_cove_io_update_msipt_context(iommu, dev);
+
+	if (old_kvm) {
+		kvm_riscv_aia_imsic_mrif_disable(old_kvm, old_vcpu_id);
+		kvm_put_kvm(old_kvm);
+	}
+}
+
+int riscv_iommu_cove_io_mrif_bind(u64 device_id, struct kvm *kvm,
+				  u64 vcpu_id, u64 irq_iid)
+{
+	struct kvm_riscv_aia_mrif_info mrif;
+	struct riscv_iommu_device *iommu;
+	struct riscv_iommu_info *info;
+	struct device *dev;
+	struct kvm *old_kvm = NULL;
+	u64 old_vcpu_id = 0;
+	bool keep_new_ref = false;
+	bool disable_new_ref = false;
+	bool pending = false;
+	int rc, index = -1;
+
+	if (!cove_io_mrif)
+		return 0;
+	if (!kvm || vcpu_id == KVM_COVE_IO_VCPU_ANY ||
+	    irq_iid == KVM_COVE_IO_IRQ_IID_ANY)
+		return -EINVAL;
+
+	dev = riscv_iommu_cove_io_find_pci_device(device_id);
+	if (!dev)
+		return -ENODEV;
+
+	iommu = dev_to_iommu(dev);
+	info = dev_iommu_priv_get(dev);
+	if (!iommu || !info) {
+		rc = -ENODEV;
+		goto out_put_dev;
+	}
+	if (!(iommu->caps & RISCV_IOMMU_CAPABILITIES_MSI_MRIF)) {
+		rc = -EOPNOTSUPP;
+		goto out_put_dev;
+	}
+
+	riscv_iommu_cove_io_init_msi_remap(iommu);
+	if (!iommu->cove_io_isolated_msi) {
+		rc = -ENODEV;
+		goto out_put_dev;
+	}
+
+	rc = kvm_riscv_aia_imsic_mrif_enable(kvm, vcpu_id);
+	if (rc)
+		goto out_put_dev;
+	disable_new_ref = true;
+
+	rc = kvm_riscv_aia_imsic_mrif_info(kvm, vcpu_id, irq_iid, &mrif);
+	if (rc && rc != -EAGAIN)
+		goto out_disable_new;
+	pending = rc == -EAGAIN;
+
+	mutex_lock(&riscv_iommu_cove_io_msi_lock);
+	rc = riscv_iommu_cove_io_alloc_device_msipt(iommu, info);
+	if (rc)
+		goto out_unlock;
+
+	if (pending) {
+		riscv_iommu_cove_io_block_device_msipt(iommu, info);
+	} else {
+		index = riscv_iommu_cove_io_install_mrif_pte(iommu, info,
+							     &mrif);
+		if (index < 0) {
+			rc = index;
+			goto out_unlock;
+		}
+	}
+
+	if (!info->cove_io_mrif_active) {
+		kvm_get_kvm(kvm);
+		keep_new_ref = true;
+	} else if (info->cove_io_mrif_kvm != kvm ||
+		   info->cove_io_mrif_vcpu_id != vcpu_id) {
+		old_kvm = info->cove_io_mrif_kvm;
+		old_vcpu_id = info->cove_io_mrif_vcpu_id;
+		kvm_get_kvm(kvm);
+		keep_new_ref = true;
+		dev_warn(dev,
+			 "COVE-IO MRIF remap retarget: device_id=0x%llx old_vcpu=%llu new_vcpu=%llu iid=%llu\n",
+			 (unsigned long long)device_id,
+			 (unsigned long long)old_vcpu_id,
+			 (unsigned long long)vcpu_id,
+			 (unsigned long long)irq_iid);
+	}
+
+	info->cove_io_mrif_active = true;
+	info->cove_io_mrif_kvm = kvm;
+	info->cove_io_mrif_vcpu_id = vcpu_id;
+	info->cove_io_mrif_irq_iid = irq_iid;
+	info->cove_io_isolated_msi = true;
+	riscv_iommu_cove_io_update_msipt_context(iommu, dev);
+	rc = 0;
+
+	if (pending)
+		dev_warn(dev,
+			 "COVE-IO experimental MRIF remap pending: device_id=0x%llx vcpu=%llu iid=%llu; MSI blocked until IMSIC VS-file is available\n",
+			 (unsigned long long)device_id,
+			 (unsigned long long)vcpu_id,
+			 (unsigned long long)irq_iid);
+	else
+		dev_warn(dev,
+			 "COVE-IO experimental MRIF remap installed: device_id=0x%llx vcpu=%llu iid=%llu index=%d mrif=%pa notice=%pa\n",
+			 (unsigned long long)device_id,
+			 (unsigned long long)vcpu_id,
+			 (unsigned long long)irq_iid, index, &mrif.mrif_pa,
+			 &mrif.notice_pa);
+
+out_unlock:
+	mutex_unlock(&riscv_iommu_cove_io_msi_lock);
+	if (rc)
+		goto out_disable_new;
+
+	if (!keep_new_ref) {
+		kvm_riscv_aia_imsic_mrif_disable(kvm, vcpu_id);
+		disable_new_ref = false;
+	}
+	if (old_kvm) {
+		kvm_riscv_aia_imsic_mrif_disable(old_kvm, old_vcpu_id);
+		kvm_put_kvm(old_kvm);
+	}
+	goto out_put_dev;
+
+out_disable_new:
+	if (disable_new_ref)
+		kvm_riscv_aia_imsic_mrif_disable(kvm, vcpu_id);
+out_put_dev:
+	pci_dev_put(to_pci_dev(dev));
+	return rc;
+}
+EXPORT_SYMBOL_GPL(riscv_iommu_cove_io_mrif_bind);
+
+void riscv_iommu_cove_io_mrif_unbind(u64 device_id)
+{
+	struct device *dev;
+
+	dev = riscv_iommu_cove_io_find_pci_device(device_id);
+	if (!dev)
+		return;
+
+	mutex_lock(&riscv_iommu_cove_io_msi_lock);
+	riscv_iommu_cove_io_deactivate_mrif(dev);
+	mutex_unlock(&riscv_iommu_cove_io_msi_lock);
+
+	pci_dev_put(to_pci_dev(dev));
+}
+EXPORT_SYMBOL_GPL(riscv_iommu_cove_io_mrif_unbind);
+
+struct riscv_iommu_cove_io_vm_unbind {
+	struct kvm *kvm;
+};
+
+static int riscv_iommu_cove_io_mrif_unbind_vm_cb(struct device *dev,
+						 void *data)
+{
+	struct riscv_iommu_cove_io_vm_unbind *unbind = data;
+	struct riscv_iommu_info *info = dev_iommu_priv_get(dev);
+
+	if (!info || !info->cove_io_mrif_active ||
+	    info->cove_io_mrif_kvm != unbind->kvm)
+		return 0;
+
+	mutex_lock(&riscv_iommu_cove_io_msi_lock);
+	riscv_iommu_cove_io_deactivate_mrif(dev);
+	mutex_unlock(&riscv_iommu_cove_io_msi_lock);
+	return 0;
+}
+
+void riscv_iommu_cove_io_mrif_unbind_vm(struct kvm *kvm)
+{
+	struct riscv_iommu_cove_io_vm_unbind unbind = {
+		.kvm = kvm,
+	};
+
+	if (!kvm)
+		return;
+
+	bus_for_each_dev(&pci_bus_type, NULL, &unbind,
+			 riscv_iommu_cove_io_mrif_unbind_vm_cb);
+}
+EXPORT_SYMBOL_GPL(riscv_iommu_cove_io_mrif_unbind_vm);
+
+struct riscv_iommu_cove_io_mrif_refresh {
+	struct kvm *kvm;
+	u64 vcpu_id;
+};
+
+static int riscv_iommu_cove_io_mrif_refresh_cb(struct device *dev, void *data)
+{
+	struct riscv_iommu_cove_io_mrif_refresh *refresh = data;
+	struct riscv_iommu_device *iommu;
+	struct riscv_iommu_info *info = dev_iommu_priv_get(dev);
+	struct kvm_riscv_aia_mrif_info mrif;
+	int index;
+
+	if (!info || !info->cove_io_mrif_active ||
+	    info->cove_io_mrif_kvm != refresh->kvm ||
+	    info->cove_io_mrif_vcpu_id != refresh->vcpu_id)
+		return 0;
+
+	iommu = dev_to_iommu(dev);
+	if (kvm_riscv_aia_imsic_mrif_info(refresh->kvm, refresh->vcpu_id,
+					  info->cove_io_mrif_irq_iid,
+					  &mrif))
+		return 0;
+
+	mutex_lock(&riscv_iommu_cove_io_msi_lock);
+	index = riscv_iommu_cove_io_install_mrif_pte(iommu, info, &mrif);
+	mutex_unlock(&riscv_iommu_cove_io_msi_lock);
+
+	if (index >= 0)
+		dev_warn(dev,
+			 "COVE-IO experimental MRIF remap refreshed: vcpu=%llu iid=%llu index=%d notice=%pa\n",
+			 (unsigned long long)refresh->vcpu_id,
+			 (unsigned long long)info->cove_io_mrif_irq_iid,
+			 index, &mrif.notice_pa);
+
+	return 0;
+}
+
+void riscv_iommu_cove_io_mrif_refresh(struct kvm *kvm, u64 vcpu_id)
+{
+	struct riscv_iommu_cove_io_mrif_refresh refresh = {
+		.kvm = kvm,
+		.vcpu_id = vcpu_id,
+	};
+
+	if (!cove_io_mrif || !kvm)
+		return;
+
+	bus_for_each_dev(&pci_bus_type, NULL, &refresh,
+			 riscv_iommu_cove_io_mrif_refresh_cb);
+}
+EXPORT_SYMBOL_GPL(riscv_iommu_cove_io_mrif_refresh);
+#endif
+
+static void riscv_iommu_cove_io_disable_pri(struct device *dev)
+{
+	struct riscv_iommu_info *info = dev_iommu_priv_get(dev);
+	struct pci_dev *pdev;
+
+	if (!info || !dev_is_pci(dev))
+		return;
+
+	pdev = to_pci_dev(dev);
+#if IS_ENABLED(CONFIG_PCI_PRI)
+	if (info->pci_pri_enabled) {
+		pci_disable_pri(pdev);
+		info->pci_pri_enabled = false;
+	}
+#endif
+	if (info->pci_ats_enabled) {
+		pci_disable_ats(pdev);
+		info->pci_ats_enabled = false;
+	}
+	info->cove_io_pri_enabled = false;
+}
+
+static void riscv_iommu_cove_io_try_enable_pri(struct riscv_iommu_device *iommu,
+					       struct device *dev)
+{
+#if IS_ENABLED(CONFIG_PCI_PRI)
+	struct riscv_iommu_info *info = dev_iommu_priv_get(dev);
+	struct pci_dev *pdev;
+	int rc;
+
+	if (!cove_io_pri || !info || !dev_is_pci(dev) ||
+	    !(iommu->caps & RISCV_IOMMU_CAPABILITIES_ATS))
+		return;
+
+	pdev = to_pci_dev(dev);
+	if (!pci_ats_supported(pdev) || !pci_pri_supported(pdev))
+		return;
+
+	if (!info->pci_ats_enabled) {
+		rc = pci_enable_ats(pdev, PAGE_SHIFT);
+		if (rc) {
+			dev_warn(dev,
+				 "COVE-IO PRI requested but PCI ATS enable failed: %d\n",
+				 rc);
+			return;
+		}
+		info->pci_ats_enabled = true;
+	}
+
+	if (!info->pci_pri_enabled) {
+		rc = pci_reset_pri(pdev);
+		if (rc) {
+			dev_warn(dev,
+				 "COVE-IO PRI requested but PCI PRI reset failed: %d\n",
+				 rc);
+			riscv_iommu_cove_io_disable_pri(dev);
+			return;
+		}
+
+		rc = pci_enable_pri(pdev, 32);
+		if (rc) {
+			dev_warn(dev,
+				 "COVE-IO PRI requested but PCI PRI enable failed: %d\n",
+				 rc);
+			riscv_iommu_cove_io_disable_pri(dev);
+			return;
+		}
+		info->pci_pri_enabled = true;
+	}
+
+	info->cove_io_pri_enabled = true;
+	dev_warn(dev, "COVE-IO experimental PCIe PRI page-request recovery enabled\n");
+#endif
 }
 
 /*
@@ -1340,6 +2302,7 @@ static int riscv_iommu_attach_paging_domain(struct iommu_domain *iommu_domain,
 	if (riscv_iommu_bond_link(domain, dev))
 		return -ENOMEM;
 
+	riscv_iommu_cove_io_try_enable_pri(iommu, dev);
 	riscv_iommu_iodir_update(iommu, dev, fsc, ta);
 	riscv_iommu_bond_unlink(info->domain, dev);
 	info->domain = domain;
@@ -1433,6 +2396,8 @@ static int riscv_iommu_attach_blocking_domain(struct iommu_domain *iommu_domain,
 	struct riscv_iommu_device *iommu = dev_to_iommu(dev);
 	struct riscv_iommu_info *info = dev_iommu_priv_get(dev);
 
+	riscv_iommu_cove_io_disable_pri(dev);
+
 	/* Make device context invalid, translation requests will fault w/ #258 */
 	riscv_iommu_iodir_update(iommu, dev, RISCV_IOMMU_FSC_BARE, 0);
 	riscv_iommu_bond_unlink(info->domain, dev);
@@ -1454,6 +2419,8 @@ static int riscv_iommu_attach_identity_domain(struct iommu_domain *iommu_domain,
 {
 	struct riscv_iommu_device *iommu = dev_to_iommu(dev);
 	struct riscv_iommu_info *info = dev_iommu_priv_get(dev);
+
+	riscv_iommu_cove_io_disable_pri(dev);
 
 	riscv_iommu_iodir_update(iommu, dev, RISCV_IOMMU_FSC_BARE, RISCV_IOMMU_PC_TA_V);
 	riscv_iommu_bond_unlink(info->domain, dev);
@@ -1479,6 +2446,32 @@ static struct iommu_group *riscv_iommu_device_group(struct device *dev)
 static int riscv_iommu_of_xlate(struct device *dev, const struct of_phandle_args *args)
 {
 	return iommu_fwspec_add_ids(dev, args->args, 1);
+}
+
+static bool riscv_iommu_capable(struct device *dev, enum iommu_cap cap)
+{
+	switch (cap) {
+	case IOMMU_CAP_CACHE_COHERENCY:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool riscv_iommu_cove_io_isolated_msi(struct device *dev)
+{
+	struct riscv_iommu_device *iommu = dev_to_iommu(dev);
+	struct riscv_iommu_info *info = dev_iommu_priv_get(dev);
+
+	if (!dev_is_pci(dev) || !info)
+		return false;
+
+	riscv_iommu_cove_io_init_msi_remap(iommu);
+	if (!iommu->cove_io_isolated_msi)
+		return false;
+
+	info->cove_io_isolated_msi = true;
+	return true;
 }
 
 static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
@@ -1526,19 +2519,33 @@ static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
 	}
 
 	dev_iommu_priv_set(dev, info);
+	riscv_iommu_cove_io_try_enable_pri(iommu, dev);
 
 	return &iommu->iommu;
 }
 
 static void riscv_iommu_release_device(struct device *dev)
 {
+	struct riscv_iommu_device *iommu = dev_to_iommu(dev);
 	struct riscv_iommu_info *info = dev_iommu_priv_get(dev);
 
+	riscv_iommu_cove_io_disable_pri(dev);
+#if IS_REACHABLE(CONFIG_KVM)
+	mutex_lock(&riscv_iommu_cove_io_msi_lock);
+	riscv_iommu_cove_io_deactivate_mrif(dev);
+	if (info && info->cove_io_msipt) {
+		riscv_iommu_free_pages(iommu, info->cove_io_msipt);
+		info->cove_io_msipt = NULL;
+	}
+	mutex_unlock(&riscv_iommu_cove_io_msi_lock);
+#endif
 	kfree_rcu_mightsleep(info);
 }
 
 static const struct iommu_ops riscv_iommu_ops = {
 	.of_xlate = riscv_iommu_of_xlate,
+	.capable = riscv_iommu_capable,
+	.cove_io_isolated_msi = riscv_iommu_cove_io_isolated_msi,
 	.identity_domain = &riscv_iommu_identity_domain,
 	.blocked_domain = &riscv_iommu_blocking_domain,
 	.release_domain = &riscv_iommu_blocking_domain,
@@ -1607,6 +2614,7 @@ void riscv_iommu_remove(struct riscv_iommu_device *iommu)
 	iommu_device_unregister(&iommu->iommu);
 	iommu_device_sysfs_remove(&iommu->iommu);
 	riscv_iommu_iodir_set_mode(iommu, RISCV_IOMMU_DDTP_IOMMU_MODE_OFF);
+	riscv_iommu_queue_disable(&iommu->prq);
 	riscv_iommu_queue_disable(&iommu->cmdq);
 	riscv_iommu_queue_disable(&iommu->fltq);
 }
@@ -1617,6 +2625,7 @@ int riscv_iommu_init(struct riscv_iommu_device *iommu)
 
 	RISCV_IOMMU_QUEUE_INIT(&iommu->cmdq, CQ);
 	RISCV_IOMMU_QUEUE_INIT(&iommu->fltq, FQ);
+	RISCV_IOMMU_QUEUE_INIT(&iommu->prq, PQ);
 
 	rc = riscv_iommu_init_check(iommu);
 	if (rc)
@@ -1625,6 +2634,8 @@ int riscv_iommu_init(struct riscv_iommu_device *iommu)
 	rc = riscv_iommu_iodir_alloc(iommu);
 	if (rc)
 		return rc;
+
+	riscv_iommu_cove_io_init_msi_remap(iommu);
 
 	rc = riscv_iommu_queue_alloc(iommu, &iommu->cmdq,
 				     sizeof(struct riscv_iommu_command));
@@ -1636,6 +2647,13 @@ int riscv_iommu_init(struct riscv_iommu_device *iommu)
 	if (rc)
 		return rc;
 
+	if (cove_io_pri && (iommu->caps & RISCV_IOMMU_CAPABILITIES_ATS)) {
+		rc = riscv_iommu_queue_alloc(iommu, &iommu->prq,
+					     sizeof(struct riscv_iommu_pq_record));
+		if (rc)
+			return rc;
+	}
+
 	rc = riscv_iommu_queue_enable(iommu, &iommu->cmdq, riscv_iommu_cmdq_process);
 	if (rc)
 		return rc;
@@ -1643,6 +2661,15 @@ int riscv_iommu_init(struct riscv_iommu_device *iommu)
 	rc = riscv_iommu_queue_enable(iommu, &iommu->fltq, riscv_iommu_fltq_process);
 	if (rc)
 		goto err_queue_disable;
+
+	if (iommu->prq.base) {
+		rc = riscv_iommu_queue_enable(iommu, &iommu->prq,
+					      riscv_iommu_prq_process);
+		if (rc)
+			goto err_queue_disable;
+		dev_warn(iommu->dev,
+			 "COVE-IO experimental PCIe PRI page-request queue enabled\n");
+	}
 
 	rc = riscv_iommu_iodir_set_mode(iommu, RISCV_IOMMU_DDTP_IOMMU_MODE_MAX);
 	if (rc)
@@ -1676,6 +2703,7 @@ err_remove_sysfs:
 err_iodir_off:
 	riscv_iommu_iodir_set_mode(iommu, RISCV_IOMMU_DDTP_IOMMU_MODE_OFF);
 err_queue_disable:
+	riscv_iommu_queue_disable(&iommu->prq);
 	riscv_iommu_queue_disable(&iommu->fltq);
 	riscv_iommu_queue_disable(&iommu->cmdq);
 	return rc;

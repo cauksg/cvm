@@ -211,7 +211,7 @@ int iommufd_ioas_map_file(struct iommufd_ucmd *ucmd)
 
 	if (cmd->flags &
 	     ~(IOMMU_IOAS_MAP_FIXED_IOVA | IOMMU_IOAS_MAP_WRITEABLE |
-	       IOMMU_IOAS_MAP_READABLE))
+	       IOMMU_IOAS_MAP_READABLE | IOMMU_IOAS_MAP_COVE_IO_LAZY))
 		return -EOPNOTSUPP;
 
 	if (cmd->iova >= ULONG_MAX || cmd->length >= ULONG_MAX)
@@ -227,6 +227,8 @@ int iommufd_ioas_map_file(struct iommufd_ucmd *ucmd)
 
 	if (!(cmd->flags & IOMMU_IOAS_MAP_FIXED_IOVA))
 		flags = IOPT_ALLOC_IOVA;
+	if (cmd->flags & IOMMU_IOAS_MAP_COVE_IO_LAZY)
+		flags |= IOPT_COVE_IO_LAZY;
 
 	rc = iopt_map_file_pages(ucmd->ictx, &ioas->iopt, &iova, cmd->fd,
 				 cmd->start, cmd->length,
@@ -251,7 +253,7 @@ int iommufd_ioas_map(struct iommufd_ucmd *ucmd)
 
 	if ((cmd->flags &
 	     ~(IOMMU_IOAS_MAP_FIXED_IOVA | IOMMU_IOAS_MAP_WRITEABLE |
-	       IOMMU_IOAS_MAP_READABLE)) ||
+	       IOMMU_IOAS_MAP_READABLE | IOMMU_IOAS_MAP_COVE_IO_LAZY)) ||
 	    cmd->__reserved)
 		return -EOPNOTSUPP;
 	if (cmd->iova >= ULONG_MAX || cmd->length >= ULONG_MAX)
@@ -267,6 +269,8 @@ int iommufd_ioas_map(struct iommufd_ucmd *ucmd)
 
 	if (!(cmd->flags & IOMMU_IOAS_MAP_FIXED_IOVA))
 		flags = IOPT_ALLOC_IOVA;
+	if (cmd->flags & IOMMU_IOAS_MAP_COVE_IO_LAZY)
+		flags |= IOPT_COVE_IO_LAZY;
 	rc = iopt_map_user_pages(ucmd->ictx, &ioas->iopt, &iova,
 				 u64_to_user_ptr(cmd->user_va), cmd->length,
 				 conv_iommu_prot(cmd->flags), flags);
@@ -295,7 +299,7 @@ int iommufd_ioas_copy(struct iommufd_ucmd *ucmd)
 
 	if ((cmd->flags &
 	     ~(IOMMU_IOAS_MAP_FIXED_IOVA | IOMMU_IOAS_MAP_WRITEABLE |
-	       IOMMU_IOAS_MAP_READABLE)))
+	       IOMMU_IOAS_MAP_READABLE | IOMMU_IOAS_MAP_COVE_IO_LAZY)))
 		return -EOPNOTSUPP;
 	if (cmd->length >= ULONG_MAX || cmd->src_iova >= ULONG_MAX ||
 	    cmd->dst_iova >= ULONG_MAX)
@@ -322,6 +326,8 @@ int iommufd_ioas_copy(struct iommufd_ucmd *ucmd)
 
 	if (!(cmd->flags & IOMMU_IOAS_MAP_FIXED_IOVA))
 		flags = IOPT_ALLOC_IOVA;
+	if (cmd->flags & IOMMU_IOAS_MAP_COVE_IO_LAZY)
+		flags |= IOPT_COVE_IO_LAZY;
 	iova = cmd->dst_iova;
 	rc = iopt_map_pages(&dst_ioas->iopt, &pages_list, cmd->length, &iova,
 			    conv_iommu_prot(cmd->flags), flags);

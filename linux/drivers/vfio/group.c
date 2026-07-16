@@ -497,6 +497,66 @@ vfio_group_find_from_iommu(struct iommu_group *iommu_group)
 	return NULL;
 }
 
+#if IS_ENABLED(CONFIG_VFIO_CONTAINER) || IS_ENABLED(CONFIG_IOMMUFD)
+static struct vfio_group *vfio_group_get_from_iommu(struct iommu_group *iommu_group)
+{
+	struct vfio_group *group;
+
+	mutex_lock(&vfio.group_lock);
+	group = vfio_group_find_from_iommu(iommu_group);
+	if (group)
+		get_device(&group->dev);
+	mutex_unlock(&vfio.group_lock);
+
+	return group;
+}
+
+int vfio_device_dma_fault_recover(struct device *dev, dma_addr_t iova,
+				  int prot, phys_addr_t *phys, size_t *size)
+{
+	struct iommu_group *iommu_group;
+	struct vfio_group *group;
+	int ret;
+
+	if (phys)
+		*phys = 0;
+	if (size)
+		*size = 0;
+
+	iommu_group = iommu_group_get(dev);
+	if (!iommu_group)
+		return -ENODEV;
+
+	group = vfio_group_get_from_iommu(iommu_group);
+	if (!group) {
+		ret = -ENODEV;
+		goto out_put_iommu_group;
+	}
+
+	mutex_lock(&group->group_lock);
+	if (group->iommu_group != iommu_group) {
+		ret = -ENODEV;
+		goto out_unlock_group;
+	}
+
+	if (group->iommufd && !group->container) {
+		ret = iommufd_device_dma_fault_recover(group->iommufd, dev,
+						       iova, prot, phys, size);
+		goto out_unlock_group;
+	}
+
+	ret = vfio_container_dma_fault_recover(group, iova, prot, phys, size);
+
+out_unlock_group:
+	mutex_unlock(&group->group_lock);
+	put_device(&group->dev);
+out_put_iommu_group:
+	iommu_group_put(iommu_group);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(vfio_device_dma_fault_recover);
+#endif
+
 static void vfio_group_release(struct device *dev)
 {
 	struct vfio_group *group = container_of(dev, struct vfio_group, dev);

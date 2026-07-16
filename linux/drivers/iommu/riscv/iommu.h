@@ -55,11 +55,21 @@ struct riscv_iommu_device {
 	/* hardware queues */
 	struct riscv_iommu_queue cmdq;
 	struct riscv_iommu_queue fltq;
+	struct riscv_iommu_queue prq;
 
 	/* device directory */
 	unsigned int ddt_mode;
 	dma_addr_t ddt_phys;
 	u64 *ddt_root;
+
+	/* Experimental COVE-IO MSI remap table. */
+	struct riscv_iommu_msipte *cove_io_msipt;
+	dma_addr_t cove_io_msipt_phys;
+	size_t cove_io_msipt_size;
+	u64 cove_io_msi_entries;
+	u64 cove_io_msi_addr_mask;
+	u64 cove_io_msi_addr_pattern;
+	bool cove_io_isolated_msi;
 };
 
 int riscv_iommu_init(struct riscv_iommu_device *iommu);

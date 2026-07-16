@@ -1612,6 +1612,12 @@ struct vfio_iommu_type1_dma_map {
 #define VFIO_DMA_MAP_FLAG_READ (1 << 0)		/* readable from device */
 #define VFIO_DMA_MAP_FLAG_WRITE (1 << 1)	/* writable from device */
 #define VFIO_DMA_MAP_FLAG_VADDR (1 << 2)
+/*
+ * xs-cvm private: create the VFIO type1 DMA accounting entry without
+ * installing IOMMU PTEs up front. COVE-IO fault recovery installs pages after
+ * monitor authorization.
+ */
+#define VFIO_DMA_MAP_FLAG_COVE_IO_LAZY (1 << 3)
 	__u64	vaddr;				/* Process virtual address */
 	__u64	iova;				/* IO virtual address */
 	__u64	size;				/* Size of mapping (bytes) */

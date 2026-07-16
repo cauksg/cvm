@@ -36,16 +36,45 @@ case "$OPENSBI_DIR" in
 esac
 CONFIG_FILE="$BUILD_PATH/.config"
 
+set_config_y()
+{
+	local opt="$1"
+
+	if grep -q "^${opt}=" "$CONFIG_FILE"; then
+		sed -i "s|^${opt}=.*$|${opt}=y|" "$CONFIG_FILE"
+	elif grep -q "^# ${opt} is not set$" "$CONFIG_FILE"; then
+		sed -i "s|^# ${opt} is not set$|${opt}=y|" "$CONFIG_FILE"
+	else
+		printf '%s=y\n' "$opt" >> "$CONFIG_FILE"
+	fi
+}
+
+unset_config()
+{
+	local opt="$1"
+
+	if grep -q "^${opt}=" "$CONFIG_FILE"; then
+		sed -i "s|^${opt}=.*$|# ${opt} is not set|" "$CONFIG_FILE"
+	elif ! grep -q "^# ${opt} is not set$" "$CONFIG_FILE"; then
+		printf '# %s is not set\n' "$opt" >> "$CONFIG_FILE"
+	fi
+}
+
 mkdir -p "$BUILD_PATH"
 #make clean
 make -C "$LINUX_DIR" O="$BUILD_PATH" defconfig
 sed -i 's|.*CONFIG_INITRAMFS_SOURCE.*$|CONFIG_INITRAMFS_SOURCE=""|' "$CONFIG_FILE"
-sed -i 's|.*CONFIG_NET_9P_VIRTIO.*$|CONFIG_NET_9P_VIRTIO=y|' "$CONFIG_FILE"
-sed -i 's|.*CONFIG_VIRTIO_NET.*$|CONFIG_VIRTIO_NET=y|' "$CONFIG_FILE"
-sed -i 's|.*CONFIG_DMA_RESTRICTED_POOL.*$|CONFIG_DMA_RESTRICTED_POOL=y|' "$CONFIG_FILE"
-sed -i 's|.*CONFIG_KVM=.*$|CONFIG_KVM=y|' "$CONFIG_FILE"
+set_config_y CONFIG_NET_9P_VIRTIO
+set_config_y CONFIG_VIRTIO_NET
+set_config_y CONFIG_DMA_RESTRICTED_POOL
+set_config_y CONFIG_KVM
+set_config_y CONFIG_IOMMU_SUPPORT
+set_config_y CONFIG_RISCV_IOMMU
+set_config_y CONFIG_VFIO
+set_config_y CONFIG_VFIO_PCI
+unset_config CONFIG_VFIO_NOIOMMU
 # using rdcycle in user space
-sed -i 's|.*CONFIG_RISCV_PMU_SBI.*$|# CONFIG_RISCV_PMU_SBI is not set|' "$CONFIG_FILE"
+unset_config CONFIG_RISCV_PMU_SBI
 make -C "$LINUX_DIR" O="$BUILD_PATH" -j $(nproc)
 
 #compile kvmtool
@@ -71,6 +100,7 @@ mkdir -p busybox-1.33.1/_install/dev
 mkdir -p busybox-1.33.1/_install/proc
 mkdir -p busybox-1.33.1/_install/sys
 mkdir -p busybox-1.33.1/_install/apps
+mkdir -p busybox-1.33.1/_install/scripts
 ln -sf /sbin/init busybox-1.33.1/_install/init
 cp -f ./howto/configs/busybox/fstab busybox-1.33.1/_install/etc/fstab
 cp -f ./howto/configs/busybox/rcS busybox-1.33.1/_install/etc/init.d/rcS
@@ -78,6 +108,13 @@ cp -f ./howto/configs/busybox/motd busybox-1.33.1/_install/etc/motd
 cp -f "$KVMTOOL_DIR/lkvm-static" busybox-1.33.1/_install/apps
 cp -f "$BUILD_PATH/arch/riscv/boot/Image" busybox-1.33.1/_install/apps
 cp -f ./run-guest-os.sh busybox-1.33.1/_install
+cp -f ./vfio-bind-pci.sh busybox-1.33.1/_install
+cp -f ./scripts/cove-io-host-autorun.sh busybox-1.33.1/_install/scripts
+cp -f ./scripts/cove-io-guest-autorun.sh busybox-1.33.1/_install/scripts
+cp -f ./scripts/cove-io-vfio-lazy-fault-test.sh busybox-1.33.1/_install/scripts
+cp -f ./scripts/cove-io-vfio-msi-test.sh busybox-1.33.1/_install/scripts
+cp -f ./scripts/cove-io-vfio-pri-test.sh busybox-1.33.1/_install/scripts
+chmod +x busybox-1.33.1/_install/scripts/cove-io-*.sh
 
 mkdir -p busybox-1.33.1/_install/tmp
 mkdir -p busybox-1.33.1/_install/dev/pts
@@ -94,6 +131,7 @@ cp -rf dependencies/ldd busybox-1.33.1/_install/bin/
 cp -rf dependencies/db/* busybox-1.33.1/_install/bin/
 cp -rf dependencies/lib/* busybox-1.33.1/_install/lib/
 cp -rf dependencies/etc/* busybox-1.33.1/_install/etc/
+cp -f ./howto/configs/busybox/inittab busybox-1.33.1/_install/etc/inittab
 
 GUEST_INITRD="$TOP_DIR/rootfs_guest_riscv64.cpio"
 rm -f "$GUEST_INITRD"
@@ -112,10 +150,15 @@ cd busybox-1.33.1/_install; find ./ | cpio -o -H newc > "$TOP_DIR/$ROOTFS_IMG" |
 #compile Linux with RISC-V KVM support
 sed -i 's|.*CONFIG_INITRAMFS_SOURCE=.*$|CONFIG_INITRAMFS_SOURCE=""|' "$CONFIG_FILE"
 # using rdcycle in user space
-sed -i 's|.*CONFIG_RISCV_PMU_SBI.*$|# CONFIG_RISCV_PMU_SBI is not set|' "$CONFIG_FILE"
+unset_config CONFIG_RISCV_PMU_SBI
 # Compile Host Kernel with TUN/TAP support for Guest virtual network
-sed -i 's|# CONFIG_TUN is not set.*$|CONFIG_TUN=y|' "$CONFIG_FILE"
-sed -i 's|.*CONFIG_KVM=.*$|CONFIG_KVM=y|' "$CONFIG_FILE"
+set_config_y CONFIG_TUN
+set_config_y CONFIG_KVM
+set_config_y CONFIG_IOMMU_SUPPORT
+set_config_y CONFIG_RISCV_IOMMU
+set_config_y CONFIG_VFIO
+set_config_y CONFIG_VFIO_PCI
+unset_config CONFIG_VFIO_NOIOMMU
 make -C "$LINUX_DIR" O="$BUILD_PATH" -j $(nproc)
 
 

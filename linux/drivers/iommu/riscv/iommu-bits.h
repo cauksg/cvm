@@ -521,6 +521,10 @@ struct riscv_iommu_command {
 #define RISCV_IOMMU_CMD_ATS_PRGR_RESP_CODE	GENMASK_ULL(47, 44)
 #define RISCV_IOMMU_CMD_ATS_PRGR_DST_ID		GENMASK_ULL(63, 48)
 
+#define RISCV_IOMMU_CMD_ATS_PRGR_RESP_SUCCESS		0
+#define RISCV_IOMMU_CMD_ATS_PRGR_RESP_INVALID_REQUEST	1
+#define RISCV_IOMMU_CMD_ATS_PRGR_RESP_FAILURE		2
+
 /**
  * struct riscv_iommu_fq_record - Fault/Event Queue Record
  * @hdr: Header, includes fault/event cause, PID/DID, transaction type etc
@@ -697,6 +701,8 @@ struct riscv_iommu_msipte {
 /* Fields on pte */
 #define RISCV_IOMMU_MSIPTE_V		BIT_ULL(0)
 #define RISCV_IOMMU_MSIPTE_M		GENMASK_ULL(2, 1)
+#define RISCV_IOMMU_MSIPTE_M_MRIF	1
+#define RISCV_IOMMU_MSIPTE_M_BASIC	3
 #define RISCV_IOMMU_MSIPTE_MRIF_ADDR	GENMASK_ULL(53, 7)	/* When M == 1 (MRIF mode) */
 #define RISCV_IOMMU_MSIPTE_PPN		RISCV_IOMMU_PPN_FIELD	/* When M == 3 (basic mode) */
 #define RISCV_IOMMU_MSIPTE_C		BIT_ULL(63)
@@ -779,6 +785,25 @@ static inline void riscv_iommu_cmd_iodir_set_pid(struct riscv_iommu_command *cmd
 						 unsigned int pasid)
 {
 	cmd->dword0 |= FIELD_PREP(RISCV_IOMMU_CMD_IODIR_PID, pasid);
+}
+
+static inline void riscv_iommu_cmd_ats_prgr(struct riscv_iommu_command *cmd,
+					    unsigned int devid,
+					    unsigned int pasid,
+					    bool pasid_valid,
+					    unsigned int prgi,
+					    unsigned int response_code)
+{
+	cmd->dword0 = FIELD_PREP(RISCV_IOMMU_CMD_OPCODE, RISCV_IOMMU_CMD_ATS_OPCODE) |
+		      FIELD_PREP(RISCV_IOMMU_CMD_FUNC, RISCV_IOMMU_CMD_ATS_FUNC_PRGR) |
+		      FIELD_PREP(RISCV_IOMMU_CMD_ATS_RID, devid);
+	if (pasid_valid)
+		cmd->dword0 |= FIELD_PREP(RISCV_IOMMU_CMD_ATS_PID, pasid) |
+			       RISCV_IOMMU_CMD_ATS_PV;
+
+	cmd->dword1 = FIELD_PREP(RISCV_IOMMU_CMD_ATS_PRGR_PRG_INDEX, prgi) |
+		      FIELD_PREP(RISCV_IOMMU_CMD_ATS_PRGR_RESP_CODE,
+				 response_code);
 }
 
 #endif /* _RISCV_IOMMU_BITS_H_ */

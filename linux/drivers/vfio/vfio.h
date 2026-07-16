@@ -226,6 +226,10 @@ struct vfio_iommu_driver_ops {
 				  void *data, size_t count, bool write);
 	struct iommu_domain *(*group_iommu_domain)(void *iommu_data,
 						   struct iommu_group *group);
+	int		(*dma_fault_recover)(void *iommu_data,
+					     struct iommu_group *group,
+					     dma_addr_t iova, int prot,
+					     phys_addr_t *phys, size_t *size);
 };
 
 struct vfio_iommu_driver {
@@ -252,6 +256,9 @@ void vfio_device_container_unpin_pages(struct vfio_device *device,
 int vfio_device_container_dma_rw(struct vfio_device *device,
 				 dma_addr_t iova, void *data,
 				 size_t len, bool write);
+int vfio_container_dma_fault_recover(struct vfio_group *group,
+				     dma_addr_t iova, int prot,
+				     phys_addr_t *phys, size_t *size);
 
 int __init vfio_container_init(void);
 void vfio_container_cleanup(void);
@@ -304,6 +311,14 @@ static inline void vfio_device_container_unpin_pages(struct vfio_device *device,
 static inline int vfio_device_container_dma_rw(struct vfio_device *device,
 					       dma_addr_t iova, void *data,
 					       size_t len, bool write)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int vfio_container_dma_fault_recover(struct vfio_group *group,
+						   dma_addr_t iova, int prot,
+						   phys_addr_t *phys,
+						   size_t *size)
 {
 	return -EOPNOTSUPP;
 }

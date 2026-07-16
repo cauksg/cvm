@@ -92,6 +92,7 @@ struct vfio_dma {
 	size_t			size;		/* Map size (bytes) */
 	int			prot;		/* IOMMU_READ/WRITE */
 	bool			iommu_mapped;
+	bool			cove_io_lazy;
 	bool			lock_cap;	/* capable(CAP_IPC_LOCK) */
 	bool			vaddr_invalid;
 	bool			has_rsvd;	/* has 1 or more rsvd pfns */
@@ -1155,6 +1156,30 @@ static long vfio_unmap_unpin(struct vfio_iommu *iommu, struct vfio_dma *dma,
 	long unlocked = 0;
 	size_t pos = 0;
 
+	if (dma->cove_io_lazy) {
+		struct rb_node *node;
+
+		while ((node = rb_first(&dma->pfn_list))) {
+			struct vfio_pfn *vpfn =
+				rb_entry(node, struct vfio_pfn, node);
+
+			list_for_each_entry(d, &iommu->domain_list, next) {
+				iommu_unmap(d->domain, vpfn->iova, PAGE_SIZE);
+				cond_resched();
+			}
+
+			unlocked += put_pfn(vpfn->pfn, dma->prot);
+			vfio_remove_from_pfn_list(dma, vpfn);
+		}
+
+		if (do_accounting) {
+			vfio_lock_acct(dma, -unlocked, true);
+			return 0;
+		}
+
+		return unlocked;
+	}
+
 	if (!dma->size)
 		return 0;
 
@@ -1233,7 +1258,7 @@ static long vfio_unmap_unpin(struct vfio_iommu *iommu, struct vfio_dma *dma,
 
 static void vfio_remove_dma(struct vfio_iommu *iommu, struct vfio_dma *dma)
 {
-	WARN_ON(!RB_EMPTY_ROOT(&dma->pfn_list));
+	WARN_ON(!dma->cove_io_lazy && !RB_EMPTY_ROOT(&dma->pfn_list));
 	vfio_unmap_unpin(iommu, dma, true);
 	vfio_unlink_dma(iommu, dma);
 	put_task_struct(dma->task);
@@ -1518,7 +1543,7 @@ again:
 			continue;
 		}
 
-		if (!RB_EMPTY_ROOT(&dma->pfn_list)) {
+		if (!dma->cove_io_lazy && !RB_EMPTY_ROOT(&dma->pfn_list)) {
 			if (dma_last == dma) {
 				BUG_ON(++retries > 10);
 			} else {
@@ -1625,6 +1650,115 @@ static int vfio_pin_map_dma(struct vfio_iommu *iommu, struct vfio_dma *dma,
 	return ret;
 }
 
+static int vfio_iommu_type1_dma_fault_recover(void *iommu_data,
+					      struct iommu_group *iommu_group,
+					      dma_addr_t user_iova, int prot,
+					      phys_addr_t *phys, size_t *size)
+{
+	struct vfio_iommu *iommu = iommu_data;
+	struct vfio_iommu_group *group;
+	struct vfio_dma *dma;
+	struct vfio_pfn *vpfn;
+	dma_addr_t iova = user_iova & PAGE_MASK;
+	unsigned long pfn;
+	unsigned long vaddr;
+	long unlocked;
+	int ret;
+
+	if (!iommu || !iommu_group || !phys || !size)
+		return -EINVAL;
+
+	*phys = 0;
+	*size = 0;
+
+	mutex_lock(&iommu->lock);
+
+	if (WARN_ONCE(iommu->vaddr_invalid_count,
+		      "vfio COVE-IO fault recovery not allowed with VFIO_UPDATE_VADDR\n")) {
+		ret = -EBUSY;
+		goto out_unlock;
+	}
+
+	if (!(iommu->pgsize_bitmap & PAGE_SIZE)) {
+		ret = -EINVAL;
+		goto out_unlock;
+	}
+
+	group = vfio_iommu_find_iommu_group(iommu, iommu_group);
+	if (!group) {
+		ret = -ENODEV;
+		goto out_unlock;
+	}
+
+	dma = vfio_find_dma(iommu, iova, PAGE_SIZE);
+	if (!dma) {
+		ret = -ENOENT;
+		goto out_unlock;
+	}
+
+	if (!dma->cove_io_lazy) {
+		ret = -EOPNOTSUPP;
+		goto out_unlock;
+	}
+
+	if ((dma->prot & prot) != prot) {
+		ret = -EPERM;
+		goto out_unlock;
+	}
+
+	if (iova < dma->iova ||
+	    dma->size < PAGE_SIZE ||
+	    iova - dma->iova > dma->size - PAGE_SIZE) {
+		ret = -EINVAL;
+		goto out_unlock;
+	}
+
+	vpfn = vfio_find_vpfn(dma, iova);
+	if (vpfn) {
+		*phys = (phys_addr_t)vpfn->pfn << PAGE_SHIFT;
+		*size = PAGE_SIZE;
+		ret = 0;
+		goto out_unlock;
+	}
+
+	vaddr = dma->vaddr + (iova - dma->iova);
+	ret = vfio_pin_page_external(dma, vaddr, &pfn, true);
+	if (ret)
+		goto out_unlock;
+
+	ret = vfio_add_to_pfn_list(dma, iova, pfn);
+	if (ret) {
+		if (put_pfn(pfn, dma->prot))
+			vfio_lock_acct(dma, -1, true);
+		goto out_unlock;
+	}
+
+	ret = vfio_iommu_map(iommu, iova, pfn, 1, dma->prot);
+	if (ret) {
+		vpfn = vfio_find_vpfn(dma, iova);
+		if (vpfn) {
+			unlocked = vfio_iova_put_vfio_pfn(dma, vpfn);
+			if (unlocked)
+				vfio_lock_acct(dma, -unlocked, true);
+		}
+		goto out_unlock;
+	}
+
+	if (iommu->dirty_page_tracking) {
+		unsigned long pgshift = __ffs(iommu->pgsize_bitmap);
+
+		bitmap_set(dma->bitmap, (iova - dma->iova) >> pgshift, 1);
+	}
+
+	*phys = (phys_addr_t)pfn << PAGE_SHIFT;
+	*size = PAGE_SIZE;
+	ret = 0;
+
+out_unlock:
+	mutex_unlock(&iommu->lock);
+	return ret;
+}
+
 /*
  * Check dma map request is within a valid iova range
  */
@@ -1682,6 +1816,7 @@ static int vfio_dma_do_map(struct vfio_iommu *iommu,
 			   struct vfio_iommu_type1_dma_map *map)
 {
 	bool set_vaddr = map->flags & VFIO_DMA_MAP_FLAG_VADDR;
+	bool cove_io_lazy = map->flags & VFIO_DMA_MAP_FLAG_COVE_IO_LAZY;
 	dma_addr_t iova = map->iova;
 	dma_addr_t iova_end;
 	unsigned long vaddr = map->vaddr;
@@ -1709,6 +1844,9 @@ static int vfio_dma_do_map(struct vfio_iommu *iommu,
 		prot |= IOMMU_READ;
 
 	if ((prot && set_vaddr) || (!prot && !set_vaddr))
+		return -EINVAL;
+
+	if (cove_io_lazy && set_vaddr)
 		return -EINVAL;
 
 	mutex_lock(&iommu->lock);
@@ -1763,6 +1901,7 @@ static int vfio_dma_do_map(struct vfio_iommu *iommu,
 	dma->iova = iova;
 	dma->vaddr = vaddr;
 	dma->prot = prot;
+	dma->cove_io_lazy = cove_io_lazy;
 
 	/*
 	 * We need to be able to both add to a task's locked memory and test
@@ -1785,7 +1924,7 @@ static int vfio_dma_do_map(struct vfio_iommu *iommu,
 	vfio_link_dma(iommu, dma);
 
 	/* Don't pin and map if container doesn't contain IOMMU capable domain*/
-	if (list_empty(&iommu->domain_list))
+	if (list_empty(&iommu->domain_list) || cove_io_lazy)
 		dma->size = size;
 	else
 		ret = vfio_pin_map_dma(iommu, dma, size);
@@ -1824,6 +1963,24 @@ static int vfio_iommu_replay(struct vfio_iommu *iommu,
 		size_t pos = 0;
 
 		dma = rb_entry(n, struct vfio_dma, node);
+
+		if (dma->cove_io_lazy) {
+			struct rb_node *p;
+
+			for (p = rb_first(&dma->pfn_list); p; p = rb_next(p)) {
+				struct vfio_pfn *vpfn =
+					rb_entry(p, struct vfio_pfn, node);
+
+				ret = iommu_map(domain->domain, vpfn->iova,
+						(phys_addr_t)vpfn->pfn << PAGE_SHIFT,
+						PAGE_SIZE,
+						dma->prot | IOMMU_CACHE,
+						GFP_KERNEL_ACCOUNT);
+				if (ret)
+					goto unwind;
+			}
+			continue;
+		}
 
 		while (pos < dma->size) {
 			dma_addr_t iova = dma->iova + pos;
@@ -1897,7 +2054,8 @@ static int vfio_iommu_replay(struct vfio_iommu *iommu,
 	for (n = rb_first(&iommu->dma_list); n; n = rb_next(n)) {
 		struct vfio_dma *dma = rb_entry(n, struct vfio_dma, node);
 
-		dma->iommu_mapped = true;
+		if (!dma->cove_io_lazy)
+			dma->iommu_mapped = true;
 	}
 
 	vfio_batch_fini(&batch);
@@ -1907,6 +2065,19 @@ unwind:
 	for (; n; n = rb_prev(n)) {
 		struct vfio_dma *dma = rb_entry(n, struct vfio_dma, node);
 		size_t pos = 0;
+
+		if (dma->cove_io_lazy) {
+			struct rb_node *p;
+
+			for (p = rb_first(&dma->pfn_list); p; p = rb_next(p)) {
+				struct vfio_pfn *vpfn =
+					rb_entry(p, struct vfio_pfn, node);
+
+				iommu_unmap(domain->domain, vpfn->iova,
+					    PAGE_SIZE);
+			}
+			continue;
+		}
 
 		if (dma->iommu_mapped) {
 			iommu_unmap(domain->domain, dma->iova, dma->size);
@@ -2241,6 +2412,7 @@ static int vfio_iommu_type1_attach_group(void *iommu_data,
 	struct vfio_iommu_group *group;
 	struct vfio_domain *domain, *d;
 	bool resv_msi;
+	bool isolated_msi, cove_io_isolated_msi;
 	phys_addr_t resv_msi_base = 0;
 	struct iommu_domain_geometry *geo;
 	LIST_HEAD(iova_copy);
@@ -2294,6 +2466,20 @@ static int vfio_iommu_type1_attach_group(void *iommu_data,
 		goto out_free_domain;
 	}
 
+	isolated_msi = iommu_group_has_isolated_msi(iommu_group);
+	cove_io_isolated_msi = !isolated_msi &&
+			       iommu_group_has_cove_io_isolated_msi(iommu_group);
+	if (!allow_unsafe_interrupts && !isolated_msi && !cove_io_isolated_msi) {
+		pr_warn("%s: No interrupt remapping support. Enable a platform interrupt-remapping path, or use the module param \"allow_unsafe_interrupts\" for test-only VFIO IOMMU support on this platform\n",
+		       __func__);
+		ret = -EPERM;
+		goto out_domain;
+	}
+
+	if (cove_io_isolated_msi)
+		pr_warn("%s: using experimental COVE-IO RISC-V IOMMU MSI remap instead of generic isolated MSI\n",
+			__func__);
+
 	ret = iommu_attach_group(domain->domain, group->iommu_group);
 	if (ret)
 		goto out_domain;
@@ -2337,14 +2523,6 @@ static int vfio_iommu_type1_attach_group(void *iommu_data,
 
 	INIT_LIST_HEAD(&domain->group_list);
 	list_add(&group->next, &domain->group_list);
-
-	if (!allow_unsafe_interrupts &&
-	    !iommu_group_has_isolated_msi(iommu_group)) {
-		pr_warn("%s: No interrupt remapping support.  Use the module param \"allow_unsafe_interrupts\" to enable VFIO IOMMU support on this platform\n",
-		       __func__);
-		ret = -EPERM;
-		goto out_detach;
-	}
 
 	/*
 	 * If the IOMMU can block non-coherent operations (ie PCIe TLPs with
@@ -2899,7 +3077,8 @@ static int vfio_iommu_type1_map_dma(struct vfio_iommu *iommu,
 	struct vfio_iommu_type1_dma_map map;
 	unsigned long minsz;
 	uint32_t mask = VFIO_DMA_MAP_FLAG_READ | VFIO_DMA_MAP_FLAG_WRITE |
-			VFIO_DMA_MAP_FLAG_VADDR;
+			VFIO_DMA_MAP_FLAG_VADDR |
+			VFIO_DMA_MAP_FLAG_COVE_IO_LAZY;
 
 	minsz = offsetofend(struct vfio_iommu_type1_dma_map, size);
 
@@ -3264,6 +3443,7 @@ static const struct vfio_iommu_driver_ops vfio_iommu_driver_ops_type1 = {
 	.unregister_device	= vfio_iommu_type1_unregister_device,
 	.dma_rw			= vfio_iommu_type1_dma_rw,
 	.group_iommu_domain	= vfio_iommu_type1_group_iommu_domain,
+	.dma_fault_recover	= vfio_iommu_type1_dma_fault_recover,
 };
 
 static int __init vfio_iommu_type1_init(void)

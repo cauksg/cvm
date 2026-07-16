@@ -2022,6 +2022,43 @@ bool iommu_group_has_isolated_msi(struct iommu_group *group)
 EXPORT_SYMBOL_GPL(iommu_group_has_isolated_msi);
 
 /**
+ * iommu_group_has_cove_io_isolated_msi() - Compute COVE-IO MSI isolation
+ *       for a group
+ * @group: Group to query
+ *
+ * This is intentionally separate from iommu_group_has_isolated_msi().  The
+ * latter is the generic VFIO/iommufd interrupt-remapping contract.  COVE-IO
+ * uses this experimental hook only when an IOMMU driver has explicitly
+ * installed a COVE-IO MSI protection path for the requesting device.
+ */
+bool iommu_group_has_cove_io_isolated_msi(struct iommu_group *group)
+{
+	struct group_device *group_dev;
+	bool ret = true;
+
+	mutex_lock(&group->mutex);
+	for_each_group_device(group, group_dev) {
+		struct device *dev = group_dev->dev;
+		const struct iommu_ops *ops;
+
+		if (!dev_has_iommu(dev)) {
+			ret = false;
+			break;
+		}
+
+		ops = dev_iommu_ops(dev);
+		if (!ops->cove_io_isolated_msi ||
+		    !ops->cove_io_isolated_msi(dev)) {
+			ret = false;
+			break;
+		}
+	}
+	mutex_unlock(&group->mutex);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(iommu_group_has_cove_io_isolated_msi);
+
+/**
  * iommu_set_fault_handler() - set a fault handler for an iommu domain
  * @domain: iommu domain
  * @handler: fault handler

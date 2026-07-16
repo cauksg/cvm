@@ -4,6 +4,7 @@
 #ifndef __IOMMUFD_PRIVATE_H
 #define __IOMMUFD_PRIVATE_H
 
+#include <linux/atomic.h>
 #include <linux/iommu.h>
 #include <linux/iommufd.h>
 #include <linux/iova_bitmap.h>
@@ -103,6 +104,7 @@ int iopt_get_pages(struct io_pagetable *iopt, unsigned long iova,
 void iopt_free_pages_list(struct list_head *pages_list);
 enum {
 	IOPT_ALLOC_IOVA = 1 << 0,
+	IOPT_COVE_IO_LAZY = 1 << 1,
 };
 int iopt_map_user_pages(struct iommufd_ctx *ictx, struct io_pagetable *iopt,
 			unsigned long *iova, void __user *uptr,
@@ -118,6 +120,10 @@ int iopt_map_pages(struct io_pagetable *iopt, struct list_head *pages_list,
 int iopt_unmap_iova(struct io_pagetable *iopt, unsigned long iova,
 		    unsigned long length, unsigned long *unmapped);
 int iopt_unmap_all(struct io_pagetable *iopt, unsigned long *unmapped);
+int iopt_cove_io_dma_fault_recover(struct io_pagetable *iopt,
+				   struct iommu_domain *domain,
+				   unsigned long iova, int prot,
+				   phys_addr_t *phys, size_t *size);
 
 int iopt_read_and_clear_dirty_data(struct io_pagetable *iopt,
 				   struct iommu_domain *domain,
@@ -364,6 +370,7 @@ struct iommufd_hw_pagetable {
 	struct iommufd_object obj;
 	struct iommu_domain *domain;
 	struct iommufd_fault *fault;
+	atomic_t attached_devices;
 	bool pasid_compat : 1;
 };
 

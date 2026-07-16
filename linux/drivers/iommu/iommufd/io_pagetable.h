@@ -48,6 +48,7 @@ struct iopt_area {
 	/* IOMMU_READ, IOMMU_WRITE, etc */
 	int iommu_prot;
 	bool prevent_access : 1;
+	bool cove_io_lazy : 1;
 	unsigned int num_accesses;
 	unsigned int num_locks;
 };

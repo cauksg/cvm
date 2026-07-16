@@ -570,6 +570,27 @@ int vfio_device_container_dma_rw(struct vfio_device *device,
 				   write);
 }
 
+int vfio_container_dma_fault_recover(struct vfio_group *group,
+				     dma_addr_t iova, int prot,
+				     phys_addr_t *phys, size_t *size)
+{
+	struct vfio_container *container = group->container;
+	struct vfio_iommu_driver *driver;
+
+	lockdep_assert_held(&group->group_lock);
+
+	if (!container)
+		return -ENODEV;
+
+	driver = container->iommu_driver;
+	if (!driver || !driver->ops->dma_fault_recover)
+		return -EOPNOTSUPP;
+
+	return driver->ops->dma_fault_recover(container->iommu_data,
+					      group->iommu_group, iova, prot,
+					      phys, size);
+}
+
 int __init vfio_container_init(void)
 {
 	int ret;

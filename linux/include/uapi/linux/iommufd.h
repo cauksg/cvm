@@ -182,11 +182,14 @@ struct iommu_ioas_allow_iovas {
  *                             IOVA to place the mapping at
  * @IOMMU_IOAS_MAP_WRITEABLE: DMA is allowed to write to this mapping
  * @IOMMU_IOAS_MAP_READABLE: DMA is allowed to read from this mapping
+ * @IOMMU_IOAS_MAP_COVE_IO_LAZY: xs-cvm private; install IOMMU PTEs lazily
+ *                               after COVE-IO monitor authorization
  */
 enum iommufd_ioas_map_flags {
 	IOMMU_IOAS_MAP_FIXED_IOVA = 1 << 0,
 	IOMMU_IOAS_MAP_WRITEABLE = 1 << 1,
 	IOMMU_IOAS_MAP_READABLE = 1 << 2,
+	IOMMU_IOAS_MAP_COVE_IO_LAZY = 1 << 3,
 };
 
 /**
