@@ -9,6 +9,9 @@
 #include <sbi/sbi_heap.h>
 #include <sbi/sbi_tlb.h>
 #include <sbi/sbi_unpriv.h>
+#include <sbi/sbi_ecall.h>
+#include <sbi/sbi_ecall_interface.h>
+#include <sbi/sbi_error.h>
 #include <sm/attest.h>
 #include <sm/gm/SM2_sv.h>
 #include <mkey/multi_key.h>
@@ -104,13 +107,16 @@ struct cove_io_irq_range {
 
 struct cove_io_tdi_entry {
 	bool valid;
+	u32 flags;
 	u64 tdi_id;
 	u64 generation;
 	struct kvm_vmid *vmid_ptr;
 	unsigned long vmid;
 	enum cove_io_tdi_state state;
+	bool link_connected;
 	u64 mmio_gpa;
 	u64 mmio_size;
+	u64 mmio_map_generation;
 	u64 dma_gpa;
 	u64 dma_size;
 	u64 irq_id;
@@ -124,10 +130,23 @@ struct cove_io_tdi_entry {
 
 static struct cove_io_tdi_entry cove_io_tdis[COVE_IO_MAX_TDIS];
 static spinlock_t cove_io_lock = SPIN_LOCK_INITIALIZER;
+static u64 cove_io_next_auto_tdi_id = COVE_IO_MAX_TDIS + 1;
+
+static unsigned long cvm_identity(const struct kvm_vmid *vmid)
+{
+	if (!vmid)
+		return COVE_IO_NO_VMID;
+
+	return vmid->cvm_id ? vmid->cvm_id : vmid->vmid;
+}
 
 static void cove_io_clear_irq_ranges(struct cove_io_tdi_entry *tdi);
 static void cove_io_remove_irq_range(struct cove_io_tdi_entry *tdi,
 				     u64 irq_id, u64 irq_num);
+static int cove_io_translate_private_dma(struct cove_io_tdi_entry *tdi,
+					 u64 gpa, u64 *hpa);
+static int cove_io_copy_to_guest(struct cvm_node *cvm_node, u64 gpa,
+					 const void *src, u64 len);
 
 static struct cove_io_tdi_entry *cove_io_find_tdi(u64 tdi_id)
 {
@@ -155,12 +174,41 @@ static struct cove_io_tdi_entry *cove_io_alloc_tdi(u64 tdi_id)
 	return free_entry;
 }
 
+static struct cove_io_tdi_entry *cove_io_alloc_auto_tdi(u64 *tdi_id)
+{
+	struct cove_io_tdi_entry *free_entry = NULL;
+	u64 candidate;
+
+	for (int i = 0; i < COVE_IO_MAX_TDIS; i++) {
+		if (!free_entry && (!cove_io_tdis[i].valid ||
+		    cove_io_tdis[i].state == COVE_IO_TDI_STATE_FREE))
+			free_entry = &cove_io_tdis[i];
+	}
+	if (!free_entry)
+		return NULL;
+
+	for (;;) {
+		candidate = cove_io_next_auto_tdi_id++;
+		if (!candidate) {
+			cove_io_next_auto_tdi_id = COVE_IO_MAX_TDIS + 1;
+			continue;
+		}
+		if (!cove_io_find_tdi(candidate))
+			break;
+	}
+
+	*tdi_id = candidate;
+	return free_entry;
+}
+
 static void cove_io_reset_binding(struct cove_io_tdi_entry *tdi)
 {
+	tdi->flags = 0;
 	tdi->vmid_ptr = NULL;
 	tdi->vmid = COVE_IO_NO_VMID;
 	tdi->mmio_gpa = 0;
 	tdi->mmio_size = 0;
+	tdi->mmio_map_generation = 0;
 	tdi->dma_gpa = 0;
 	tdi->dma_size = 0;
 	cove_io_clear_irq_ranges(tdi);
@@ -181,7 +229,32 @@ static bool cove_io_tdi_owned_by(struct cove_io_tdi_entry *tdi,
 	if (tdi->vmid_ptr)
 		return tdi->vmid_ptr == vmid_ptr;
 
-	return tdi->vmid == vmid_ptr->vmid;
+	return tdi->vmid == cvm_identity(vmid_ptr);
+}
+
+static bool cove_io_tdi_has_owner(const struct cove_io_tdi_entry *tdi)
+{
+	return tdi && tdi->valid && tdi->vmid_ptr &&
+	       tdi->state != COVE_IO_TDI_STATE_FREE &&
+	       tdi->state != COVE_IO_TDI_STATE_REGISTERED;
+}
+
+static struct cove_io_tdi_entry *
+cove_io_find_next_owned_tdi(struct kvm_vmid *vmid_ptr, u64 cursor)
+{
+	struct cove_io_tdi_entry *next = NULL;
+
+	for (int i = 0; i < COVE_IO_MAX_TDIS; i++) {
+		struct cove_io_tdi_entry *tdi = &cove_io_tdis[i];
+
+		if (!cove_io_tdi_has_owner(tdi) || tdi->tdi_id <= cursor ||
+		    !cove_io_tdi_owned_by(tdi, vmid_ptr))
+			continue;
+		if (!next || tdi->tdi_id < next->tdi_id)
+			next = tdi;
+	}
+
+	return next;
 }
 
 static bool cove_io_range_contains(u64 base, u64 size, u64 addr)
@@ -402,6 +475,7 @@ static bool cove_io_tdi_reclaim_allowed(struct cove_io_tdi_entry *tdi,
 		       cove_io_tdi_owned_by(tdi, vmid_ptr);
 	case COVE_IO_TDI_STATE_BOUND:
 	case COVE_IO_TDI_STATE_STOPPING:
+	case COVE_IO_TDI_STATE_ERROR:
 		return cove_io_tdi_owned_by(tdi, vmid_ptr);
 	default:
 		return false;
@@ -428,6 +502,7 @@ static bool cove_io_tdi_modify_allowed(struct cove_io_tdi_entry *tdi,
 static void cove_io_set_output(struct cove_io_tdi_sbi_params *params,
 			       struct cove_io_tdi_entry *tdi)
 {
+	params->flags = tdi->flags;
 	params->tdi_id = tdi->tdi_id;
 	params->generation = tdi->generation;
 	params->mmio_gpa = tdi->mmio_gpa;
@@ -440,18 +515,29 @@ static void cove_io_set_output(struct cove_io_tdi_sbi_params *params,
 	params->irq_iid = tdi->irq_iid;
 	params->device_id = tdi->device_id;
 	params->state = tdi->state;
+	params->features = COVE_IO_FEATURES_SUPPORTED;
 }
 
 static struct cove_io_tdi_entry *
-cove_io_find_started_mmio_tdi(struct kvm_vmid *vmid_ptr, u64 gpa, u64 len)
+cove_io_find_started_mmio_tdi(struct kvm_vmid *vmid_ptr, u64 gpa, u64 len,
+				      bool allow_bound)
 {
-	if (!len)
+	if (!len || gpa + len < gpa)
 		return NULL;
 
 	for (int i = 0; i < COVE_IO_MAX_TDIS; i++) {
 		struct cove_io_tdi_entry *tdi = &cove_io_tdis[i];
 
-		if (!tdi->valid || tdi->state != COVE_IO_TDI_STATE_STARTED)
+		if (!tdi->valid || (tdi->state != COVE_IO_TDI_STATE_STARTED &&
+				    !(allow_bound && tdi->state == COVE_IO_TDI_STATE_BOUND)))
+			continue;
+		/*
+		 * A started MMIO interface must have passed the guest map check.
+		 * Bound probes remain useful to kvmtool before guest acceptance.
+		 */
+		if (tdi->state == COVE_IO_TDI_STATE_STARTED &&
+		    tdi->mmio_size &&
+		    tdi->mmio_map_generation != tdi->generation)
 			continue;
 		if (!cove_io_tdi_owned_by(tdi, vmid_ptr))
 			continue;
@@ -495,8 +581,54 @@ static bool cove_io_valid_dma_device_id(u64 device_id)
 	}
 }
 
+static bool cove_io_device_id_in_use(struct cove_io_tdi_entry *self,
+				      u64 device_id)
+{
+	u64 type = (device_id & COVE_IO_DEVICE_TYPE_MASK) >>
+		   COVE_IO_DEVICE_TYPE_SHIFT;
+
+	for (int i = 0; i < COVE_IO_MAX_TDIS; i++) {
+		struct cove_io_tdi_entry *tdi = &cove_io_tdis[i];
+
+		if (tdi == self || !tdi->valid ||
+		    tdi->state == COVE_IO_TDI_STATE_FREE)
+			continue;
+		if (tdi->device_id != device_id)
+			continue;
+		/* PCI RIDs are physical identities. Virtio IDs are CVM-local. */
+		if (type == COVE_IO_DEVICE_TYPE_PCI_RID ||
+		    cove_io_tdi_owned_by(tdi, self->vmid_ptr))
+			return true;
+	}
+
+	return false;
+}
+
+static bool cove_io_op_uses_generation(u32 op)
+{
+	switch (op) {
+	case COVE_IO_TDI_UNREGISTER:
+	case COVE_IO_TDI_ADD_MMIO:
+	case COVE_IO_TDI_RECLAIM_MMIO:
+	case COVE_IO_TDI_BIND:
+	case COVE_IO_TDI_UNBIND:
+	case COVE_IO_TDI_DMA_MAP:
+	case COVE_IO_TDI_DMA_UNMAP:
+	case COVE_IO_TDI_IRQ_BIND:
+	case COVE_IO_TDI_IRQ_UNBIND:
+	case COVE_IO_TDI_ACCEPT_START:
+	case COVE_IO_TDI_STOP:
+	case COVE_IO_TDI_SET_ERROR:
+	case COVE_IO_TDI_FINALIZE_STOP:
+		return true;
+	default:
+		return false;
+	}
+}
+
 static struct cove_io_tdi_entry *
-cove_io_find_started_dma_tdi(struct kvm_vmid *vmid_ptr, u64 device_id, u64 gpa)
+cove_io_find_started_dma_tdi(struct kvm_vmid *vmid_ptr, u64 device_id, u64 gpa,
+				     bool allow_bound)
 {
 	if (!cove_io_valid_dma_device_id(device_id))
 		return NULL;
@@ -504,7 +636,8 @@ cove_io_find_started_dma_tdi(struct kvm_vmid *vmid_ptr, u64 device_id, u64 gpa)
 	for (int i = 0; i < COVE_IO_MAX_TDIS; i++) {
 		struct cove_io_tdi_entry *tdi = &cove_io_tdis[i];
 
-		if (!tdi->valid || tdi->state != COVE_IO_TDI_STATE_STARTED)
+		if (!tdi->valid || (tdi->state != COVE_IO_TDI_STATE_STARTED &&
+				    !(allow_bound && tdi->state == COVE_IO_TDI_STATE_BOUND)))
 			continue;
 		if (!cove_io_tdi_owned_by(tdi, vmid_ptr))
 			continue;
@@ -519,12 +652,13 @@ cove_io_find_started_dma_tdi(struct kvm_vmid *vmid_ptr, u64 device_id, u64 gpa)
 
 static struct cove_io_tdi_entry *
 cove_io_find_started_irq_tdi(struct kvm_vmid *vmid_ptr, u64 irq, u64 vcpu_id,
-			     u64 irq_iid, u64 device_id)
+				     u64 irq_iid, u64 device_id, bool allow_bound)
 {
 	for (int i = 0; i < COVE_IO_MAX_TDIS; i++) {
 		struct cove_io_tdi_entry *tdi = &cove_io_tdis[i];
 
-		if (!tdi->valid || tdi->state != COVE_IO_TDI_STATE_STARTED)
+		if (!tdi->valid || (tdi->state != COVE_IO_TDI_STATE_STARTED &&
+				    !(allow_bound && tdi->state == COVE_IO_TDI_STATE_BOUND)))
 			continue;
 		if (!cove_io_tdi_owned_by(tdi, vmid_ptr))
 			continue;
@@ -543,18 +677,34 @@ int cove_io_tdi_op(struct cove_io_tdi_sbi_params *params)
 	int ret = 0;
 
 	if (!params || (!params->tdi_id &&
+			params->op != COVE_IO_TDI_REGISTER &&
 			params->op != COVE_IO_TDI_FIND_MMIO &&
 			params->op != COVE_IO_TDI_FIND_DMA &&
-			params->op != COVE_IO_TDI_FIND_IRQ))
+			params->op != COVE_IO_TDI_FIND_IRQ &&
+			params->op != COVE_IO_TDI_GET_FEATURES &&
+			params->op != COVE_IO_TDI_ENUM_OWNED))
+		return CVM_ERROR;
+	if (params->op > COVE_IO_TDI_ENUM_OWNED)
 		return CVM_ERROR;
 
-	vmid = params->vmid_ptr ? params->vmid_ptr->vmid : COVE_IO_NO_VMID;
+	vmid = cvm_identity(params->vmid_ptr);
 
 	spin_lock(&cove_io_lock);
 
 	tdi = cove_io_find_tdi(params->tdi_id);
-	if (params->op == COVE_IO_TDI_REGISTER && !tdi)
+	if (params->op == COVE_IO_TDI_REGISTER &&
+	    (params->flags & COVE_IO_TDI_F_AUTO_ID) &&
+	    (!params->tdi_id || tdi)) {
+		tdi = cove_io_alloc_auto_tdi(&params->tdi_id);
+	} else if (params->op == COVE_IO_TDI_REGISTER && !tdi) {
 		tdi = cove_io_alloc_tdi(params->tdi_id);
+	}
+	if (tdi && cove_io_op_uses_generation(params->op) &&
+	    (params->flags & COVE_IO_TDI_F_EXPECT_GENERATION) &&
+	    params->generation != tdi->generation) {
+		ret = CVM_ERROR;
+		goto out_unlock;
+	}
 
 	switch (params->op) {
 	case COVE_IO_TDI_REGISTER:
@@ -570,9 +720,11 @@ int cove_io_tdi_op(struct cove_io_tdi_sbi_params *params)
 			break;
 		}
 		tdi->valid = true;
+		tdi->flags = 0;
 		tdi->tdi_id = params->tdi_id;
 		tdi->generation++;
 		tdi->state = COVE_IO_TDI_STATE_REGISTERED;
+		tdi->link_connected = true;
 		cove_io_reset_binding(tdi);
 		break;
 	case COVE_IO_TDI_UNREGISTER:
@@ -586,12 +738,15 @@ int cove_io_tdi_op(struct cove_io_tdi_sbi_params *params)
 		break;
 	case COVE_IO_TDI_ADD_MMIO:
 		if (!cove_io_tdi_modify_allowed(tdi, params->vmid_ptr) ||
-		    !params->mmio_size) {
+		    !tdi->link_connected ||
+		    !params->mmio_size ||
+		    params->mmio_gpa + params->mmio_size < params->mmio_gpa) {
 			ret = CVM_ERROR;
 			break;
 		}
 		tdi->mmio_gpa = params->mmio_gpa;
 		tdi->mmio_size = params->mmio_size;
+		tdi->mmio_map_generation = 0;
 		break;
 	case COVE_IO_TDI_RECLAIM_MMIO:
 		if (!cove_io_tdi_reclaim_allowed(tdi, params->vmid_ptr)) {
@@ -600,10 +755,12 @@ int cove_io_tdi_op(struct cove_io_tdi_sbi_params *params)
 		}
 		tdi->mmio_gpa = 0;
 		tdi->mmio_size = 0;
+		tdi->mmio_map_generation = 0;
 		break;
 	case COVE_IO_TDI_BIND:
 		if (!tdi || !params->vmid_ptr ||
-		    tdi->state != COVE_IO_TDI_STATE_REGISTERED) {
+		    tdi->state != COVE_IO_TDI_STATE_REGISTERED ||
+		    !tdi->link_connected) {
 			ret = CVM_ERROR;
 			break;
 		}
@@ -624,11 +781,14 @@ int cove_io_tdi_op(struct cove_io_tdi_sbi_params *params)
 		if (!tdi || tdi->state != COVE_IO_TDI_STATE_BOUND ||
 		    !cove_io_tdi_owned_by(tdi, params->vmid_ptr) ||
 		    !params->dma_size ||
-		    !cove_io_valid_dma_device_id(params->device_id)) {
+		    !cove_io_valid_dma_device_id(params->device_id) ||
+		    params->dma_gpa + params->dma_size < params->dma_gpa ||
+		    cove_io_device_id_in_use(tdi, params->device_id)) {
 			ret = CVM_ERROR;
 			break;
 		}
 		tdi->vmid = vmid;
+		tdi->flags = params->flags & COVE_IO_TDI_F_DIRECT_DMA;
 		tdi->device_id = params->device_id;
 		tdi->dma_gpa = params->dma_gpa;
 		tdi->dma_size = params->dma_size;
@@ -641,6 +801,7 @@ int cove_io_tdi_op(struct cove_io_tdi_sbi_params *params)
 		tdi->dma_gpa = 0;
 		tdi->dma_size = 0;
 		tdi->device_id = COVE_IO_DEVICE_ANY;
+		tdi->flags &= ~COVE_IO_TDI_F_DIRECT_DMA;
 		break;
 	case COVE_IO_TDI_IRQ_BIND:
 		if (!tdi ||
@@ -670,7 +831,8 @@ int cove_io_tdi_op(struct cove_io_tdi_sbi_params *params)
 		if (!tdi ||
 		    (tdi->state != COVE_IO_TDI_STATE_BOUND &&
 		     tdi->state != COVE_IO_TDI_STATE_STARTED &&
-		     tdi->state != COVE_IO_TDI_STATE_STOPPING) ||
+		     tdi->state != COVE_IO_TDI_STATE_STOPPING &&
+		     tdi->state != COVE_IO_TDI_STATE_ERROR) ||
 		    (!cove_io_tdi_owned_by(tdi, params->vmid_ptr) &&
 		     !cove_io_tdi_unbound(tdi))) {
 			ret = CVM_ERROR;
@@ -683,29 +845,32 @@ int cove_io_tdi_op(struct cove_io_tdi_sbi_params *params)
 			cove_io_clear_irq_ranges(tdi);
 		break;
 	case COVE_IO_TDI_ACCEPT_START:
-		if (!tdi || tdi->state != COVE_IO_TDI_STATE_BOUND ||
-		    !cove_io_tdi_owned_by(tdi, params->vmid_ptr) ||
-		    (!tdi->mmio_size && !tdi->dma_size &&
-		     !tdi->irq_range_count)) {
-			ret = CVM_ERROR;
-			break;
-		}
-		tdi->vmid = vmid;
-		tdi->state = COVE_IO_TDI_STATE_STARTED;
+		/* Final acceptance is guest-owned through COVG START_INTERFACE. */
+		ret = CVM_ERROR;
 		break;
 	case COVE_IO_TDI_STOP:
-		if (!tdi || !cove_io_tdi_owned_by(tdi, params->vmid_ptr)) {
+		if (!tdi ||
+		    (tdi->state != COVE_IO_TDI_STATE_BOUND &&
+		     tdi->state != COVE_IO_TDI_STATE_STARTED) ||
+		    !cove_io_tdi_owned_by(tdi, params->vmid_ptr)) {
 			ret = CVM_ERROR;
 			break;
 		}
 		tdi->vmid = vmid;
 		tdi->state = COVE_IO_TDI_STATE_STOPPING;
-		tdi->mmio_gpa = 0;
-		tdi->mmio_size = 0;
-		tdi->dma_gpa = 0;
-		tdi->dma_size = 0;
-		tdi->device_id = COVE_IO_DEVICE_ANY;
-		cove_io_clear_irq_ranges(tdi);
+		tdi->mmio_map_generation = 0;
+		break;
+	case COVE_IO_TDI_SET_ERROR:
+		if (!tdi ||
+		    (tdi->state != COVE_IO_TDI_STATE_BOUND &&
+		     tdi->state != COVE_IO_TDI_STATE_STARTED &&
+		     tdi->state != COVE_IO_TDI_STATE_STOPPING) ||
+		    !cove_io_tdi_owned_by(tdi, params->vmid_ptr)) {
+			ret = CVM_ERROR;
+			break;
+		}
+		tdi->vmid = vmid;
+		tdi->state = COVE_IO_TDI_STATE_ERROR;
 		break;
 	case COVE_IO_TDI_GET_STATE:
 		if (!tdi) {
@@ -727,7 +892,8 @@ int cove_io_tdi_op(struct cove_io_tdi_sbi_params *params)
 		}
 		tdi = cove_io_find_started_mmio_tdi(params->vmid_ptr,
 						    params->mmio_gpa,
-						    params->mmio_size);
+						    params->mmio_size,
+					    params->flags & COVE_IO_TDI_F_ALLOW_BOUND_PROBE);
 		if (!tdi) {
 			ret = CVM_ERROR;
 			break;
@@ -741,12 +907,45 @@ int cove_io_tdi_op(struct cove_io_tdi_sbi_params *params)
 		}
 		tdi = cove_io_find_started_dma_tdi(params->vmid_ptr,
 						   params->device_id,
-						   params->dma_gpa);
+						   params->dma_gpa,
+					   params->flags & COVE_IO_TDI_F_ALLOW_BOUND_PROBE);
 		if (!tdi) {
 			ret = CVM_ERROR;
 			break;
 		}
 		tdi->vmid = vmid;
+		if ((tdi->flags & COVE_IO_TDI_F_DIRECT_DMA) &&
+		    cove_io_translate_private_dma(tdi, params->dma_gpa,
+						 &params->dma_hpa)) {
+			ret = CVM_ERROR;
+			break;
+		}
+		break;
+	case COVE_IO_TDI_GET_FEATURES:
+		params->features = COVE_IO_FEATURES_SUPPORTED;
+		break;
+	case COVE_IO_TDI_FINALIZE_STOP:
+		if (!tdi ||
+		    (tdi->state != COVE_IO_TDI_STATE_STOPPING &&
+		     tdi->state != COVE_IO_TDI_STATE_ERROR) ||
+		    !cove_io_tdi_owned_by(tdi, params->vmid_ptr) ||
+		    tdi->mmio_size || tdi->dma_size || tdi->irq_range_count) {
+			ret = CVM_ERROR;
+			break;
+		}
+		cove_io_reset_binding(tdi);
+		tdi->state = COVE_IO_TDI_STATE_REGISTERED;
+		tdi->generation++;
+		break;
+	case COVE_IO_TDI_ENUM_OWNED:
+		if (!params->vmid_ptr) {
+			ret = CVM_ERROR;
+			break;
+		}
+		tdi = cove_io_find_next_owned_tdi(params->vmid_ptr,
+						  params->tdi_id);
+		if (!tdi)
+			params->tdi_id = 0;
 		break;
 	case COVE_IO_TDI_FIND_IRQ:
 		if (!params->vmid_ptr) {
@@ -757,7 +956,8 @@ int cove_io_tdi_op(struct cove_io_tdi_sbi_params *params)
 						   params->irq_id,
 						   params->vcpu_id,
 						   params->irq_iid,
-						   params->device_id);
+						   params->device_id,
+					   params->flags & COVE_IO_TDI_F_ALLOW_BOUND_PROBE);
 		if (!tdi) {
 			ret = CVM_ERROR;
 			break;
@@ -772,8 +972,286 @@ int cove_io_tdi_op(struct cove_io_tdi_sbi_params *params)
 	if (!ret && tdi)
 		cove_io_set_output(params, tdi);
 
+out_unlock:
 	spin_unlock(&cove_io_lock);
 
+	return ret;
+}
+
+int cove_io_covh_ecall(unsigned long funcid, struct sbi_trap_regs *regs,
+			struct sbi_ecall_return *out)
+{
+	struct cove_io_tdi_entry *tdi;
+	struct cvm_node *cvm_node;
+	u64 tvm_id = regs->a0;
+	u64 tdi_id = regs->a1;
+	int ret = SBI_SUCCESS;
+
+	(void)out;
+	cvm_node = get_cvm(tvm_id);
+	if (!cvm_node)
+		return SBI_ERR_INVALID_PARAM;
+
+	spin_lock(&cove_io_lock);
+	tdi = cove_io_find_tdi(tdi_id);
+
+	switch (funcid) {
+	case SBI_EXT_COVH_ADD_TVM_INTERFACE_REGION:
+		if (!tdi || !tdi->link_connected ||
+		    tdi->state != COVE_IO_TDI_STATE_REGISTERED ||
+		    !cove_io_tdi_unbound(tdi) || !regs->a3 ||
+		    (regs->a2 & (PAGE_SIZE - 1)) ||
+		    (regs->a3 & (PAGE_SIZE - 1)) || regs->a2 + regs->a3 < regs->a2) {
+			ret = SBI_ERR_INVALID_PARAM;
+			break;
+		}
+		tdi->mmio_gpa = regs->a2;
+		tdi->mmio_size = regs->a3;
+		tdi->mmio_map_generation = 0;
+		break;
+	case SBI_EXT_COVH_RECLAIM_TVM_INTERFACE_REGION:
+		if (!tdi || tdi->state == COVE_IO_TDI_STATE_STARTED ||
+		    (tdi->vmid_ptr && tdi->vmid_ptr != cvm_node->cvm.vmid) ||
+		    tdi->mmio_gpa != regs->a2 || tdi->mmio_size != regs->a3) {
+			ret = SBI_ERR_INVALID_PARAM;
+			break;
+		}
+		if (!cove_io_tdi_unbound(tdi)) {
+			cove_io_reset_binding(tdi);
+			tdi->state = COVE_IO_TDI_STATE_REGISTERED;
+			tdi->generation++;
+		} else {
+			tdi->mmio_gpa = 0;
+			tdi->mmio_size = 0;
+			tdi->mmio_map_generation = 0;
+		}
+		break;
+	case SBI_EXT_COVH_BIND_INTERFACE:
+		if (!tdi || tdi->state != COVE_IO_TDI_STATE_REGISTERED ||
+		    !tdi->link_connected || !cove_io_tdi_unbound(tdi)) {
+			ret = SBI_ERR_DENIED;
+			break;
+		}
+		tdi->vmid_ptr = cvm_node->cvm.vmid;
+		tdi->vmid = tvm_id;
+		tdi->state = COVE_IO_TDI_STATE_BOUND;
+		break;
+	case SBI_EXT_COVH_UNBIND_INTERFACE:
+		if (!tdi || (tdi->state != COVE_IO_TDI_STATE_BOUND &&
+			     tdi->state != COVE_IO_TDI_STATE_STOPPING &&
+			     tdi->state != COVE_IO_TDI_STATE_ERROR) ||
+		    !cove_io_tdi_owned_by(tdi, cvm_node->cvm.vmid)) {
+			ret = SBI_ERR_DENIED;
+			break;
+		}
+		cove_io_reset_binding(tdi);
+		tdi->state = COVE_IO_TDI_STATE_REGISTERED;
+		tdi->generation++;
+		break;
+	case SBI_EXT_COVH_CONNECT_DEVICE:
+		if (!tdi || tdi->state == COVE_IO_TDI_STATE_FREE) {
+			ret = SBI_ERR_INVALID_PARAM;
+			break;
+		}
+		/*
+		 * The QEMU transport is always connected after registration; keep this
+		 * operation idempotent so a standard COVH caller can still use it.
+		 */
+		tdi->link_connected = true;
+		break;
+	case SBI_EXT_COVH_DISCONNECT_DEVICE:
+		if (!tdi || tdi->state != COVE_IO_TDI_STATE_REGISTERED ||
+		    !cove_io_tdi_unbound(tdi)) {
+			ret = SBI_ERR_INVALID_STATE;
+			break;
+		}
+		tdi->link_connected = false;
+		break;
+	default:
+		ret = SBI_ERR_NOT_SUPPORTED;
+		break;
+	}
+
+	spin_unlock(&cove_io_lock);
+	return ret;
+}
+
+static u64 cove_io_covg_state(const struct cove_io_tdi_entry *tdi)
+{
+	switch (tdi->state) {
+	case COVE_IO_TDI_STATE_REGISTERED:
+	case COVE_IO_TDI_STATE_FREE:
+		return COVE_IO_COVG_INTERFACE_UNLOCKED;
+	case COVE_IO_TDI_STATE_BOUND:
+		return COVE_IO_COVG_INTERFACE_LOCKED;
+	case COVE_IO_TDI_STATE_STARTED:
+		return COVE_IO_COVG_INTERFACE_RUNNING;
+	case COVE_IO_TDI_STATE_STOPPING:
+	case COVE_IO_TDI_STATE_ERROR:
+	default:
+		return COVE_IO_COVG_INTERFACE_ERROR;
+	}
+}
+
+int cove_io_covg_ecall(unsigned long vmid, unsigned long funcid,
+		       unsigned long tdi_id, unsigned long arg1,
+		       unsigned long arg2, unsigned long arg3,
+		       unsigned long *value)
+{
+	struct cove_io_tdi_entry *tdi;
+	struct cvm_node *cvm_node;
+	struct cove_io_interface_report report;
+	u64 link_flags;
+	int ret = SBI_SUCCESS;
+
+	cvm_node = get_cvm(vmid);
+	if (!cvm_node)
+		return SBI_ERR_FAILED;
+
+	spin_lock(&cove_io_lock);
+	tdi = cove_io_find_tdi(tdi_id);
+
+	switch (funcid) {
+	case SBI_EXT_COVG_GET_DEVICE_LINK:
+		if (!tdi || !cove_io_tdi_owned_by(tdi, cvm_node->cvm.vmid) ||
+		    tdi->state == COVE_IO_TDI_STATE_FREE) {
+			ret = SBI_ERR_FAILED;
+			break;
+		}
+		/* This is an explicit simulator status, not a security assertion. */
+		link_flags = COVE_IO_LINK_F_SIMULATED | COVE_IO_LINK_F_NO_SPDM |
+				     COVE_IO_LINK_F_NO_IDE;
+		if (tdi->link_connected)
+			link_flags |= COVE_IO_LINK_F_UP;
+		*value = link_flags | ((u64)cove_io_covg_state(tdi) <<
+					       COVE_IO_LINK_STATE_SHIFT);
+		break;
+	case SBI_EXT_COVG_GET_INTERFACE_REPORT:
+		if (!tdi || !cove_io_tdi_owned_by(tdi, cvm_node->cvm.vmid) ||
+		    tdi->state == COVE_IO_TDI_STATE_FREE) {
+			ret = SBI_ERR_FAILED;
+			break;
+		}
+		*value = sizeof(report);
+		/* A zero buffer is a size query, matching common SBI buffer APIs. */
+		if (!arg1 && !arg2)
+			break;
+		if (!arg1 || arg2 < sizeof(report)) {
+			ret = SBI_ERR_INVALID_PARAM;
+			break;
+		}
+		link_flags = COVE_IO_LINK_F_SIMULATED | COVE_IO_LINK_F_NO_SPDM |
+				     COVE_IO_LINK_F_NO_IDE;
+		if (tdi->link_connected)
+			link_flags |= COVE_IO_LINK_F_UP;
+		report = (struct cove_io_interface_report) {
+			.magic = COVE_IO_INTERFACE_REPORT_MAGIC,
+			.version = COVE_IO_INTERFACE_REPORT_VERSION,
+			.tdi_id = tdi->tdi_id,
+			.generation = tdi->generation,
+			.device_id = tdi->device_id,
+			.state = cove_io_covg_state(tdi),
+			.flags = tdi->flags,
+			.features = COVE_IO_FEATURES_SUPPORTED,
+			.mmio_gpa = tdi->mmio_gpa,
+			.mmio_size = tdi->mmio_size,
+			.dma_gpa = tdi->dma_gpa,
+			.dma_size = tdi->dma_size,
+			.irq_id = tdi->irq_id,
+			.irq_num = tdi->irq_num,
+			.vcpu_id = tdi->vcpu_id,
+			.irq_iid = tdi->irq_iid,
+			.link_flags = link_flags,
+			.mmio_map_generation = tdi->mmio_map_generation,
+		};
+		if (cove_io_copy_to_guest(cvm_node, arg1, &report,
+					  sizeof(report)))
+			ret = SBI_ERR_INVALID_ADDRESS;
+		break;
+	case SBI_EXT_COVG_GET_INTERFACE_STATE:
+		if (!tdi || !cove_io_tdi_owned_by(tdi, cvm_node->cvm.vmid)) {
+			ret = SBI_ERR_FAILED;
+			break;
+		}
+		*value = cove_io_covg_state(tdi);
+		break;
+	case SBI_EXT_COVG_START_INTERFACE:
+		if (!tdi || !cove_io_tdi_owned_by(tdi, cvm_node->cvm.vmid)) {
+			ret = SBI_ERR_FAILED;
+			break;
+		}
+		if (tdi->state == COVE_IO_TDI_STATE_STARTED) {
+			ret = SBI_ERR_ALREADY_STARTED;
+			break;
+		}
+		if (!tdi->link_connected || tdi->state != COVE_IO_TDI_STATE_BOUND ||
+		    (tdi->mmio_size &&
+		     tdi->mmio_map_generation != tdi->generation) ||
+		    (!tdi->mmio_size && !tdi->dma_size && !tdi->irq_range_count)) {
+			ret = SBI_ERR_INVALID_STATE;
+			break;
+		}
+		tdi->state = COVE_IO_TDI_STATE_STARTED;
+		break;
+	case SBI_EXT_COVG_STOP_INTERFACE:
+		if (!tdi || !cove_io_tdi_owned_by(tdi, cvm_node->cvm.vmid)) {
+			ret = SBI_ERR_FAILED;
+			break;
+		}
+		if (tdi->state == COVE_IO_TDI_STATE_STOPPING) {
+			ret = SBI_ERR_ALREADY_STOPPED;
+			break;
+		}
+		if (tdi->state != COVE_IO_TDI_STATE_STARTED &&
+		    tdi->state != COVE_IO_TDI_STATE_BOUND) {
+			ret = SBI_ERR_INVALID_STATE;
+			break;
+		}
+		/* Access checks fail immediately; the host can only finish cleanup. */
+		tdi->state = COVE_IO_TDI_STATE_STOPPING;
+		tdi->mmio_map_generation = 0;
+		break;
+	case SBI_EXT_COVG_SIM_GET_INTERFACE_ID:
+		/*
+		 * Simulator-only owner-scoped enumeration. a0 is the previous TDI ID;
+		 * a1 returns the next ID, or zero at end of enumeration.
+		 */
+		if (tdi_id &&
+		    (!cove_io_tdi_has_owner(tdi) ||
+		     !cove_io_tdi_owned_by(tdi, cvm_node->cvm.vmid))) {
+			ret = SBI_ERR_INVALID_PARAM;
+			break;
+		}
+		tdi = cove_io_find_next_owned_tdi(cvm_node->cvm.vmid, tdi_id);
+		*value = tdi ? tdi->tdi_id : 0;
+		break;
+	case SBI_EXT_COVG_MAP_INTERFACE_MMIO:
+		if (!tdi || !cove_io_tdi_owned_by(tdi, cvm_node->cvm.vmid) ||
+		    tdi->state != COVE_IO_TDI_STATE_BOUND || !tdi->mmio_size ||
+		    arg1 != tdi->mmio_gpa || arg2 != tdi->mmio_size ||
+		    arg3 != tdi->generation || !cove_io_range_valid(arg1, arg2)) {
+			ret = SBI_ERR_INVALID_PARAM;
+			break;
+		}
+		/*
+		 * The simulator has no guest-visible HPA mapping to install. The
+		 * operation records that the exact host-registered range was checked.
+		 */
+		tdi->mmio_map_generation = tdi->generation;
+		*value = 1;
+		break;
+	case SBI_EXT_COVG_GET_CONNECTION_TRANSCRIPT:
+	case SBI_EXT_COVG_GET_DEVICE_MEASUREMENTS:
+		/*
+		 * Authentication, measurement, and transcript material are deliberately
+		 * outside this simulator prototype.
+		 */
+	default:
+		ret = SBI_ERR_NOT_SUPPORTED;
+		break;
+	}
+
+	spin_unlock(&cove_io_lock);
 	return ret;
 }
 
@@ -787,9 +1265,9 @@ int cove_io_dma_allowed(struct kvm_vmid *vmid_ptr, unsigned long device_id,
 		return 0;
 
 	spin_lock(&cove_io_lock);
-	tdi = cove_io_find_started_dma_tdi(vmid_ptr, device_id, gpa);
+	tdi = cove_io_find_started_dma_tdi(vmid_ptr, device_id, gpa, false);
 	if (tdi) {
-		tdi->vmid = vmid_ptr->vmid;
+		tdi->vmid = cvm_identity(vmid_ptr);
 		allowed = 1;
 	}
 	spin_unlock(&cove_io_lock);
@@ -812,7 +1290,7 @@ int cove_io_irq_allowed(struct kvm_vmid *vmid_ptr, unsigned long irq)
 			continue;
 		if (!cove_io_tdi_owned_by(tdi, vmid_ptr))
 			continue;
-		tdi->vmid = vmid_ptr->vmid;
+		tdi->vmid = cvm_identity(vmid_ptr);
 		if (cove_io_irq_allowed_by_tdi(tdi, irq, COVE_IO_VCPU_ANY,
 					       COVE_IO_IRQ_IID_ANY,
 					       COVE_IO_DEVICE_ANY)) {
@@ -903,7 +1381,8 @@ static int cvm_delete_node(struct cvm_node *node)
             struct cvm_node *nxt = cur->next;
             if(nxt == node) 
             {
-                sbi_printf("[IIE CVM Monitor@%s] deleting CVM %ld\n", __func__, *nxt->cvm.vmid);
+			sbi_printf("[IIE CVM Monitor@%s] deleting CVM %ld\n",
+				   __func__, cvm_identity(nxt->cvm.vmid));
                 node_exist = true;
                 /* 1. delete logically, maintain cvm list and vcpu list. */ 
                 cur->next = nxt->next;
@@ -1028,12 +1507,13 @@ struct cvm_node *get_cvm(unsigned long vmid)
 	{
 		struct cvm_node *node = cur->next;
         // sbi_printf("[IIE CVM Monitor@%s] node vmid id = %d\tvmid = %d\n", __func__, node->cvm.vmid->vmid, vmid);
-		if(node->cvm.vmid->vmid == vmid)
+		if (cvm_identity(node->cvm.vmid) == vmid)
 			return node;
 	}
 
     // release_big_metadata_lock(__func__);
-    sbi_printf("[IIE CVM Monitor@%s] CVM %d does not exist.\n", __func__, vmid);
+	sbi_printf("[IIE CVM Monitor@%s] CVM %ld does not exist.\n",
+		   __func__, vmid);
 	return NULL;
 }
 
@@ -1514,7 +1994,7 @@ int cvm_vcpu_enter(struct sbi_trap_regs* host_regs, struct cvm_vcpu* cvm_vcpu, u
     // sbi_printf("enter: mepc %lx hstatus %lx mstatus %lx\r\n", host_regs->mepc, cvm_vcpu->guest_context.hstatus, cvm_vcpu->guest_mstatus);
     // sbi_printf("enter: medeleg %lx mideleg %lx mie %lx\r\n", csr_read(CSR_MEDELEG), csr_read(CSR_MIDELEG), csr_read(CSR_MIE));
     // sbi_printf("enter: hgatp %lx vsatp %lx host_hgatp %lx\r\n", csr_read(CSR_HGATP), csr_read(CSR_VSATP), cvm_vcpu->host_hgatp);
-    enter_cmode(cvm->vmid->vmid, *cvm_vcpu->vcpu_id); 
+	enter_cmode(cvm_identity(cvm->vmid), *cvm_vcpu->vcpu_id);
     // sbi_printf("enter cvm vcpu trap %lx\n", kvm_trap);
     return 0;
 }
@@ -1633,11 +2113,12 @@ int cvm_vcpu_exit(struct sbi_trap_regs* host_regs)
 
 int sbi_cvm_create(struct iie_cvm_sbi_params *cvm_sbi_params)
 {
-	sbi_printf("[IIE CVM Monitor@%s] vmid = %ld\n", __func__,cvm_sbi_params->vmid_ptr->vmid);
+	sbi_printf("[IIE CVM Monitor@%s] cvm_id = %ld\n", __func__,
+		   cvm_identity(cvm_sbi_params->vmid_ptr));
     int ret=0;
     paddr_t free_page;
 	/* alloc a memory block for cvm struct */
-	struct cvm_node* cvm_node = get_cvm(cvm_sbi_params->vmid_ptr->vmid);
+	struct cvm_node *cvm_node = get_cvm(cvm_identity(cvm_sbi_params->vmid_ptr));
     if(!cvm_node)
     {   
         ret = alloc_cvm_node(&cvm_sbi_params->vmid_ptr->vmid, &free_page);
@@ -1719,14 +2200,15 @@ int sbi_cvm_create_vcpu(struct iie_cvm_sbi_params * cvm_sbi_params)
     int ret=0;
 	struct kvm_vmid *vmid_ptr = cvm_sbi_params->vmid_ptr;
 	int *vcpu_id_ptr = cvm_sbi_params->vcpu_id_ptr;
-	struct cvm_node *cvm_node = get_cvm(vmid_ptr->vmid);
+	struct cvm_node *cvm_node = get_cvm(cvm_identity(vmid_ptr));
 	if(!cvm_node)
 	{
 		sbi_printf("[IIE CVM Monitor@%s] CVM Node is NULL, get_cvm failed!\n", __func__);
 		return -1;
 	}
 	struct cvm_vcpu_node *vcpu_list_head = cvm_node->cvm.cvm_vcpu_list_head;
-	struct cvm_vcpu_node *vcpu_node = get_cvm_vcpu_node(vmid_ptr->vmid, *vcpu_id_ptr);
+	struct cvm_vcpu_node *vcpu_node = get_cvm_vcpu_node(cvm_identity(vmid_ptr),
+						       *vcpu_id_ptr);
     if(!vcpu_node)
     {
         paddr_t free_page;
@@ -1734,23 +2216,27 @@ int sbi_cvm_create_vcpu(struct iie_cvm_sbi_params * cvm_sbi_params)
         if(ret)
             return ret;
         vcpu_node = (struct cvm_vcpu_node *)free_page;
-        sbi_printf("[IIE CVM Monitor@%s] CVM %d vcpu allocating... \r\n", __func__, vmid_ptr->vmid);
+		sbi_printf("[IIE CVM Monitor@%s] CVM %ld vcpu allocating... \r\n",
+			   __func__, cvm_identity(vmid_ptr));
     }
     else return 0;
     
 	if(vcpu_node == TEE_NO_MEMORY)
 	{
-		sbi_printf("[IIE CVM Monitor@%s] CVM %d vcpu Node allocation is failed!\n", __func__, vmid_ptr->vmid);
+		sbi_printf("[IIE CVM Monitor@%s] CVM %ld vcpu Node allocation is failed!\n",
+			   __func__, cvm_identity(vmid_ptr));
 		return TEE_NO_MEMORY;
 	}
-    sbi_printf("[IIE CVM Monitor@%s] CVM %d vcpu Node allocation is successfull!\n", __func__, vmid_ptr->vmid);
+	sbi_printf("[IIE CVM Monitor@%s] CVM %ld vcpu Node allocation is successful!\n",
+		   __func__, cvm_identity(vmid_ptr));
 	vcpu_node->vcpu.vcpu_id = vcpu_id_ptr;
 	vcpu_node->vcpu.cvm = &cvm_node->cvm;
 
     // init vcpu ctx
     init_cvm_vcpu(&vcpu_node->vcpu);
 
-	sbi_printf("[IIE CVM Monitor@%s] vmid = %ld\n", __func__,vmid_ptr->vmid);
+	sbi_printf("[IIE CVM Monitor@%s] cvm_id = %ld\n", __func__,
+		   cvm_identity(vmid_ptr));
 	sbi_printf("[IIE CVM Monitor@%s] vcpu_id = %d\n", __func__,*vcpu_id_ptr);
 	
 
@@ -1768,7 +2254,9 @@ int sbi_cvm_create_vcpu(struct iie_cvm_sbi_params * cvm_sbi_params)
 
 int sbi_cvm_run_vcpu(struct sbi_trap_regs *regs, struct iie_cvm_sbi_params * cvm_sbi_params, uint64_t kvm_vcpu_context, uint64_t kvm_vcpu_csr, uint64_t kvm_trap)
 {   
-	struct cvm_vcpu_node *vcpu_node = get_cvm_vcpu_node(cvm_sbi_params->vmid_ptr->vmid, *cvm_sbi_params->vcpu_id_ptr);	
+	struct cvm_vcpu_node *vcpu_node = get_cvm_vcpu_node(
+		cvm_identity(cvm_sbi_params->vmid_ptr),
+		*cvm_sbi_params->vcpu_id_ptr);
     if(!vcpu_node)
 	{
 		sbi_printf("[IIE CVM Monitor@%s] vcpu_node is NULL!\n", __func__);
@@ -1813,7 +2301,7 @@ int sbi_cvm_run_vcpu(struct sbi_trap_regs *regs, struct iie_cvm_sbi_params * cvm
 		if (!cove_io_dma_allowed(cvm->vmid, cvm_sbi_params->device_id,
 					 gpa)) {
 			sbi_printf("[COVE-IO] reject DMA share vmid=%lu device=%lx gpa=%lx\n",
-				   cvm->vmid->vmid,
+			   cvm_identity(cvm->vmid),
 				   cvm_sbi_params->device_id, gpa);
 			return CVM_ERROR;
 		}
@@ -1869,7 +2357,7 @@ int sbi_cvm_create_memory_region(struct iie_cvm_sbi_params * cvm_sbi_params)
 int sbi_cvm_hash_image(struct iie_cvm_sbi_params * cvm_sbi_params)
 {
 	/* TODO */
-	struct cvm_node* cvm_node = get_cvm(cvm_sbi_params->vmid_ptr->vmid);
+	struct cvm_node *cvm_node = get_cvm(cvm_identity(cvm_sbi_params->vmid_ptr));
     hash_cvm(&cvm_node->cvm, (void *)cvm_node->cvm.hash, 0);
     sbi_printf("[IIE CVM Monitor@%s] hash value = %s. \r\n", __func__, cvm_node->cvm.hash);
 
@@ -1879,7 +2367,8 @@ int sbi_cvm_hash_image(struct iie_cvm_sbi_params * cvm_sbi_params)
 int sbi_cvm_attest(struct iie_cvm_sbi_params * cvm_sbi_params)
 {
     struct report_t report;
-    attest_cvm(cvm_sbi_params->vmid_ptr->vmid, (uintptr_t)&report, 0);
+	attest_cvm(cvm_identity(cvm_sbi_params->vmid_ptr),
+	       (uintptr_t)&report, 0);
     sbi_printf("[IIE CVM Monitor@%s] sm_report hash = %s\nsm_report signature = %s\nsm_report pub_key = %s\nenclave hash = %s\nenclave signature = %s\ndev_pub_key = %s\n", 
     __func__, 
     report.sm.hash,
@@ -1958,12 +2447,13 @@ int sbi_cvm_init_mem_pool(struct iie_cvm_sbi_params * cvm_sbi_params)
 int sbi_cvm_destroy(struct iie_cvm_sbi_params * cvm_sbi_params)
 {
 	struct kvm_vmid *vmid_ptr = cvm_sbi_params->vmid_ptr;
-	struct cvm_node *cvm_node = get_cvm(vmid_ptr->vmid);
+	struct cvm_node *cvm_node = get_cvm(cvm_identity(vmid_ptr));
 	int ret;
 
 	if(!cvm_node)
 	{
-		sbi_printf("[IIE CVM Monitor@%s] CVM %ld does not exist. \r\n", __func__, vmid_ptr->vmid);
+		sbi_printf("[IIE CVM Monitor@%s] CVM %ld does not exist. \r\n",
+			   __func__, cvm_identity(vmid_ptr));
 		return -1;
 	}
 
@@ -1971,7 +2461,8 @@ int sbi_cvm_destroy(struct iie_cvm_sbi_params * cvm_sbi_params)
 	ret = cvm_delete_node(cvm_node);
     if(ret)
     {
-        sbi_printf("[IIE CVM Monitor@%s] Error %d, CVM %ld destroy failed. \r\n", __func__, ret, vmid_ptr->vmid);
+		sbi_printf("[IIE CVM Monitor@%s] Error %d, CVM %ld destroy failed. \r\n",
+			   __func__, ret, cvm_identity(vmid_ptr));
         return -1;
     }
     return 0;
@@ -2274,7 +2765,7 @@ int init_cvm_vcpu_rootptAndChunk(struct iie_cvm_sbi_params *cvm_sbi_params){
     for(int i=0; i<4; i++){
         set_page_own_table(free_page+i*PAGE_SIZE, &cvm_sbi_params->vmid_ptr->vmid);
     }
-    struct cvm_node *node = get_cvm(cvm_sbi_params->vmid_ptr->vmid);
+	struct cvm_node *node = get_cvm(cvm_identity(cvm_sbi_params->vmid_ptr));
     
     node->cvm.root_pt = free_page;
     //allocate one chunk to the cvm.
@@ -2359,6 +2850,106 @@ static int find_sw_pte(struct sbi_cvm* cvm, paddr_t gpa, pt_entry_t **pte){
     }
     else
         return 1;
+}
+
+static bool cove_io_private_page_owned_by(struct sbi_cvm *cvm, paddr_t hpa)
+{
+	unsigned long owner = 0;
+	u64 index;
+
+	if (!cvm || !cvm->vmid || !page_own_table || hpa < 0x80000000)
+		return false;
+
+	index = (hpa - 0x80000000) >> PAGE_SHIFT;
+	if (index >= own_max_num)
+		return false;
+
+	spin_lock(&spin_lock_page_own_table);
+	if (ownership_table_level == 0) {
+		owner = (page_own_table + index)->vmidp;
+	} else if (ownership_table_level == 1) {
+		unsigned long first = index >> 19;
+		unsigned long second = index & ((1UL << 19) - 1);
+		unsigned long table = *((unsigned long *)page_own_table + first);
+
+		if (table)
+			owner = ((page_own_table_t *)table + second)->vmidp;
+	}
+	spin_unlock(&spin_lock_page_own_table);
+
+	return owner == (unsigned long)&cvm->vmid->vmid;
+}
+
+static int cove_io_copy_to_guest(struct cvm_node *cvm_node, u64 gpa,
+					 const void *src, u64 len)
+{
+	const u8 *bytes = src;
+
+	if (!cvm_node || !src || !len || gpa + len < gpa)
+		return CVM_ERROR;
+
+	while (len) {
+		pt_entry_t *pte;
+		u64 ppn, phys, chunk;
+
+		spin_lock(&cvm_node->cvm.page_table_lock);
+		if (find_sw_pte(&cvm_node->cvm, gpa, &pte) ||
+		    !(*pte & PTE_V) || !(*pte & PTE_W)) {
+			spin_unlock(&cvm_node->cvm.page_table_lock);
+			return CVM_ERROR;
+		}
+		ppn = *pte >> PAGE_PFN_SHIFT;
+		ppn &= ~KEYID_MASK;
+		phys = (ppn << PAGE_SHIFT) | (gpa & (PAGE_SIZE - 1));
+		spin_unlock(&cvm_node->cvm.page_table_lock);
+
+		if (!cove_io_private_page_owned_by(&cvm_node->cvm,
+						   phys & ~(PAGE_SIZE - 1)))
+			return CVM_ERROR;
+		chunk = PAGE_SIZE - (phys & (PAGE_SIZE - 1));
+		if (chunk > len)
+			chunk = len;
+		sbi_memcpy((void *)phys, bytes, chunk);
+		gpa += chunk;
+		bytes += chunk;
+		len -= chunk;
+	}
+
+	return 0;
+}
+
+static int cove_io_translate_private_dma(struct cove_io_tdi_entry *tdi,
+					 u64 gpa, u64 *hpa)
+{
+	struct cvm_node *cvm_node;
+	pt_entry_t *pte;
+	u64 ppn, phys;
+
+	if (!tdi || !hpa || !(tdi->flags & COVE_IO_TDI_F_DIRECT_DMA))
+		return CVM_ERROR;
+
+	cvm_node = get_cvm(tdi->vmid);
+	if (!cvm_node)
+		return CVM_ERROR;
+
+	spin_lock(&cvm_node->cvm.page_table_lock);
+	if (find_sw_pte(&cvm_node->cvm, gpa, &pte) ||
+	    !(*pte & PTE_V) || !(*pte & (PTE_R | PTE_W | PTE_X))) {
+		spin_unlock(&cvm_node->cvm.page_table_lock);
+		return CVM_ERROR;
+	}
+
+	ppn = *pte >> PAGE_PFN_SHIFT;
+	ppn &= ~KEYID_MASK;
+	phys = (ppn << PAGE_SHIFT) | (gpa & (PAGE_SIZE - 1));
+	spin_unlock(&cvm_node->cvm.page_table_lock);
+
+	if (!cove_io_private_page_owned_by(&cvm_node->cvm,
+					       phys & ~(PAGE_SIZE - 1)))
+		return CVM_ERROR;
+
+	*hpa = phys;
+	return 0;
 }
 
 //build the mapping between GPA and HPA
@@ -2621,7 +3212,7 @@ int add_cvm_share_pages(struct sbi_cvm* cvm, paddr_t gpa, paddr_t hpa, bool swio
 
 int load_file(struct iie_cvm_sbi_params_load *load_file){
     int ret=0;
-    struct cvm_node *cvm_node = get_cvm(load_file->vmid_ptr->vmid);
+	struct cvm_node *cvm_node = get_cvm(cvm_identity(load_file->vmid_ptr));
     if(!cvm_node){
         sbi_printf("function %s get_cvm by id 0x%lx failed!\n", __func__, load_file->vmid_ptr->vmid);
         return CVM_ERROR;
@@ -2652,7 +3243,7 @@ int load_file(struct iie_cvm_sbi_params_load *load_file){
 int retry_load_after_refill(struct iie_cvm_sbi_params_load *load_file){
     // sbi_printf("retry_load_after_refill here\n");
     int ret=0;
-    struct cvm_node *cvm_node = get_cvm(load_file->vmid_ptr->vmid);
+	struct cvm_node *cvm_node = get_cvm(cvm_identity(load_file->vmid_ptr));
     if(!cvm_node){
         sbi_printf("function %s get_cvm by id 0x%lx failed!\n", __func__, load_file->vmid_ptr->vmid);
         return CVM_ERROR;
@@ -2697,9 +3288,10 @@ int init_swiotlb_params(struct iie_cvm_sbi_params_swiotlb *swiotlb, struct kvm_v
     if(!swiotlb){
         return CVM_ERROR;
     }
-    struct cvm_node *cvm_node = get_cvm(vmid_ptr->vmid);
+	struct cvm_node *cvm_node = get_cvm(cvm_identity(vmid_ptr));
     if(!cvm_node){
-        sbi_printf("function %s get_cvm by id 0x%lx failed!\n", __func__, *vmid_ptr);
+	sbi_printf("function %s get_cvm by id 0x%lx failed!\n", __func__,
+		   cvm_identity(vmid_ptr));
         return CVM_ERROR;
     }
     if (!cvm_node->cvm.swiotlb_size) {
@@ -2739,7 +3331,7 @@ int refill_memory_pool(struct cvm_list_params *chunk_infor_list){
 int recycle_memory(struct iie_cvm_sbi_params *cvm_sbi_params, struct cvm_list_params *recycle_list){
     struct kvm_vmid *vmid_ptr = cvm_sbi_params->vmid_ptr;
 	int *vcpu_id_ptr = cvm_sbi_params->vcpu_id_ptr;
-	struct cvm_node *cvm_node = get_cvm(vmid_ptr->vmid);
+	struct cvm_node *cvm_node = get_cvm(cvm_identity(vmid_ptr));
 	int ret;
     if(!cvm_node)
     {
@@ -2800,10 +3392,8 @@ int cvm_trap_gstage_page_fault(struct sbi_trap_regs* host_regs)
         return ret;
     }
     else{
-        struct kvm_vmid kvm_id;
-        paddr_t hpa;
-        kvm_id.vmid = get_cvm_id();
-        struct cvm_node *cvm = get_cvm(kvm_id.vmid);
+	paddr_t hpa;
+	struct cvm_node *cvm = get_cvm(get_cvm_id());
         ret = malloc_cvm_empty_page(&cvm->cvm, addr, &hpa);
         // TODO resume cvm ctx
         if(ret == TEE_NO_MEMORY){
@@ -2837,6 +3427,29 @@ int cvm_trap_gstage_page_fault(struct sbi_trap_regs* host_regs)
 
 int cvm_trap_sbi_ecall(struct sbi_trap_regs* host_regs)
 {
-    // 传递trap 同步上下文
-    return cvm_vcpu_exit(host_regs);
+	unsigned long value = 0;
+	int ret;
+
+	/* COVG is consumed inside the monitor, without exposing it to the host. */
+	if (host_regs->a7 == SBI_EXT_COVG) {
+		ret = cove_io_covg_ecall(get_cvm_id(), host_regs->a6,
+					 host_regs->a0, host_regs->a1,
+					 host_regs->a2, host_regs->a3, &value);
+		host_regs->a0 = ret;
+		host_regs->a1 = value;
+		host_regs->mepc += 4;
+		return 0;
+	}
+
+	/* Make SBI base extension discovery report COVG to the guest. */
+	if (host_regs->a7 == SBI_EXT_BASE &&
+	    host_regs->a6 == SBI_EXT_BASE_PROBE_EXT &&
+	    host_regs->a0 == SBI_EXT_COVG) {
+		host_regs->a0 = SBI_SUCCESS;
+		host_regs->a1 = 1;
+		host_regs->mepc += 4;
+		return 0;
+	}
+
+	return cvm_vcpu_exit(host_regs);
 }

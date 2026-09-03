@@ -3,7 +3,7 @@
         url = https://gitee.com/lubailong/riscv-gnu-toolchain.git
 [submodule "kvmtool"]
         path = kvmtool
-        url = https://gitee.com/lubailong/kvmtool.git
+        url = https://github.com/cauksg/cvm.git
 [submodule "howto"]
         path = howto
         url = https://gitee.com/lubailong/howto.git

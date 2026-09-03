@@ -148,7 +148,9 @@ dmesg -c >/dev/null 2>&1 || dmesg -C || true
 
 if [ -x ./vfio-bind-pci.sh ]; then
 	for bdf in "$VFIO_BDF1" "$VFIO_BDF2"; do
-		VFIO_ALLOW_UNSAFE_INTERRUPTS=1 ./vfio-bind-pci.sh "$bdf" >>"$BIND_LOG" 2>&1 ||
+		VFIO_ALLOW_COVE_IO_ISOLATED_MSI=1 \
+		VFIO_ALLOW_UNSAFE_INTERRUPTS=0 \
+			./vfio-bind-pci.sh "$bdf" >>"$BIND_LOG" 2>&1 ||
 			fail "failed to bind VFIO PCI device $bdf"
 	done
 fi

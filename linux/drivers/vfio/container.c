@@ -571,8 +571,9 @@ int vfio_device_container_dma_rw(struct vfio_device *device,
 }
 
 int vfio_container_dma_fault_recover(struct vfio_group *group,
-				     dma_addr_t iova, int prot,
-				     phys_addr_t *phys, size_t *size)
+					     dma_addr_t iova, int prot,
+					     phys_addr_t trusted_phys,
+					     phys_addr_t *phys, size_t *size)
 {
 	struct vfio_container *container = group->container;
 	struct vfio_iommu_driver *driver;
@@ -587,8 +588,9 @@ int vfio_container_dma_fault_recover(struct vfio_group *group,
 		return -EOPNOTSUPP;
 
 	return driver->ops->dma_fault_recover(container->iommu_data,
-					      group->iommu_group, iova, prot,
-					      phys, size);
+						      group->iommu_group, iova, prot,
+						      trusted_phys,
+						      phys, size);
 }
 
 int __init vfio_container_init(void)

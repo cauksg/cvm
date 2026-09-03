@@ -328,6 +328,11 @@ void __init setup_arch(char **cmdline_p)
 	efi_init();
 	paging_init();
 
+#ifdef CONFIG_COVE_IO_GUEST
+	/* Accept after the linear map exists, before platform/device probing. */
+	riscv_cove_io_guest_accept();
+#endif
+
 	/* Parse the ACPI tables for possible boot-time configuration */
 	acpi_boot_table_init();
 

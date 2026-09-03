@@ -121,9 +121,10 @@ int iopt_unmap_iova(struct io_pagetable *iopt, unsigned long iova,
 		    unsigned long length, unsigned long *unmapped);
 int iopt_unmap_all(struct io_pagetable *iopt, unsigned long *unmapped);
 int iopt_cove_io_dma_fault_recover(struct io_pagetable *iopt,
-				   struct iommu_domain *domain,
-				   unsigned long iova, int prot,
-				   phys_addr_t *phys, size_t *size);
+					   struct iommu_domain *domain,
+					   unsigned long iova, int prot,
+					   phys_addr_t trusted_phys,
+					   phys_addr_t *phys, size_t *size);
 
 int iopt_read_and_clear_dirty_data(struct io_pagetable *iopt,
 				   struct iommu_domain *domain,

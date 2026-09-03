@@ -224,14 +224,3 @@ COVE-IO host autorun: PASS vfio-msi
 > MMIO/DMA 授权范围，并在 Linux/KVM 与 OpenSBI 两层执行身份和范围校验；
 > 绑定后的 RISC-V IOMMU fault recovery 仅对匹配 requester ID 和授权范围的
 > DMA 请求安装映射。
-
-## 7. 当前限制
-
-- 当前验证基于 QEMU 模拟 `riscv-iommu-pci` 和 QEMU `edu` PCI 设备，不是物理
-  RISC-V IOMMU 或真实 PCIe 设备。
-- 当前是 COVE-IO 私有原型 ABI，不是 upstream 稳定 ABI。
-- 本主题不包含设备加密、认证、attestation。
-- 本主题不评价中断安全闭环；MSI/MRIF/IMSIC 中断处理应在第三个主题单独汇报。
-- 本主题不展开解绑状态机；STOP、DMA_UNMAP、RECLAIM_MMIO、UNBIND 等解绑
-  流程应在第二个主题单独汇报。
-

@@ -1446,9 +1446,10 @@ static bool iopt_domain_contains(struct io_pagetable *iopt,
 }
 
 int iopt_cove_io_dma_fault_recover(struct io_pagetable *iopt,
-				   struct iommu_domain *domain,
-				   unsigned long user_iova, int prot,
-				   phys_addr_t *phys, size_t *size)
+					struct iommu_domain *domain,
+					unsigned long user_iova, int prot,
+					phys_addr_t trusted_phys,
+					phys_addr_t *phys, size_t *size)
 {
 	unsigned long iova = ALIGN_DOWN(user_iova, PAGE_SIZE);
 	unsigned long last = iova + PAGE_SIZE - 1;
@@ -1457,6 +1458,8 @@ int iopt_cove_io_dma_fault_recover(struct io_pagetable *iopt,
 
 	if (!domain || !phys || !size)
 		return -EINVAL;
+	if (trusted_phys)
+		return -EOPNOTSUPP;
 
 	*phys = 0;
 	*size = 0;

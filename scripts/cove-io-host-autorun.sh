@@ -12,6 +12,7 @@ VFIO_BACKEND=""
 PRI_COUNT=""
 PRI_OVERFLOW_COUNT=""
 MRIF_RETARGET_LOOPS=""
+STRESS_LOOPS=""
 
 cmdline_value()
 {
@@ -37,6 +38,7 @@ VFIO_BACKEND="$(cmdline_value cove_io_vfio_backend || true)"
 PRI_COUNT="$(cmdline_value cove_io_pri_count || true)"
 PRI_OVERFLOW_COUNT="$(cmdline_value cove_io_pri_overflow_count || true)"
 MRIF_RETARGET_LOOPS="$(cmdline_value cove_io_mrif_retarget_loops || true)"
+STRESS_LOOPS="$(cmdline_value cove_io_stress_loops || true)"
 
 [ -n "$WAIT_SECS" ] && export WAIT_SECS
 [ -n "$VFIO_BDF" ] && export VFIO_BDF
@@ -44,10 +46,17 @@ MRIF_RETARGET_LOOPS="$(cmdline_value cove_io_mrif_retarget_loops || true)"
 [ -n "$PRI_COUNT" ] && export PRI_COUNT
 [ -n "$PRI_OVERFLOW_COUNT" ] && export PRI_OVERFLOW_COUNT
 [ -n "$MRIF_RETARGET_LOOPS" ] && export MRIF_RETARGET_LOOPS
+[ -n "$STRESS_LOOPS" ] && export STRESS_LOOPS
 
 run_test()
 {
 	case "$TEST" in
+	covg|covg-abi)
+		/scripts/cove-io-covg-test.sh
+		;;
+	covg-stress|lifecycle-stress)
+		/scripts/cove-io-lifecycle-stress-test.sh
+		;;
 	vfio-msi|msi)
 		/scripts/cove-io-vfio-msi-test.sh
 		;;
@@ -59,6 +68,10 @@ run_test()
 		;;
 	vfio-lazy|lazy)
 		/scripts/cove-io-vfio-lazy-fault-test.sh
+		;;
+	vfio-direct|direct)
+		COVE_IO_DIRECT_DMA=1 DMA_IOVA="${DMA_IOVA:-0x80200000}" \
+		VFIO_BACKEND=legacy /scripts/cove-io-vfio-lazy-fault-test.sh
 		;;
 	vfio-multi|multi)
 		/scripts/cove-io-vfio-multi-test.sh

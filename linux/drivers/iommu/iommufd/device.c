@@ -360,8 +360,9 @@ iommufd_get_device_by_dev(struct iommufd_ctx *ictx, struct device *dev)
 }
 
 int iommufd_device_dma_fault_recover(struct iommufd_ctx *ictx,
-				     struct device *dev, dma_addr_t iova,
-				     int prot, phys_addr_t *phys,
+					 struct device *dev, dma_addr_t iova,
+					 int prot, phys_addr_t trusted_phys,
+					 phys_addr_t *phys,
 				     size_t *size)
 {
 	struct iommufd_hwpt_paging *hwpt_paging;
@@ -375,6 +376,11 @@ int iommufd_device_dma_fault_recover(struct iommufd_ctx *ictx,
 		*size = 0;
 	if (!phys || !size)
 		return -EINVAL;
+	/* iommufd has no trusted-physical-page insertion primitive yet. Do not
+	 * silently replace the Monitor-selected HPA with a userspace-pinned page.
+	 */
+	if (trusted_phys)
+		return -EOPNOTSUPP;
 
 	idev = iommufd_get_device_by_dev(ictx, dev);
 	if (IS_ERR(idev))
@@ -408,8 +414,9 @@ int iommufd_device_dma_fault_recover(struct iommufd_ctx *ictx,
 	}
 
 	rc = iopt_cove_io_dma_fault_recover(&hwpt_paging->ioas->iopt,
-					    attach->hwpt->domain, iova, prot,
-					    phys, size);
+						    attach->hwpt->domain, iova, prot,
+						    trusted_phys,
+						    phys, size);
 
 out_unlock:
 	mutex_unlock(&idev->igroup->lock);

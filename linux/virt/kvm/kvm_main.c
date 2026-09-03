@@ -1229,12 +1229,16 @@ static struct kvm *kvm_create_vm(unsigned long type, const char *fdname)
 
 		reset_KVM_memory_pool_refill_count();
 
+		mutex_lock(&kvm_lock);
 		if (!cvm_mem_inited) {
 			r = cvm_mem_manege_init();
-			if (r)
+			if (r) {
+				mutex_unlock(&kvm_lock);
 				goto out_err_no_cvm;
+			}
 			cvm_mem_inited = true;
 		}
+		mutex_unlock(&kvm_lock);
 
 		cvm_sbi_params = kzalloc(sizeof(*cvm_sbi_params), GFP_KERNEL);
 		if (!cvm_sbi_params) {

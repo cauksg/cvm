@@ -512,7 +512,8 @@ static struct vfio_group *vfio_group_get_from_iommu(struct iommu_group *iommu_gr
 }
 
 int vfio_device_dma_fault_recover(struct device *dev, dma_addr_t iova,
-				  int prot, phys_addr_t *phys, size_t *size)
+					int prot, phys_addr_t trusted_phys,
+					phys_addr_t *phys, size_t *size)
 {
 	struct iommu_group *iommu_group;
 	struct vfio_group *group;
@@ -541,11 +542,13 @@ int vfio_device_dma_fault_recover(struct device *dev, dma_addr_t iova,
 
 	if (group->iommufd && !group->container) {
 		ret = iommufd_device_dma_fault_recover(group->iommufd, dev,
-						       iova, prot, phys, size);
+						       iova, prot, trusted_phys,
+						       phys, size);
 		goto out_unlock_group;
 	}
 
-	ret = vfio_container_dma_fault_recover(group, iova, prot, phys, size);
+	ret = vfio_container_dma_fault_recover(group, iova, prot, trusted_phys,
+						      phys, size);
 
 out_unlock_group:
 	mutex_unlock(&group->group_lock);

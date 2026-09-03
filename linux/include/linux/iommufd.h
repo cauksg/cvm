@@ -203,9 +203,9 @@ struct iommufd_ctx *iommufd_ctx_from_fd(int fd);
 void iommufd_ctx_put(struct iommufd_ctx *ictx);
 bool iommufd_ctx_has_group(struct iommufd_ctx *ictx, struct iommu_group *group);
 int iommufd_device_dma_fault_recover(struct iommufd_ctx *ictx,
-				     struct device *dev, dma_addr_t iova,
-				     int prot, phys_addr_t *phys,
-				     size_t *size);
+					     struct device *dev, dma_addr_t iova,
+					     int prot, phys_addr_t trusted_phys,
+					     phys_addr_t *phys, size_t *size);
 
 int iommufd_access_pin_pages(struct iommufd_access *access, unsigned long iova,
 			     unsigned long length, struct page **out_pages,
@@ -262,8 +262,8 @@ static inline int iommufd_vfio_compat_set_no_iommu(struct iommufd_ctx *ictx)
 static inline int iommufd_device_dma_fault_recover(struct iommufd_ctx *ictx,
 						   struct device *dev,
 						   dma_addr_t iova, int prot,
-						   phys_addr_t *phys,
-						   size_t *size)
+						   phys_addr_t trusted_phys,
+						   phys_addr_t *phys, size_t *size)
 {
 	return -EOPNOTSUPP;
 }

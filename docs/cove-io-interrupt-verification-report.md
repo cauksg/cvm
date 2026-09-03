@@ -250,12 +250,3 @@ COVE-IO host autorun: PASS vfio-msi-retarget-stress
 > PCI-RID device id、target vCPU 和 IMSIC interrupt ID。RISC-V IOMMU 的
 > COVE-IO isolated MSI/MRIF 路径提供设备侧 MSI target 约束，retarget 时旧
 > vCPU 授权被撤销，新 target pending 时 MSI 被阻断，避免中断继续投递到旧目标。
-
-## 7. 当前限制
-
-- 当前验证基于 QEMU 模拟 `riscv-iommu-pci`、QEMU `edu` PCI 设备和私有 COVE-IO ABI。
-- MRIF 是 COVE-IO 原型路径，不是 upstream 通用 RISC-V IOMMU interrupt-remapping ABI。
-- 当前自动化覆盖 basic MSI、device/vCPU/IID negative probe、MRIF install、retarget
-  stress、pending-blocked；未覆盖所有真实 PCIe 设备、所有 MSI-X vector 数量和长期压力。
-- OpenSBI IRQ range 当前有固定上限，极端稀疏或超大规模 MSI/MSI-X vector 仍需进一步压力测试。
-- 本主题不包含设备加密、认证、attestation。

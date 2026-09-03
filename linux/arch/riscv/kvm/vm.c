@@ -43,7 +43,6 @@ int kvm_arch_init_vm(struct kvm *kvm, unsigned long type)
 		kvm_riscv_mmu_free_pgd(kvm);
 		return r;
 	}
-
 	kvm_riscv_aia_init_vm(kvm);
 
 	kvm_riscv_guest_timer_init(kvm);

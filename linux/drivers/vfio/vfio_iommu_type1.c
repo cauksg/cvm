@@ -131,6 +131,7 @@ struct vfio_pfn {
 	dma_addr_t		iova;		/* Device address */
 	unsigned long		pfn;		/* Host pfn */
 	unsigned int		ref_count;
+	bool			trusted_phys;
 };
 
 struct vfio_regions {
@@ -385,7 +386,7 @@ static void vfio_unlink_pfn(struct vfio_dma *dma, struct vfio_pfn *old)
 }
 
 static int vfio_add_to_pfn_list(struct vfio_dma *dma, dma_addr_t iova,
-				unsigned long pfn)
+				unsigned long pfn, bool trusted_phys)
 {
 	struct vfio_pfn *vpfn;
 
@@ -396,6 +397,7 @@ static int vfio_add_to_pfn_list(struct vfio_dma *dma, dma_addr_t iova,
 	vpfn->iova = iova;
 	vpfn->pfn = pfn;
 	vpfn->ref_count = 1;
+	vpfn->trusted_phys = trusted_phys;
 	vfio_link_pfn(dma, vpfn);
 	return 0;
 }
@@ -423,7 +425,7 @@ static int vfio_iova_put_vfio_pfn(struct vfio_dma *dma, struct vfio_pfn *vpfn)
 
 	vpfn->ref_count--;
 	if (!vpfn->ref_count) {
-		ret = put_pfn(vpfn->pfn, dma->prot);
+		ret = vpfn->trusted_phys ? 0 : put_pfn(vpfn->pfn, dma->prot);
 		vfio_remove_from_pfn_list(dma, vpfn);
 	}
 	return ret;
@@ -973,7 +975,7 @@ static int vfio_iommu_type1_pin_pages(void *iommu_data,
 			goto pin_unwind;
 		}
 
-		ret = vfio_add_to_pfn_list(dma, iova, phys_pfn);
+			ret = vfio_add_to_pfn_list(dma, iova, phys_pfn, false);
 		if (ret) {
 			if (put_pfn(phys_pfn, dma->prot) && do_accounting)
 				vfio_lock_acct(dma, -1, true);
@@ -1168,7 +1170,8 @@ static long vfio_unmap_unpin(struct vfio_iommu *iommu, struct vfio_dma *dma,
 				cond_resched();
 			}
 
-			unlocked += put_pfn(vpfn->pfn, dma->prot);
+			if (!vpfn->trusted_phys)
+				unlocked += put_pfn(vpfn->pfn, dma->prot);
 			vfio_remove_from_pfn_list(dma, vpfn);
 		}
 
@@ -1653,6 +1656,7 @@ static int vfio_pin_map_dma(struct vfio_iommu *iommu, struct vfio_dma *dma,
 static int vfio_iommu_type1_dma_fault_recover(void *iommu_data,
 					      struct iommu_group *iommu_group,
 					      dma_addr_t user_iova, int prot,
+					      phys_addr_t trusted_phys,
 					      phys_addr_t *phys, size_t *size)
 {
 	struct vfio_iommu *iommu = iommu_data;
@@ -1661,8 +1665,8 @@ static int vfio_iommu_type1_dma_fault_recover(void *iommu_data,
 	struct vfio_pfn *vpfn;
 	dma_addr_t iova = user_iova & PAGE_MASK;
 	unsigned long pfn;
-	unsigned long vaddr;
-	long unlocked;
+	unsigned long vaddr = 0;
+	long unlocked = 0;
 	int ret;
 
 	if (!iommu || !iommu_group || !phys || !size)
@@ -1721,16 +1725,28 @@ static int vfio_iommu_type1_dma_fault_recover(void *iommu_data,
 		goto out_unlock;
 	}
 
-	vaddr = dma->vaddr + (iova - dma->iova);
-	ret = vfio_pin_page_external(dma, vaddr, &pfn, true);
-	if (ret)
-		goto out_unlock;
+	if (trusted_phys) {
+		if ((trusted_phys & (PAGE_SIZE - 1)) ||
+		    !pfn_valid(PHYS_PFN(trusted_phys))) {
+			ret = -EINVAL;
+			goto out_unlock;
+		}
+		pfn = PHYS_PFN(trusted_phys);
+		ret = vfio_add_to_pfn_list(dma, iova, pfn, true);
+		if (ret)
+			goto out_unlock;
+	} else {
+		vaddr = dma->vaddr + (iova - dma->iova);
+		ret = vfio_pin_page_external(dma, vaddr, &pfn, true);
+		if (ret)
+			goto out_unlock;
 
-	ret = vfio_add_to_pfn_list(dma, iova, pfn);
-	if (ret) {
-		if (put_pfn(pfn, dma->prot))
-			vfio_lock_acct(dma, -1, true);
-		goto out_unlock;
+		ret = vfio_add_to_pfn_list(dma, iova, pfn, false);
+		if (ret) {
+			if (put_pfn(pfn, dma->prot))
+				vfio_lock_acct(dma, -1, true);
+			goto out_unlock;
+		}
 	}
 
 	ret = vfio_iommu_map(iommu, iova, pfn, 1, dma->prot);
@@ -2628,7 +2644,8 @@ static void vfio_iommu_unmap_unpin_reaccount(struct vfio_iommu *iommu)
 			struct vfio_pfn *vpfn = rb_entry(p, struct vfio_pfn,
 							 node);
 
-			if (!is_invalid_reserved_pfn(vpfn->pfn))
+			if (!vpfn->trusted_phys &&
+			    !is_invalid_reserved_pfn(vpfn->pfn))
 				locked++;
 		}
 		vfio_lock_acct(dma, locked - unlocked, true);

@@ -27,6 +27,24 @@
 #define SBI_EXT_CVM_COVE_IO_TDI_OP		0x12
 #define SBI_EXT_CVM_TEST			0xffff
 
+#define SBI_EXT_COVH			0x434f5648
+#define SBI_EXT_COVG			0x434f5647
+#define SBI_EXT_COVT			0x434f5654
+#define SBI_EXT_COVH_ADD_TVM_INTERFACE_REGION	1026
+#define SBI_EXT_COVH_RECLAIM_TVM_INTERFACE_REGION 1027
+#define SBI_EXT_COVH_BIND_INTERFACE		1028
+#define SBI_EXT_COVH_UNBIND_INTERFACE		1030
+#define SBI_EXT_COVG_GET_DEVICE_LINK		1024
+#define SBI_EXT_COVG_GET_CONNECTION_TRANSCRIPT	1025
+#define SBI_EXT_COVG_GET_DEVICE_MEASUREMENTS	1026
+#define SBI_EXT_COVG_GET_INTERFACE_REPORT	1027
+#define SBI_EXT_COVG_GET_INTERFACE_STATE	1028
+#define SBI_EXT_COVG_MAP_INTERFACE_MMIO		1029
+#define SBI_EXT_COVG_START_INTERFACE		1030
+#define SBI_EXT_COVG_STOP_INTERFACE		1031
+#define SBI_EXT_COVG_SIM_GET_INTERFACE_ID	1087
+#define KVM_COVE_IO_TDI_F_ALLOW_BOUND_PROBE	(1U << 2)
+
 struct iie_cvm_vcpu_sbi_params {
 	int *vcpu_id_ptr;
 	int *vcpu_idx_ptr;
@@ -84,6 +102,8 @@ struct cove_io_tdi_sbi_params {
 	u64 irq_iid;
 	u64 device_id;
 	u64 state;
+	u64 dma_hpa;
+	u64 features;
 };
 
 struct cvm_mem_chunk_infor {
@@ -104,9 +124,9 @@ struct cvm_mem_chunk_infor {
 #define K(x) ((x) << (PAGE_SHIFT - 10))
 #endif
 
-	#define TEE_NO_MEMORY		-1
-	#define CVM_ERROR		-2
-	#define KVM_COVE_IO_VCPU_ANY	(~0ULL)
+#define TEE_NO_MEMORY		-1
+#define CVM_ERROR		-2
+#define KVM_COVE_IO_VCPU_ANY	(~0ULL)
 
 int cvm_mem_manege_init(void);
 int refill_KVM_memory_pool(void);
@@ -126,12 +146,16 @@ bool kvm_riscv_cove_io_irq_target_device_allowed(struct kvm *kvm,
 						 u64 vcpu_id,
 						 u64 irq_iid,
 						 u64 device_id);
-int kvm_riscv_cove_io_iommu_fault_check(u32 devid, unsigned long iova);
+int kvm_riscv_cove_io_iommu_fault_check(u32 devid, unsigned long iova,
+					phys_addr_t *trusted_phys);
 void kvm_riscv_cove_io_destroy_vm(struct kvm *kvm);
 
 #if IS_ENABLED(CONFIG_RISCV_IOMMU)
 int riscv_iommu_cove_io_mrif_bind(u64 device_id, struct kvm *kvm,
 				  u64 vcpu_id, u64 irq_iid);
+int riscv_iommu_cove_io_claim(u64 device_id, struct kvm *kvm);
+void riscv_iommu_cove_io_release(u64 device_id, struct kvm *kvm);
+void riscv_iommu_cove_io_release_vm(struct kvm *kvm);
 void riscv_iommu_cove_io_mrif_unbind(u64 device_id);
 void riscv_iommu_cove_io_mrif_unbind_vm(struct kvm *kvm);
 void riscv_iommu_cove_io_mrif_refresh(struct kvm *kvm, u64 vcpu_id);
@@ -141,6 +165,12 @@ static inline int riscv_iommu_cove_io_mrif_bind(u64 device_id, struct kvm *kvm,
 {
 	return 0;
 }
+static inline int riscv_iommu_cove_io_claim(u64 device_id, struct kvm *kvm)
+{
+	return 0;
+}
+static inline void riscv_iommu_cove_io_release(u64 device_id, struct kvm *kvm) { }
+static inline void riscv_iommu_cove_io_release_vm(struct kvm *kvm) { }
 static inline void riscv_iommu_cove_io_mrif_unbind(u64 device_id) { }
 static inline void riscv_iommu_cove_io_mrif_unbind_vm(struct kvm *kvm) { }
 static inline void riscv_iommu_cove_io_mrif_refresh(struct kvm *kvm,

@@ -36,6 +36,28 @@ need()
 	command -v "$1" >/dev/null 2>&1 || fail "missing command: $1"
 }
 
+run_covg()
+{
+	need dmesg
+	dmesg > /tmp/cove-io-covg-selftest.dmesg
+	if grep -q "CoVE-IO COVG selftest: FAIL" \
+		/tmp/cove-io-covg-selftest.dmesg; then
+		fail "kernel COVG selftest reported a failure"
+	fi
+	grep -q "CoVE-IO COVG selftest: PASS" \
+		/tmp/cove-io-covg-selftest.dmesg ||
+		fail "kernel COVG selftest did not report PASS"
+	grep -q "CoVE-IO: guest accepted" \
+		/tmp/cove-io-covg-selftest.dmesg ||
+		fail "guest did not accept any COVG interfaces"
+	grep -q "owner-scoped interfaces" /tmp/cove-io-covg-selftest.dmesg ||
+		fail "owner-scoped TDI enumeration was not used"
+	grep -q "stop transaction revoked runtime access" \
+		/tmp/cove-io-covg-selftest.dmesg ||
+		fail "STOP transaction was not exercised"
+	echo "COVE-IO guest covg: enumeration/link/report/generation/MMIO-map/STOP checks passed"
+}
+
 hex_byte_at()
 {
 	file="$1"
@@ -459,6 +481,9 @@ POWEROFF="$(cmdline_value cove_io_guest_poweroff || printf '1\n')"
 
 echo "COVE-IO guest autorun: test=$TEST"
 case "$TEST" in
+covg|covg-abi)
+	run_covg
+	;;
 edu-msi|msi)
 	run_edu_msi
 	;;

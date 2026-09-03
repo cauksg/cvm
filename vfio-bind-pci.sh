@@ -67,7 +67,7 @@ normalize_bdf()
 
 find_bdf_by_id()
 {
-	local dev vendor device
+	local dev vendor device match count=0
 
 	for dev in /sys/bus/pci/devices/*; do
 		[ -e "$dev/vendor" ] || continue
@@ -75,11 +75,18 @@ find_bdf_by_id()
 		device=$(cat "$dev/device")
 		if [ "$vendor" = "$TARGET_VENDOR" ] &&
 		   [ "$device" = "$TARGET_DEVICE" ]; then
-			basename "$dev"
-			return 0
+			match=$(basename "$dev")
+			count=$((count + 1))
 		fi
 	done
 
+	if [ "$count" -eq 1 ]; then
+		printf '%s\n' "$match"
+		return 0
+	fi
+	if [ "$count" -gt 1 ]; then
+		echo "vfio-bind-pci: multiple devices matched $TARGET_VENDOR:$TARGET_DEVICE; pass a BDF explicitly" >&2
+	fi
 	return 1
 }
 

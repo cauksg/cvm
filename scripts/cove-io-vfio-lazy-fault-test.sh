@@ -74,7 +74,9 @@ DMA_IOVA_2="$(hex_add "$DMA_IOVA" 0x1000)"
 dmesg -c >/dev/null 2>&1 || dmesg -C || true
 
 if [ -x ./vfio-bind-pci.sh ]; then
-	VFIO_ALLOW_UNSAFE_INTERRUPTS=1 ./vfio-bind-pci.sh "$VFIO_BDF"
+	VFIO_ALLOW_COVE_IO_ISOLATED_MSI=1 \
+	VFIO_ALLOW_UNSAFE_INTERRUPTS=0 \
+		./vfio-bind-pci.sh "$VFIO_BDF"
 fi
 
 if [ "$VFIO_BACKEND" = "iommufd" ] || [ "$VFIO_BACKEND" = "iommufd-compat" ]; then
@@ -92,21 +94,41 @@ if [ "$VFIO_BACKEND" = "iommufd" ] || [ "$VFIO_BACKEND" = "iommufd-compat" ]; th
 		fail "iommufd COVE-IO same-group rejection did not report per-device IOMMU-group policy"
 fi
 
-COVE_IO_TEST_SKIP=vfio-iommu-map,vcpu-run \
+COVE_IO_TEST_SKIP=vfio-iommu-map \
 COVE_IO_TEST_VFIO_BACKEND="$VFIO_BACKEND" \
-COVE_IO_TEST_PAUSE_BEFORE_RUN="$WAIT_SECS" \
 GUEST_VFIO_PCI="$VFIO_BDF" \
 busybox timeout -s KILL "$((WAIT_SECS + 60))" ./run-guest-os.sh >"$RUN_LOG" 2>&1 &
 LKVM_PID=$!
 
-sleep 15
+ACCEPTED=0
+LKVM_CHILD=
+for second in $(seq 1 "$WAIT_SECS"); do
+	if grep -q "CoVE-IO: guest accepted" "$RUN_LOG"; then
+		ACCEPTED=1
+		LKVM_CHILD="$(pidof lkvm-static || true)"
+		break
+	fi
+	if ! kill -0 "$LKVM_PID" 2>/dev/null; then
+		break
+	fi
+	sleep 1
+done
+if [ "$ACCEPTED" -ne 1 ]; then
+	cat "$RUN_LOG" >&2 || true
+	fail "guest did not accept the VFIO TDI through COVG"
+fi
+[ -n "$LKVM_CHILD" ] || fail "cannot identify the running lkvm-static process"
 
 FIRST_RESP="$(translate "$DMA_IOVA")"
 SECOND_RESP="$(translate "$DMA_IOVA")"
 THIRD_RESP="$(translate "$DMA_IOVA_2")"
 FOURTH_RESP="$(translate "$DMA_IOVA_2")"
 
-wait "$LKVM_PID" || true
+for pid in $LKVM_CHILD; do
+	kill -KILL "$pid" 2>/dev/null || true
+done
+wait "$LKVM_PID" 2>/dev/null || true
+sleep 2
 
 POST_EXIT_RESP="$(translate "$DMA_IOVA")"
 
@@ -114,6 +136,13 @@ dmesg >/tmp/cove-io-vfio-lazy-fault.dmesg
 
 grep -q "cove_io=allow-vfio-map" /tmp/cove-io-vfio-lazy-fault.dmesg ||
 	fail "authorized lazy fault was not recovered"
+if [ "${COVE_IO_DIRECT_DMA:-0}" != "0" ]; then
+	grep -Eq "cove_io=allow-vfio-map trusted_hpa=0x0*[1-9a-fA-F]" \
+		/tmp/cove-io-vfio-lazy-fault.dmesg ||
+		fail "direct DMA did not recover a Monitor-selected trusted HPA"
+	grep -q "direct-dma" "$RUN_LOG" ||
+		fail "kvmtool did not advertise direct-DMA monitor support"
+fi
 
 [ "$FIRST_RESP" != "$SECOND_RESP" ] ||
 	fail "repeated first-page translation did not change after recovery"

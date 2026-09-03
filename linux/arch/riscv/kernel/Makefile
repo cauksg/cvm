@@ -67,6 +67,7 @@ obj-y	+= traps.o
 obj-y	+= riscv_ksyms.o
 obj-y	+= stacktrace.o
 obj-y	+= cacheinfo.o
+obj-$(CONFIG_COVE_IO_GUEST) += cove_io_guest.o
 obj-y	+= patch.o
 obj-y	+= vendor_extensions.o
 obj-y	+= vendor_extensions/

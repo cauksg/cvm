@@ -1674,7 +1674,10 @@ struct swiotlb {
 	unsigned long size;
 	unsigned long device_id;
 	unsigned long iommu_group;
+	unsigned long flags;
 };
+
+#define KVM_COVE_IO_SWIOTLB_F_IOMMU_ONLY	(1UL << 0)
 
 #define KVM_COVE_IO_MAX_TDIS	16
 #define KVM_COVE_IO_DEVICE_ANY	0
@@ -1685,6 +1688,23 @@ struct swiotlb {
 #define KVM_COVE_IO_DEVICE_TYPE_VIRTIO_MMIO	1
 #define KVM_COVE_IO_DEVICE_TYPE_PCI_RID		2
 #define KVM_COVE_IO_IRQ_IID_ANY	(~0ULL)
+#define KVM_COVE_IO_TDI_F_EXPECT_GENERATION	(1U << 0)
+#define KVM_COVE_IO_TDI_F_DIRECT_DMA		(1U << 1)
+#define KVM_COVE_IO_TDI_F_ALLOW_BOUND_PROBE	(1U << 2)
+#define KVM_COVE_IO_TDI_F_AUTO_ID		(1U << 3)
+
+#define KVM_COVE_IO_FEAT_COVH_REGION_BIND	(1ULL << 0)
+#define KVM_COVE_IO_FEAT_COVG_STATE		(1ULL << 1)
+#define KVM_COVE_IO_FEAT_COVG_START_STOP	(1ULL << 2)
+#define KVM_COVE_IO_FEAT_TDISP_SW_STATE		(1ULL << 3)
+#define KVM_COVE_IO_FEAT_IOMMU_MEDIATED		(1ULL << 4)
+#define KVM_COVE_IO_FEAT_DIRECT_DMA		(1ULL << 5)
+#define KVM_COVE_IO_FEAT_COVG_LINK		(1ULL << 6)
+#define KVM_COVE_IO_FEAT_COVG_REPORT		(1ULL << 7)
+#define KVM_COVE_IO_FEAT_COVG_MMIO_MAP		(1ULL << 8)
+#define KVM_COVE_IO_FEAT_COVG_SIM_ENUM		(1ULL << 9)
+#define KVM_COVE_IO_FEAT_STOP_TRANSACTION	(1ULL << 10)
+#define KVM_COVE_IO_FEAT_AUTO_TDI_ID		(1ULL << 11)
 
 enum kvm_cove_io_tdi_op {
 	KVM_COVE_IO_TDI_REGISTER	= 0,
@@ -1703,6 +1723,10 @@ enum kvm_cove_io_tdi_op {
 	KVM_COVE_IO_TDI_FIND_DMA	= 13,
 	KVM_COVE_IO_TDI_FIND_IRQ	= 14,
 	KVM_COVE_IO_TDI_FIND_MMIO	= 15,
+	KVM_COVE_IO_TDI_GET_FEATURES	= 16,
+	KVM_COVE_IO_TDI_SET_ERROR	= 17,
+	KVM_COVE_IO_TDI_FINALIZE_STOP	= 18,
+	KVM_COVE_IO_TDI_ENUM_OWNED	= 19,
 };
 
 enum kvm_cove_io_tdi_state {
@@ -1711,7 +1735,13 @@ enum kvm_cove_io_tdi_state {
 	KVM_COVE_IO_TDI_STATE_BOUND		= 2,
 	KVM_COVE_IO_TDI_STATE_STARTED		= 3,
 	KVM_COVE_IO_TDI_STATE_STOPPING		= 4,
+	KVM_COVE_IO_TDI_STATE_ERROR		= 5,
 };
+
+#define KVM_COVE_IO_TDI_STATE_DISCONNECTED KVM_COVE_IO_TDI_STATE_FREE
+#define KVM_COVE_IO_TDI_STATE_CONFIG_UNLOCKED KVM_COVE_IO_TDI_STATE_REGISTERED
+#define KVM_COVE_IO_TDI_STATE_CONFIG_LOCKED KVM_COVE_IO_TDI_STATE_BOUND
+#define KVM_COVE_IO_TDI_STATE_RUN KVM_COVE_IO_TDI_STATE_STARTED
 
 struct kvm_cove_io_tdi {
 	__u32 op;
@@ -1729,6 +1759,8 @@ struct kvm_cove_io_tdi {
 	__u64 iommu_group;
 	__u64 state;
 	__u64 irq_iid;
+	__u64 dma_hpa;
+	__u64 features;
 };
 
 #define KVM_LOAD_FILE		_IOWR(KVMIO, 0xf0, struct load_file)

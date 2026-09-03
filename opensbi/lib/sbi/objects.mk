@@ -65,6 +65,7 @@ carray-sbi_ecall_exts-$(CONFIG_SBI_ECALL_MPXY) += ecall_mpxy
 libsbi-objs-$(CONFIG_SBI_ECALL_MPXY) += sbi_ecall_mpxy.o
 
 carray-sbi_ecall_exts-$(CONFIG_SBI_ECALL_CVM) += ecall_cvm
+carray-sbi_ecall_exts-$(CONFIG_SBI_ECALL_CVM) += ecall_covh
 libsbi-objs-$(CONFIG_SBI_ECALL_CVM) += sbi_ecall_cvm.o
 
 libsbi-objs-y += sbi_bitmap.o

@@ -15,6 +15,8 @@ struct kvm_vmid {
 	 */
 	unsigned long vmid_version;
 	unsigned long vmid;
+	/* Stable monitor identity; independent of recycled hardware VMIDs. */
+	unsigned long cvm_id;
 };
 
 void __init kvm_riscv_gstage_vmid_detect(void);

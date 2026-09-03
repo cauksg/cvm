@@ -290,6 +290,16 @@ config RISCV_SBI
 	depends on !RISCV_M_MODE
 	default y
 
+config COVE_IO_GUEST
+	bool "CoVE-IO guest interface acceptance"
+	default y
+	depends on RISCV_SBI
+	help
+	  Accept bound CoVE-IO interfaces from the confidential guest by issuing
+	  COVG start-interface calls before device probing. This is the guest side
+	  of the xs-cvm simulator's experimental CoVE-IO authorization protocol.
+	  It does not implement TDISP, SPDM, device attestation, or PCIe IDE.
+
 config MMU
 	bool "MMU-based Paged Memory Management Support"
 	default y

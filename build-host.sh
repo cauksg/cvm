@@ -70,6 +70,7 @@ set_config_y CONFIG_DMA_RESTRICTED_POOL
 set_config_y CONFIG_KVM
 set_config_y CONFIG_IOMMU_SUPPORT
 set_config_y CONFIG_RISCV_IOMMU
+set_config_y CONFIG_COVE_IO_GUEST
 set_config_y CONFIG_VFIO
 set_config_y CONFIG_VFIO_PCI
 unset_config CONFIG_VFIO_NOIOMMU
@@ -111,7 +112,10 @@ cp -f ./run-guest-os.sh busybox-1.33.1/_install
 cp -f ./vfio-bind-pci.sh busybox-1.33.1/_install
 cp -f ./scripts/cove-io-host-autorun.sh busybox-1.33.1/_install/scripts
 cp -f ./scripts/cove-io-guest-autorun.sh busybox-1.33.1/_install/scripts
+cp -f ./scripts/cove-io-covg-test.sh busybox-1.33.1/_install/scripts
+cp -f ./scripts/cove-io-lifecycle-stress-test.sh busybox-1.33.1/_install/scripts
 cp -f ./scripts/cove-io-vfio-lazy-fault-test.sh busybox-1.33.1/_install/scripts
+cp -f ./scripts/cove-io-vfio-multi-test.sh busybox-1.33.1/_install/scripts
 cp -f ./scripts/cove-io-vfio-msi-test.sh busybox-1.33.1/_install/scripts
 cp -f ./scripts/cove-io-vfio-pri-test.sh busybox-1.33.1/_install/scripts
 chmod +x busybox-1.33.1/_install/scripts/cove-io-*.sh

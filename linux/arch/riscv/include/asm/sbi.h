@@ -38,6 +38,10 @@ enum sbi_ext_id {
 	SBI_EXT_FWFT = 0x46574654,
 	SBI_EXT_MPXY = 0x4D505859,
 	SBI_EXT_DBTR = 0x44425452,
+	/* CoVE-IO guest extension implemented by the xs-cvm simulator. */
+	SBI_EXT_COVG = 0x434F5647,
+	SBI_EXT_COVH = 0x434F5648,
+	SBI_EXT_COVT = 0x434F5654,
 
 	/* Experimentals extensions must lie within this range */
 	SBI_EXT_EXPERIMENTAL_START = 0x08000000,
@@ -57,6 +61,64 @@ enum sbi_ext_base_fid {
 	SBI_EXT_BASE_GET_MARCHID,
 	SBI_EXT_BASE_GET_MIMPID,
 };
+
+enum sbi_ext_covg_fid {
+	SBI_EXT_COVG_GET_DEVICE_LINK = 1024,
+	SBI_EXT_COVG_GET_CONNECTION_TRANSCRIPT = 1025,
+	SBI_EXT_COVG_GET_DEVICE_MEASUREMENTS = 1026,
+	SBI_EXT_COVG_GET_INTERFACE_REPORT = 1027,
+	SBI_EXT_COVG_GET_INTERFACE_STATE = 1028,
+	SBI_EXT_COVG_MAP_INTERFACE_MMIO = 1029,
+	SBI_EXT_COVG_START_INTERFACE = 1030,
+	SBI_EXT_COVG_STOP_INTERFACE = 1031,
+	/* xs-cvm simulator extension; not part of the CoVE-IO draft ABI. */
+	SBI_EXT_COVG_SIM_GET_INTERFACE_ID = 1087,
+};
+
+enum sbi_covg_interface_state {
+	SBI_COVG_INTERFACE_UNLOCKED = 0,
+	SBI_COVG_INTERFACE_LOCKED = 1,
+	SBI_COVG_INTERFACE_RUNNING = 2,
+	SBI_COVG_INTERFACE_ERROR = 3,
+};
+
+/* Simulator-only COVG link/report bits; no SPDM/IDE security is implied. */
+#define SBI_COVE_IO_LINK_F_UP			(1ULL << 0)
+#define SBI_COVE_IO_LINK_F_SIMULATED		(1ULL << 1)
+#define SBI_COVE_IO_LINK_F_NO_SPDM		(1ULL << 2)
+#define SBI_COVE_IO_LINK_F_NO_IDE			(1ULL << 3)
+#define SBI_COVE_IO_LINK_STATE_SHIFT		32
+#define SBI_COVE_IO_COVG_MAP_F_VALIDATE_ONLY	(1ULL << 0)
+#define SBI_COVE_IO_INTERFACE_REPORT_MAGIC	0x43564F494F525054ULL
+#define SBI_COVE_IO_INTERFACE_REPORT_VERSION	2
+#define SBI_COVE_IO_FEAT_COVG_SIM_ENUM		(1ULL << 9)
+#define SBI_COVE_IO_FEAT_STOP_TRANSACTION	(1ULL << 10)
+#define SBI_COVE_IO_FEAT_AUTO_TDI_ID		(1ULL << 11)
+
+struct sbi_cove_io_interface_report {
+	u64 magic;
+	u64 version;
+	u64 tdi_id;
+	u64 generation;
+	u64 device_id;
+	u64 state;
+	u64 flags;
+	u64 features;
+	u64 mmio_gpa;
+	u64 mmio_size;
+	u64 dma_gpa;
+	u64 dma_size;
+	u64 irq_id;
+	u64 irq_num;
+	u64 vcpu_id;
+	u64 irq_iid;
+	u64 link_flags;
+	u64 mmio_map_generation;
+};
+
+#ifdef CONFIG_COVE_IO_GUEST
+void riscv_cove_io_guest_accept(void);
+#endif
 
 enum sbi_ext_time_fid {
 	SBI_EXT_TIME_SET_TIMER = 0,

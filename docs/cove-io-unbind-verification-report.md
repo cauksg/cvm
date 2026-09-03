@@ -183,12 +183,3 @@ COVE-IO host autorun: PASS vfio-multi
 > 或 CVM 退出时，会对 TDI 执行 STOP、IRQ_UNBIND、DMA_UNMAP、RECLAIM_MMIO、
 > UNBIND 的对称清理，并在 OpenSBI monitor 中撤销 MMIO/DMA/IRQ 授权状态；
 > RISC-V IOMMU debug translation 实验证明，解绑后旧 DMA 映射不再继续保持。
-
-## 7. 当前限制
-
-- 当前验证基于 QEMU 模拟 `riscv-iommu-pci` 和 QEMU `edu` PCI 设备，不是物理
-  RISC-V IOMMU 或真实 PCIe 设备。
-- 当前是 COVE-IO 私有原型 ABI，不是 upstream 稳定 ABI。
-- teardown 实验通过 IOMMU translation 结果验证授权映射消失，但不等价于完整资源泄漏证明。
-- 本主题不证明中断安全；`vfio-lazy` 和 `vfio-multi` 允许 unsafe interrupt 只是为了专注 DMA teardown。
-- 本主题不包含设备加密、认证、attestation。

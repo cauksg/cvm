@@ -22,6 +22,7 @@ static unsigned long vmid_version = 1;
 static unsigned long vmid_next;
 static unsigned long vmid_bits __ro_after_init;
 static DEFINE_SPINLOCK(vmid_lock);
+static atomic_long_t cvm_id_next = ATOMIC_LONG_INIT(0);
 
 void __init kvm_riscv_gstage_vmid_detect(void)
 {
@@ -50,6 +51,7 @@ int kvm_riscv_gstage_vmid_init(struct kvm *kvm)
 	/* Mark the initial VMID and VMID version invalid */
 	kvm->arch.vmid.vmid_version = 0;
 	kvm->arch.vmid.vmid = 0;
+	kvm->arch.vmid.cvm_id = atomic_long_inc_return(&cvm_id_next);
 
 	return 0;
 }

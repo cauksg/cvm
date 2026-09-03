@@ -42,6 +42,7 @@
 #if IS_REACHABLE(CONFIG_KVM)
 static int riscv_iommu_cove_io_fault_recover(struct riscv_iommu_device *iommu,
 					     u32 devid, unsigned long iova,
+					     phys_addr_t trusted_phys,
 					     phys_addr_t *phys, size_t *size);
 #endif
 
@@ -553,6 +554,7 @@ static void riscv_iommu_fault(struct riscv_iommu_device *iommu,
 #if IS_REACHABLE(CONFIG_KVM)
 	int cove_io;
 	phys_addr_t phys = 0;
+	phys_addr_t trusted_phys = 0;
 	size_t map_size = 0;
 	int rc;
 #endif
@@ -561,18 +563,20 @@ static void riscv_iommu_fault(struct riscv_iommu_device *iommu,
 		return;
 
 #if IS_REACHABLE(CONFIG_KVM)
-	cove_io = kvm_riscv_cove_io_iommu_fault_check(devid, event->iotval);
+	cove_io = kvm_riscv_cove_io_iommu_fault_check(devid, event->iotval,
+							&trusted_phys);
 	if (cove_io >= 0) {
 		if (cove_io) {
 			rc = riscv_iommu_cove_io_fault_recover(iommu, devid,
 							       event->iotval,
+							       trusted_phys,
 							       &phys,
 							       &map_size);
 			dev_warn_ratelimited(iommu->dev,
-					     "Fault %d devid: 0x%x iotval: %llx iotval2: %llx cove_io=allow-vfio-map phys=%pa size=0x%zx rc=%d\n",
+					     "Fault %d devid: 0x%x iotval: %llx iotval2: %llx cove_io=allow-vfio-map trusted_hpa=%pa phys=%pa size=0x%zx rc=%d\n",
 					     err, devid, event->iotval,
-					     event->iotval2, &phys, map_size,
-					     rc);
+					     event->iotval2, &trusted_phys,
+					     &phys, map_size, rc);
 		} else {
 			dev_warn_ratelimited(iommu->dev,
 					     "Fault %d devid: 0x%x iotval: %llx iotval2: %llx cove_io=deny-observe\n",
@@ -621,15 +625,18 @@ static void riscv_iommu_page_request(struct riscv_iommu_device *iommu,
 	phys_addr_t phys = 0;
 	size_t map_size = 0;
 	int cove_io, rc = -EPERM;
+	phys_addr_t trusted_phys = 0;
 
 	if (pasid_valid)
 		dev_warn(iommu->dev,
 			 "COVE-IO PRI PASID request: devid=0x%x pasid=0x%x pv:%d prgi:%u iova:%lx\n",
 			 devid, pasid, pasid_valid, prgi, iova);
 
-	cove_io = kvm_riscv_cove_io_iommu_fault_check(devid, iova);
+	cove_io = kvm_riscv_cove_io_iommu_fault_check(devid, iova,
+							&trusted_phys);
 	if (cove_io > 0) {
 		rc = riscv_iommu_cove_io_fault_recover(iommu, devid, iova,
+						       trusted_phys,
 						       &phys, &map_size);
 		response = rc ? RISCV_IOMMU_CMD_ATS_PRGR_RESP_FAILURE :
 				RISCV_IOMMU_CMD_ATS_PRGR_RESP_SUCCESS;
@@ -1014,6 +1021,7 @@ struct riscv_iommu_info {
 	u64 cove_io_msi_entries;
 	bool cove_io_mrif_active;
 #if IS_REACHABLE(CONFIG_KVM)
+	struct kvm *cove_io_owner;
 	struct kvm *cove_io_mrif_kvm;
 	u64 cove_io_mrif_vcpu_id;
 	u64 cove_io_mrif_irq_iid;
@@ -1239,8 +1247,9 @@ static struct device *riscv_iommu_find_device_by_devid(
 }
 
 static int riscv_iommu_cove_io_fault_recover(struct riscv_iommu_device *iommu,
-					     u32 devid, unsigned long iova,
-					     phys_addr_t *phys, size_t *size)
+						     u32 devid, unsigned long iova,
+						     phys_addr_t trusted_phys,
+						     phys_addr_t *phys, size_t *size)
 {
 	struct device *dev;
 	int ret;
@@ -1250,7 +1259,7 @@ static int riscv_iommu_cove_io_fault_recover(struct riscv_iommu_device *iommu,
 		return -ENODEV;
 
 	ret = vfio_device_dma_fault_recover(dev, iova, IOMMU_READ | IOMMU_WRITE,
-					    phys, size);
+						trusted_phys, phys, size);
 
 	put_device(dev);
 	return ret;
@@ -1569,8 +1578,11 @@ static int riscv_iommu_cove_io_alloc_device_msipt(
 	if (!info->cove_io_msipt)
 		return -ENOMEM;
 
-	memcpy(info->cove_io_msipt, iommu->cove_io_msipt,
-	       iommu->cove_io_msipt_size);
+	/* A private TDI table starts blocked; only the authorized MRIF entry is
+	 * installed below. Copying BASIC-mode entries would retain unrelated
+	 * host targets and violate per-device interrupt isolation.
+	 */
+	memset(info->cove_io_msipt, 0, iommu->cove_io_msipt_size);
 	info->cove_io_msipt_phys = __pa(info->cove_io_msipt);
 	info->cove_io_msi_addr_mask = iommu->cove_io_msi_addr_mask;
 	info->cove_io_msi_addr_pattern = iommu->cove_io_msi_addr_pattern;
@@ -1946,6 +1958,90 @@ void riscv_iommu_cove_io_mrif_refresh(struct kvm *kvm, u64 vcpu_id)
 			 riscv_iommu_cove_io_mrif_refresh_cb);
 }
 EXPORT_SYMBOL_GPL(riscv_iommu_cove_io_mrif_refresh);
+
+int riscv_iommu_cove_io_claim(u64 device_id, struct kvm *kvm)
+{
+	struct device *dev;
+	struct riscv_iommu_info *info;
+	int ret = 0;
+
+	if (!kvm)
+		return -EINVAL;
+	dev = riscv_iommu_cove_io_find_pci_device(device_id);
+	if (!dev)
+		return -ENODEV;
+	info = dev_iommu_priv_get(dev);
+	if (!info) {
+		ret = -ENODEV;
+		goto out_put;
+	}
+
+	mutex_lock(&riscv_iommu_cove_io_msi_lock);
+	if (info->cove_io_owner && info->cove_io_owner != kvm) {
+		ret = -EBUSY;
+	} else if (!info->cove_io_owner) {
+		info->cove_io_owner = kvm;
+		ret = 1;
+		dev_warn(dev,
+			 "COVE-IO TSM ownership claimed: device_id=0x%llx\n",
+			 (unsigned long long)device_id);
+	}
+	mutex_unlock(&riscv_iommu_cove_io_msi_lock);
+
+out_put:
+	pci_dev_put(to_pci_dev(dev));
+	return ret;
+}
+EXPORT_SYMBOL_GPL(riscv_iommu_cove_io_claim);
+
+void riscv_iommu_cove_io_release(u64 device_id, struct kvm *kvm)
+{
+	struct device *dev;
+	struct riscv_iommu_info *info;
+
+	if (!kvm)
+		return;
+	dev = riscv_iommu_cove_io_find_pci_device(device_id);
+	if (!dev)
+		return;
+	info = dev_iommu_priv_get(dev);
+	if (info) {
+		mutex_lock(&riscv_iommu_cove_io_msi_lock);
+		if (info->cove_io_owner == kvm)
+			info->cove_io_owner = NULL;
+		mutex_unlock(&riscv_iommu_cove_io_msi_lock);
+	}
+	pci_dev_put(to_pci_dev(dev));
+}
+EXPORT_SYMBOL_GPL(riscv_iommu_cove_io_release);
+
+struct riscv_iommu_cove_io_owner_release {
+	struct kvm *kvm;
+};
+
+static int riscv_iommu_cove_io_release_owner_cb(struct device *dev, void *data)
+{
+	struct riscv_iommu_cove_io_owner_release *release = data;
+	struct riscv_iommu_info *info = dev_iommu_priv_get(dev);
+
+	if (!info || info->cove_io_owner != release->kvm)
+		return 0;
+	mutex_lock(&riscv_iommu_cove_io_msi_lock);
+	if (info->cove_io_owner == release->kvm)
+		info->cove_io_owner = NULL;
+	mutex_unlock(&riscv_iommu_cove_io_msi_lock);
+	return 0;
+}
+
+void riscv_iommu_cove_io_release_vm(struct kvm *kvm)
+{
+	struct riscv_iommu_cove_io_owner_release release = { .kvm = kvm };
+
+	if (kvm)
+		bus_for_each_dev(&pci_bus_type, NULL, &release,
+				 riscv_iommu_cove_io_release_owner_cb);
+}
+EXPORT_SYMBOL_GPL(riscv_iommu_cove_io_release_vm);
 #endif
 
 static void riscv_iommu_cove_io_disable_pri(struct device *dev)

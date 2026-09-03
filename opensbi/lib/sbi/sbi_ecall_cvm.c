@@ -75,11 +75,24 @@ static int sbi_ecall_cvm_handler(unsigned long extid, unsigned long funcid,
 	}
     return ret;
 }
+
+static int sbi_ecall_covh_handler(unsigned long extid, unsigned long funcid,
+		struct sbi_trap_regs *regs, struct sbi_ecall_return *out)
+{
+	return cove_io_covh_ecall(funcid, regs, out);
+}
+
 struct sbi_ecall_extension ecall_cvm;
+struct sbi_ecall_extension ecall_covh;
 
 static int sbi_ecall_cvm_register_extensions(void)
 {
     return sbi_ecall_register_extension(&ecall_cvm);
+}
+
+static int sbi_ecall_covh_register_extensions(void)
+{
+	return sbi_ecall_register_extension(&ecall_covh);
 }
 
 struct sbi_ecall_extension ecall_cvm = {
@@ -90,4 +103,11 @@ struct sbi_ecall_extension ecall_cvm = {
     .register_extensions = sbi_ecall_cvm_register_extensions,
     // exception handler 地址
     .handle = sbi_ecall_cvm_handler,
+};
+
+struct sbi_ecall_extension ecall_covh = {
+	.extid_start = SBI_EXT_COVH,
+	.extid_end = SBI_EXT_COVH,
+	.register_extensions = sbi_ecall_covh_register_extensions,
+	.handle = sbi_ecall_covh_handler,
 };

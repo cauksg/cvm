@@ -4,6 +4,7 @@
 #include <sbi/riscv_encoding.h>
 #include <sbi/sbi_trap.h>
 #include <sbi/riscv_locks.h>
+struct sbi_ecall_return;
 /* CVM Life Cycle ------------------------------------------------------------------------------ */
 
 #include <sbi/sbi_cvm_cpu.h>
@@ -12,6 +13,70 @@
 #define CVM_ERROR		-2
 #define COVE_IO_VCPU_ANY	(~0ULL)
 #define COVE_IO_IRQ_IID_ANY	(~0ULL)
+
+/* CoVE-IO draft SBI extension IDs and function IDs. */
+#define SBI_EXT_COVH			0x434f5648
+#define SBI_EXT_COVG			0x434f5647
+#define SBI_EXT_COVT			0x434f5654
+#define SBI_EXT_COVE_IO_FID_START	1024
+
+#define SBI_EXT_COVH_CONNECT_DEVICE		1024
+#define SBI_EXT_COVH_DISCONNECT_DEVICE		1025
+#define SBI_EXT_COVH_ADD_TVM_INTERFACE_REGION	1026
+#define SBI_EXT_COVH_RECLAIM_TVM_INTERFACE_REGION 1027
+#define SBI_EXT_COVH_BIND_INTERFACE		1028
+#define SBI_EXT_COVH_UNBIND_INTERFACE		1030
+
+#define SBI_EXT_COVG_GET_DEVICE_LINK		1024
+#define SBI_EXT_COVG_GET_CONNECTION_TRANSCRIPT	1025
+#define SBI_EXT_COVG_GET_DEVICE_MEASUREMENTS	1026
+#define SBI_EXT_COVG_GET_INTERFACE_REPORT	1027
+#define SBI_EXT_COVG_GET_INTERFACE_STATE	1028
+#define SBI_EXT_COVG_MAP_INTERFACE_MMIO		1029
+#define SBI_EXT_COVG_START_INTERFACE		1030
+#define SBI_EXT_COVG_STOP_INTERFACE		1031
+/* xs-cvm simulator extension; not part of the CoVE-IO draft ABI. */
+#define SBI_EXT_COVG_SIM_GET_INTERFACE_ID	1087
+
+#define COVE_IO_TDI_F_EXPECT_GENERATION	(1U << 0)
+#define COVE_IO_TDI_F_DIRECT_DMA		(1U << 1)
+#define COVE_IO_TDI_F_ALLOW_BOUND_PROBE	(1U << 2)
+#define COVE_IO_TDI_F_AUTO_ID		(1U << 3)
+
+/* Simulator-only link/report semantics. These bits do not imply SPDM or IDE. */
+#define COVE_IO_LINK_F_UP			(1ULL << 0)
+#define COVE_IO_LINK_F_SIMULATED		(1ULL << 1)
+#define COVE_IO_LINK_F_NO_SPDM		(1ULL << 2)
+#define COVE_IO_LINK_F_NO_IDE			(1ULL << 3)
+#define COVE_IO_LINK_STATE_SHIFT		32
+#define COVE_IO_COVG_MAP_F_VALIDATE_ONLY	(1ULL << 0)
+#define COVE_IO_INTERFACE_REPORT_MAGIC	0x43564f494f525054ULL
+#define COVE_IO_INTERFACE_REPORT_VERSION	2
+
+#define COVE_IO_FEAT_COVH_REGION_BIND	(1ULL << 0)
+#define COVE_IO_FEAT_COVG_STATE		(1ULL << 1)
+#define COVE_IO_FEAT_COVG_START_STOP	(1ULL << 2)
+#define COVE_IO_FEAT_TDISP_SW_STATE	(1ULL << 3)
+#define COVE_IO_FEAT_IOMMU_MEDIATED	(1ULL << 4)
+#define COVE_IO_FEAT_DIRECT_DMA		(1ULL << 5)
+#define COVE_IO_FEAT_COVG_LINK		(1ULL << 6)
+#define COVE_IO_FEAT_COVG_REPORT		(1ULL << 7)
+#define COVE_IO_FEAT_COVG_MMIO_MAP		(1ULL << 8)
+#define COVE_IO_FEAT_COVG_SIM_ENUM		(1ULL << 9)
+#define COVE_IO_FEAT_STOP_TRANSACTION	(1ULL << 10)
+#define COVE_IO_FEAT_AUTO_TDI_ID		(1ULL << 11)
+#define COVE_IO_FEATURES_SUPPORTED	(COVE_IO_FEAT_COVH_REGION_BIND | \
+					 COVE_IO_FEAT_COVG_STATE | \
+					 COVE_IO_FEAT_COVG_START_STOP | \
+					 COVE_IO_FEAT_TDISP_SW_STATE | \
+					 COVE_IO_FEAT_IOMMU_MEDIATED | \
+					 COVE_IO_FEAT_DIRECT_DMA | \
+					 COVE_IO_FEAT_COVG_LINK | \
+					 COVE_IO_FEAT_COVG_REPORT | \
+					 COVE_IO_FEAT_COVG_MMIO_MAP | \
+					 COVE_IO_FEAT_COVG_SIM_ENUM | \
+					 COVE_IO_FEAT_STOP_TRANSACTION | \
+					 COVE_IO_FEAT_AUTO_TDI_ID)
 
 #define CVM_HASH_SIZE 32
 
@@ -28,6 +93,7 @@ struct kvm_vmid {
 	 */
 	unsigned long vmid_version;
 	unsigned long vmid;
+	unsigned long cvm_id;
 };
 
 enum cvm_state
@@ -133,6 +199,10 @@ enum cove_io_tdi_op {
 	COVE_IO_TDI_FIND_DMA		= 13,
 	COVE_IO_TDI_FIND_IRQ		= 14,
 	COVE_IO_TDI_FIND_MMIO		= 15,
+	COVE_IO_TDI_GET_FEATURES	= 16,
+	COVE_IO_TDI_SET_ERROR		= 17,
+	COVE_IO_TDI_FINALIZE_STOP	= 18,
+	COVE_IO_TDI_ENUM_OWNED		= 19,
 };
 
 enum cove_io_tdi_state {
@@ -141,6 +211,19 @@ enum cove_io_tdi_state {
 	COVE_IO_TDI_STATE_BOUND		= 2,
 	COVE_IO_TDI_STATE_STARTED	= 3,
 	COVE_IO_TDI_STATE_STOPPING	= 4,
+	COVE_IO_TDI_STATE_ERROR		= 5,
+};
+
+#define COVE_IO_TDI_STATE_DISCONNECTED	COVE_IO_TDI_STATE_FREE
+#define COVE_IO_TDI_STATE_CONFIG_UNLOCKED COVE_IO_TDI_STATE_REGISTERED
+#define COVE_IO_TDI_STATE_CONFIG_LOCKED	COVE_IO_TDI_STATE_BOUND
+#define COVE_IO_TDI_STATE_RUN		COVE_IO_TDI_STATE_STARTED
+
+enum cove_io_covg_interface_state {
+	COVE_IO_COVG_INTERFACE_UNLOCKED = 0,
+	COVE_IO_COVG_INTERFACE_LOCKED = 1,
+	COVE_IO_COVG_INTERFACE_RUNNING = 2,
+	COVE_IO_COVG_INTERFACE_ERROR = 3,
 };
 
 struct cove_io_tdi_sbi_params {
@@ -159,6 +242,30 @@ struct cove_io_tdi_sbi_params {
 	u64 irq_iid;
 	u64 device_id;
 	u64 state;
+	u64 dma_hpa;
+	u64 features;
+};
+
+/* Compact fixed-size report used by the simulator COVG report prototype. */
+struct cove_io_interface_report {
+	u64 magic;
+	u64 version;
+	u64 tdi_id;
+	u64 generation;
+	u64 device_id;
+	u64 state;
+	u64 flags;
+	u64 features;
+	u64 mmio_gpa;
+	u64 mmio_size;
+	u64 dma_gpa;
+	u64 dma_size;
+	u64 irq_id;
+	u64 irq_num;
+	u64 vcpu_id;
+	u64 irq_iid;
+	u64 link_flags;
+	u64 mmio_map_generation;
 };
 
 struct multi_key_manage_t {
@@ -382,6 +489,12 @@ int cvm_trap_redirect_to_hs(struct sbi_trap_regs* host_regs);
 int cvm_trap_virtual_inst(struct sbi_trap_regs* host_regs);
 int cvm_trap_gstage_page_fault(struct sbi_trap_regs* host_regs);
 int cvm_trap_sbi_ecall(struct sbi_trap_regs* host_regs);
+int cove_io_covh_ecall(unsigned long funcid, struct sbi_trap_regs *regs,
+			struct sbi_ecall_return *out);
+int cove_io_covg_ecall(unsigned long vmid, unsigned long funcid,
+			unsigned long tdi_id, unsigned long arg1,
+			unsigned long arg2, unsigned long arg3,
+			unsigned long *value);
 
 //REG_TAG
 #define TAG_REG_ZERO 0x00000001
