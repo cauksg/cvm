@@ -5,6 +5,7 @@
 #include <sbi/sbi_trap.h>
 #include <sbi/riscv_locks.h>
 struct sbi_ecall_return;
+int sbi_cvm_host_ecall(unsigned long fid, struct sbi_trap_regs *regs);
 /* CVM Life Cycle ------------------------------------------------------------------------------ */
 
 #include <sbi/sbi_cvm_cpu.h>
@@ -17,6 +18,9 @@ struct sbi_ecall_return;
 /* CoVE-IO draft SBI extension IDs and function IDs. */
 #define SBI_EXT_COVH			0x434f5648
 #define SBI_EXT_COVG			0x434f5647
+#define SBI_EXT_COVI 0x434f5649
+int sbi_cvm_covi_ecall(unsigned long fid, unsigned long a, unsigned long b, unsigned long c);
+int sbi_cvm_covi_fence(unsigned long fid);
 #define SBI_EXT_COVT			0x434f5654
 #define SBI_EXT_COVE_IO_FID_START	1024
 
@@ -37,11 +41,15 @@ struct sbi_ecall_return;
 #define SBI_EXT_COVG_STOP_INTERFACE		1031
 /* xs-cvm simulator extension; not part of the CoVE-IO draft ABI. */
 #define SBI_EXT_COVG_SIM_GET_INTERFACE_ID	1087
+#define SBI_EXT_COVG_SIM_PREPARE_DMA		1088
 
 #define COVE_IO_TDI_F_EXPECT_GENERATION	(1U << 0)
 #define COVE_IO_TDI_F_DIRECT_DMA		(1U << 1)
 #define COVE_IO_TDI_F_ALLOW_BOUND_PROBE	(1U << 2)
 #define COVE_IO_TDI_F_AUTO_ID		(1U << 3)
+#define COVE_IO_TDI_F_DIRECT_MMIO		(1U << 4)
+/* Project extension: require physical MMIO bitmap enforcement. */
+#define COVE_IO_TDI_F_MMIO_BITMAP		(1U << 5)
 
 /* Simulator-only link/report semantics. These bits do not imply SPDM or IDE. */
 #define COVE_IO_LINK_F_UP			(1ULL << 0)
@@ -65,6 +73,7 @@ struct sbi_ecall_return;
 #define COVE_IO_FEAT_COVG_SIM_ENUM		(1ULL << 9)
 #define COVE_IO_FEAT_STOP_TRANSACTION	(1ULL << 10)
 #define COVE_IO_FEAT_AUTO_TDI_ID		(1ULL << 11)
+#define COVE_IO_FEAT_MMIO_BITMAP		(1ULL << 12)
 #define COVE_IO_FEATURES_SUPPORTED	(COVE_IO_FEAT_COVH_REGION_BIND | \
 					 COVE_IO_FEAT_COVG_STATE | \
 					 COVE_IO_FEAT_COVG_START_STOP | \
@@ -104,14 +113,28 @@ enum cvm_state
     // RUNNING,
     // STOPPED,
     INITIALIZING,	
-    READY,		
+    READY,
+    RECLAIMED,
 };
 
+#define CVM_SHARED_WINDOWS 16
+struct cvm_shared_window { unsigned long base, size; bool accepted; };
+#define SBI_EXT_COVG_SIM_ACCEPT_SHARED 1089
+#define SBI_EXT_COVG_SIM_UNSHARE 1090
 /** CVM Parameters */
 struct sbi_cvm {
 	/** KeyID of the CVM */
 	int KeyID;
 	struct kvm_vmid *vmid;
+	/* Monitor snapshot: Host must not retarget an existing TVM identity. */
+	unsigned long trusted_identity;
+	unsigned long trusted_vmid;
+	unsigned long imsic_file; /* Boot-file alias for legacy setup only. */
+	bool aia_initialized;
+	unsigned long aia_base;
+	unsigned int aia_hart_bits;
+	unsigned int shared_count;
+	struct cvm_shared_window shared[CVM_SHARED_WINDOWS];
 	enum cvm_state state;
 	struct cvm_vcpu_node *cvm_vcpu_list_head;
 	uint32_t cmode;
@@ -203,6 +226,8 @@ enum cove_io_tdi_op {
 	COVE_IO_TDI_SET_ERROR		= 17,
 	COVE_IO_TDI_FINALIZE_STOP	= 18,
 	COVE_IO_TDI_ENUM_OWNED		= 19,
+	/* Simulator ABI: dma_hpa carries a kernel-validated EDU BAR0 HPA. */
+	COVE_IO_TDI_SET_BAR		= 20,
 };
 
 enum cove_io_tdi_state {
@@ -297,6 +322,8 @@ int sbi_cvm_create_vcpu(struct iie_cvm_sbi_params * cvm_sbi_params);
 
 /* flush tlb, set CVM states to READY */
 int sbi_cvm_create_finalize(struct iie_cvm_sbi_params * cvm_sbi_params);
+int sbi_cvm_finalize_vcpu(struct iie_cvm_sbi_params *params,
+			const struct cpu_context *initial);
 
 /* build memory list */
 int sbi_cvm_init_mem_pool(struct iie_cvm_sbi_params * cvm_sbi_params);
@@ -474,7 +501,7 @@ int cove_io_tdi_op(struct cove_io_tdi_sbi_params *params);
 int cove_io_dma_allowed(struct kvm_vmid *vmid_ptr, unsigned long device_id,
 			unsigned long gpa);
 int cove_io_irq_allowed(struct kvm_vmid *vmid_ptr, unsigned long irq);
-void cove_io_destroy_cvm(struct kvm_vmid *vmid_ptr);
+int cove_io_destroy_cvm(struct kvm_vmid *vmid_ptr);
 int recycle_memory(struct iie_cvm_sbi_params *cvm_sbi_params, struct cvm_list_params *recycle_list);
 int init_cvm_vcpu_rootptAndChunk(struct iie_cvm_sbi_params *cvm_sbi_params);
 

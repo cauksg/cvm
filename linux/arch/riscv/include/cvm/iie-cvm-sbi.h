@@ -25,6 +25,7 @@
 #define SBI_EXT_CVM_RETRY_LOAD			0x10
 #define SBI_EXT_RECYCLE_MEMORY			0x11
 #define SBI_EXT_CVM_COVE_IO_TDI_OP		0x12
+#define SBI_EXT_CVM_TRUSTED_IOMMU		0x13
 #define SBI_EXT_CVM_TEST			0xffff
 
 #define SBI_EXT_COVH			0x434f5648
@@ -132,6 +133,9 @@ int cvm_mem_manege_init(void);
 int refill_KVM_memory_pool(void);
 void reset_KVM_memory_pool_refill_count(void);
 int kvm_vm_ioctl_swiotlb(struct kvm *kvm, void __user *argp);
+int kvm_riscv_cove_io_guest_stop(struct kvm_vcpu *vcpu, u64 id);
+int kvm_riscv_cove_io_guest_prepare_dma(struct kvm_vcpu *vcpu,
+				      u64 id, u64 gpa, u64 size);
 int kvm_vm_ioctl_cove_io_tdi(struct kvm *kvm, void __user *argp);
 int kvm_riscv_destroy_sw_node(struct kvm *kvm);
 bool kvm_riscv_cove_io_mmio_allowed(struct kvm *kvm, unsigned long gpa,
@@ -151,29 +155,43 @@ int kvm_riscv_cove_io_iommu_fault_check(u32 devid, unsigned long iova,
 void kvm_riscv_cove_io_destroy_vm(struct kvm *kvm);
 
 #if IS_ENABLED(CONFIG_RISCV_IOMMU)
-int riscv_iommu_cove_io_mrif_bind(u64 device_id, struct kvm *kvm,
+int riscv_iommu_cove_io_prepare_dma(u64 device_id, unsigned long iova,
+				  phys_addr_t phys);
+int riscv_iommu_cove_io_imsic_bind(u64 device_id, struct kvm *kvm,
 				  u64 vcpu_id, u64 irq_iid);
+void riscv_iommu_cove_io_direct_msi(u64 device_id, u64 irq_iid);
 int riscv_iommu_cove_io_claim(u64 device_id, struct kvm *kvm);
+int riscv_iommu_cove_io_stop(u64 device_id, struct kvm *kvm);
 void riscv_iommu_cove_io_release(u64 device_id, struct kvm *kvm);
 void riscv_iommu_cove_io_release_vm(struct kvm *kvm);
-void riscv_iommu_cove_io_mrif_unbind(u64 device_id);
-void riscv_iommu_cove_io_mrif_unbind_vm(struct kvm *kvm);
-void riscv_iommu_cove_io_mrif_refresh(struct kvm *kvm, u64 vcpu_id);
+int riscv_iommu_cove_io_imsic_unbind(u64 device_id);
+void riscv_iommu_cove_io_imsic_unbind_vm(struct kvm *kvm);
+void riscv_iommu_cove_io_imsic_refresh(struct kvm *kvm, u64 vcpu_id);
 #else
-static inline int riscv_iommu_cove_io_mrif_bind(u64 device_id, struct kvm *kvm,
+static inline int riscv_iommu_cove_io_prepare_dma(u64 device_id,
+				unsigned long iova, phys_addr_t phys)
+{
+	return -EOPNOTSUPP;
+}
+static inline int riscv_iommu_cove_io_imsic_bind(u64 device_id, struct kvm *kvm,
 						u64 vcpu_id, u64 irq_iid)
 {
-	return 0;
+	return -EOPNOTSUPP;
 }
+static inline void riscv_iommu_cove_io_direct_msi(u64 device_id, u64 irq_iid) { }
 static inline int riscv_iommu_cove_io_claim(u64 device_id, struct kvm *kvm)
 {
 	return 0;
 }
+static inline int riscv_iommu_cove_io_stop(u64 device_id, struct kvm *kvm)
+{
+	return -EOPNOTSUPP;
+}
 static inline void riscv_iommu_cove_io_release(u64 device_id, struct kvm *kvm) { }
 static inline void riscv_iommu_cove_io_release_vm(struct kvm *kvm) { }
-static inline void riscv_iommu_cove_io_mrif_unbind(u64 device_id) { }
-static inline void riscv_iommu_cove_io_mrif_unbind_vm(struct kvm *kvm) { }
-static inline void riscv_iommu_cove_io_mrif_refresh(struct kvm *kvm,
+static inline int riscv_iommu_cove_io_imsic_unbind(u64 device_id) { return -EOPNOTSUPP; }
+static inline void riscv_iommu_cove_io_imsic_unbind_vm(struct kvm *kvm) { }
+static inline void riscv_iommu_cove_io_imsic_refresh(struct kvm *kvm,
 						    u64 vcpu_id) { }
 #endif
 

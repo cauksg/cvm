@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0
 
-set -eu
+set -euo pipefail
 
 CMDLINE="$(cat /proc/cmdline 2>/dev/null || true)"
 TEST=""
@@ -11,7 +11,7 @@ VFIO_BDF=""
 VFIO_BACKEND=""
 PRI_COUNT=""
 PRI_OVERFLOW_COUNT=""
-MRIF_RETARGET_LOOPS=""
+IMSIC_RETARGET_LOOPS=""
 STRESS_LOOPS=""
 
 cmdline_value()
@@ -37,7 +37,7 @@ VFIO_BDF="$(cmdline_value cove_io_vfio_bdf || true)"
 VFIO_BACKEND="$(cmdline_value cove_io_vfio_backend || true)"
 PRI_COUNT="$(cmdline_value cove_io_pri_count || true)"
 PRI_OVERFLOW_COUNT="$(cmdline_value cove_io_pri_overflow_count || true)"
-MRIF_RETARGET_LOOPS="$(cmdline_value cove_io_mrif_retarget_loops || true)"
+IMSIC_RETARGET_LOOPS="$(cmdline_value cove_io_imsic_retarget_loops || true)"
 STRESS_LOOPS="$(cmdline_value cove_io_stress_loops || true)"
 
 [ -n "$WAIT_SECS" ] && export WAIT_SECS
@@ -45,12 +45,42 @@ STRESS_LOOPS="$(cmdline_value cove_io_stress_loops || true)"
 [ -n "$VFIO_BACKEND" ] && export VFIO_BACKEND
 [ -n "$PRI_COUNT" ] && export PRI_COUNT
 [ -n "$PRI_OVERFLOW_COUNT" ] && export PRI_OVERFLOW_COUNT
-[ -n "$MRIF_RETARGET_LOOPS" ] && export MRIF_RETARGET_LOOPS
+[ -n "$IMSIC_RETARGET_LOOPS" ] && export IMSIC_RETARGET_LOOPS
 [ -n "$STRESS_LOOPS" ] && export STRESS_LOOPS
 
 run_test()
 {
 	case "$TEST" in
+	multicvm-smp-nic-pair)
+		COVE_IO_GUEST_CPUS=2 /scripts/cove-io-multicvm-nic-pair-test.sh
+		;;
+	multicvm-nic-pair)
+		/scripts/cove-io-multicvm-nic-pair-test.sh
+		;;
+	multicvm-direct)
+		/scripts/cove-io-multicvm-direct-test.sh
+		;;
+	multi-direct)
+		/scripts/cove-io-multi-direct-test.sh
+		;;
+	nic-direct)
+		/scripts/cove-io-nic-direct-test.sh
+		;;
+	edu-direct)
+		/scripts/cove-io-edu-direct-test.sh
+		;;
+	resources)
+		/scripts/cove-io-resource-test.sh
+		;;
+	stop-dma)
+		/scripts/cove-io-stop-dma-test.sh
+		;;
+	irq-rollback)
+		/scripts/cove-io-irq-rollback-test.sh
+		;;
+	iommu-rollback)
+		/scripts/cove-io-iommu-rollback-test.sh
+		;;
 	covg|covg-abi)
 		/scripts/cove-io-covg-test.sh
 		;;
@@ -108,7 +138,7 @@ run_test()
 }
 
 echo "COVE-IO host autorun: test=$TEST"
-if run_test >"/tmp/cove-io-host-$TEST.log" 2>&1; then
+if run_test 2>&1 | tee "/tmp/cove-io-host-$TEST.log"; then
 	cat "/tmp/cove-io-host-$TEST.log"
 	echo "COVE-IO host autorun: PASS $TEST"
 	rc=0
@@ -119,6 +149,8 @@ else
 fi
 
 if [ "$POWEROFF" != "0" ]; then
+	# Allow the emulated UART to drain completion and teardown messages.
+	sleep 1
 	poweroff -f || reboot -f || true
 fi
 

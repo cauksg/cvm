@@ -40,6 +40,7 @@ enum sbi_ext_id {
 	SBI_EXT_DBTR = 0x44425452,
 	/* CoVE-IO guest extension implemented by the xs-cvm simulator. */
 	SBI_EXT_COVG = 0x434F5647,
+	SBI_EXT_COVI = 0x434F5649,
 	SBI_EXT_COVH = 0x434F5648,
 	SBI_EXT_COVT = 0x434F5654,
 
@@ -73,6 +74,7 @@ enum sbi_ext_covg_fid {
 	SBI_EXT_COVG_STOP_INTERFACE = 1031,
 	/* xs-cvm simulator extension; not part of the CoVE-IO draft ABI. */
 	SBI_EXT_COVG_SIM_GET_INTERFACE_ID = 1087,
+	SBI_EXT_COVG_SIM_PREPARE_DMA = 1088,
 };
 
 enum sbi_covg_interface_state {

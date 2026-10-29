@@ -8,6 +8,7 @@
  */
 
 #include <libfdt.h>
+#include <sbi/sbi_cvm_iommu.h>
 #include <platform_override.h>
 #include <sbi/riscv_asm.h>
 #include <sbi/sbi_bitops.h>
@@ -266,6 +267,10 @@ int generic_domains_init(void)
 {
 	const void *fdt = fdt_get_address();
 	int offset, ret;
+
+	ret = sbi_cvm_iommu_platform_init(fdt);
+	if (ret)
+		return ret;
 
 	ret = fdt_domains_populate(fdt);
 	if (ret < 0)

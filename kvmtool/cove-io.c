@@ -15,7 +15,7 @@
 #define COVE_IO_TEST_BAD_TDI_RID_ENV "COVE_IO_TEST_BAD_TDI_RID"
 #define COVE_IO_TEST_BAD_IOMMU_GROUP_ENV "COVE_IO_TEST_BAD_IOMMU_GROUP"
 #define COVE_IO_TEST_PAUSE_BEFORE_RUN_ENV "COVE_IO_TEST_PAUSE_BEFORE_RUN"
-#define COVE_IO_TEST_MRIF_RETARGET_LOOPS_ENV "COVE_IO_TEST_MRIF_RETARGET_LOOPS"
+#define COVE_IO_TEST_IMSIC_RETARGET_LOOPS_ENV "COVE_IO_TEST_IMSIC_RETARGET_LOOPS"
 #define COVE_IO_DIRECT_DMA_ENV "COVE_IO_DIRECT_DMA"
 #define COVE_IO_LIFECYCLE_TEST_ENV "COVE_IO_TEST_LIFECYCLE"
 
@@ -106,9 +106,9 @@ unsigned int cove_io__test_pause_before_run_secs(void)
 	return secs;
 }
 
-unsigned int cove_io__test_mrif_retarget_loops(void)
+unsigned int cove_io__test_imsic_retarget_loops(void)
 {
-	const char *env = getenv(COVE_IO_TEST_MRIF_RETARGET_LOOPS_ENV);
+	const char *env = getenv(COVE_IO_TEST_IMSIC_RETARGET_LOOPS_ENV);
 	char *end;
 	unsigned long loops;
 
@@ -125,6 +125,13 @@ unsigned int cove_io__test_mrif_retarget_loops(void)
 bool cove_io__direct_dma_enabled(void)
 {
 	const char *env = getenv(COVE_IO_DIRECT_DMA_ENV);
+
+	return env && strcmp(env, "0");
+}
+
+bool cove_io__direct_mmio_enabled(void)
+{
+	const char *env = getenv("COVE_IO_DIRECT_MMIO");
 
 	return env && strcmp(env, "0");
 }
@@ -148,6 +155,8 @@ static bool cove_io__device_uses_direct_dma(u64 device_id)
 static const char *cove_io__tdi_op_name(u32 op)
 {
 	switch (op) {
+	case KVM_COVE_IO_TDI_SET_BAR:
+		return "SET_BAR";
 	case KVM_COVE_IO_TDI_REGISTER:
 		return "REGISTER";
 	case KVM_COVE_IO_TDI_UNREGISTER:
@@ -509,8 +518,13 @@ void cove_io__teardown_tdi(struct kvm *kvm, u64 tdi_id)
 	tdi.irq_num = 0;
 	ioctl(kvm->vm_fd, KVM_COVE_IO_TDI_OP, &tdi);
 
-	cove_io__try_unmap_dma(kvm, tdi_id);
-	cove_io__try_reclaim_mmio(kvm, tdi_id);
+	/* Monitor must retain RID ownership while device BARs are scrubbed. */
+	if (!cove_io__try_reclaim_mmio(kvm, tdi_id) ||
+	    !cove_io__try_unmap_dma(kvm, tdi_id)) {
+		pr_warning("COVE-IO resource reclaim failed: tdi=%llu",
+			   (unsigned long long)tdi_id);
+		return;
+	}
 
 	tdi.op = KVM_COVE_IO_TDI_FINALIZE_STOP;
 	tdi.flags |= KVM_COVE_IO_TDI_F_EXPECT_GENERATION;

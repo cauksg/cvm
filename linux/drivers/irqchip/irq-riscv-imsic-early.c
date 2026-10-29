@@ -20,6 +20,7 @@
 #include <linux/pci.h>
 #include <linux/spinlock.h>
 #include <linux/smp.h>
+#include <asm/sbi.h>
 
 #include "irq-riscv-imsic-state.h"
 
@@ -146,6 +147,12 @@ static int imsic_starting_cpu(unsigned int cpu)
 
 	/* Enable per-CPU parent interrupt */
 	enable_percpu_irq(imsic_parent_irq, irq_get_trigger_type(imsic_parent_irq));
+
+	if (IS_ENABLED(CONFIG_COVE_IO_GUEST) && sbi_probe_extension(SBI_EXT_COVG) > 0) {
+		/* The Guest opts into external injection on this logical CPU. */
+		struct sbiret r = sbi_ecall(SBI_EXT_COVG, 4, ~0UL, 0, 0, 0, 0, 0);
+		if (r.error) return sbi_err_map_linux_errno(r.error);
+	}
 
 	/* Initialize the IMSIC registers to enable the interrupt delivery */
 	imsic_hw_states_init();

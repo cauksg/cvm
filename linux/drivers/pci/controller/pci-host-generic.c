@@ -15,6 +15,58 @@
 #include <linux/platform_device.h>
 
 #include "pci-host-common.h"
+#ifdef CONFIG_RISCV
+#include <asm/sbi.h>
+#endif
+
+#ifdef CONFIG_RISCV
+/* ECAM is M-only on the fixed trusted platform. */
+static bool gen_cove_trusted(void)
+{
+ struct sbiret ret = sbi_ecall(0x20000217, 0x13, 0, 0, 0, 0, 0, 0);
+ return !ret.error && ret.value == 0x03010000;
+}
+static int gen_cove_config_read(struct pci_bus *bus, unsigned int devfn,
+                                int where, int size, u32 *value)
+{
+ struct pci_config_window *cfg = bus->sysdata;
+ unsigned long offset = ((bus->number - cfg->busr.start) << 20) |
+                        (devfn << 12) | where;
+ struct sbiret ret = sbi_ecall(0x20000217, 0x13, 4, cfg->res.start,
+                               offset, size, 0, 0);
+ *value = ret.error ? ~0U : ret.value;
+ return ret.error ? PCIBIOS_DEVICE_NOT_FOUND : PCIBIOS_SUCCESSFUL;
+}
+static int gen_cove_config_write(struct pci_bus *bus, unsigned int devfn,
+                                 int where, int size, u32 value)
+{
+ struct pci_config_window *cfg = bus->sysdata;
+ unsigned long offset = ((bus->number - cfg->busr.start) << 20) |
+                        (devfn << 12) | where;
+ struct sbiret ret = sbi_ecall(0x20000217, 0x13, 5, cfg->res.start,
+                               offset, size, value, 0);
+ return ret.error ? PCIBIOS_SET_FAILED : PCIBIOS_SUCCESSFUL;
+}
+static int gen_ecam_read(struct pci_bus *bus, unsigned int devfn,
+                          int where, int size, u32 *value)
+{
+ return gen_cove_trusted() ? gen_cove_config_read(bus, devfn, where, size, value) :
+                           pci_generic_config_read(bus, devfn, where, size, value);
+}
+static int gen_ecam_write(struct pci_bus *bus, unsigned int devfn,
+                           int where, int size, u32 value)
+{
+ return gen_cove_trusted() ? gen_cove_config_write(bus, devfn, where, size, value) :
+                           pci_generic_config_write(bus, devfn, where, size, value);
+}
+static const struct pci_ecam_ops gen_cove_ecam_ops = {
+ .pci_ops = { .map_bus = pci_ecam_map_bus,
+              .read = gen_ecam_read, .write = gen_ecam_write }
+};
+#define GEN_ECAM_OPS (&gen_cove_ecam_ops)
+#else
+#define GEN_ECAM_OPS (&pci_generic_ecam_ops)
+#endif
 
 static const struct pci_ecam_ops gen_pci_cfg_cam_bus_ops = {
 	.bus_shift	= 16,
@@ -63,7 +115,7 @@ static const struct of_device_id gen_pci_of_match[] = {
 	  .data = &gen_pci_cfg_cam_bus_ops },
 
 	{ .compatible = "pci-host-ecam-generic",
-	  .data = &pci_generic_ecam_ops },
+	  .data = GEN_ECAM_OPS },
 
 	{ .compatible = "marvell,armada8k-pcie-ecam",
 	  .data = &pci_dw_ecam_bus_ops },

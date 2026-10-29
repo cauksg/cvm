@@ -607,6 +607,11 @@ static void cvm_load_fdt(struct kvm *kvm)
 	cvm_set_swiotlb(kvm, CVM_VIRTIO_RMEM_ADDR, CVM_VIRTIO_RMEM_SIZE,
 			cvm_cove_io_first_virtio_device_id(),
 			COVE_IO_IOMMU_GROUP_NONE);
+    if (cove_io__direct_dma_enabled()) {
+        cvm_set_swiotlb(kvm, CVM_VFIO_RMEM_ADDR, CVM_VFIO_RMEM_SIZE,
+                        cvm_cove_io_first_virtio_device_id(), COVE_IO_IOMMU_GROUP_NONE);
+    }
+
 	vfio__register_cove_io_swiotlb(kvm,
 		cove_io__direct_dma_enabled() ? kvm->arch.memory_guest_start :
 			CVM_VFIO_RMEM_ADDR,
@@ -661,6 +666,9 @@ static int setup_fdt(struct kvm *kvm)
 
 	/* /chosen */
 	_FDT(fdt_begin_node(fdt, "chosen"));
+	/* Preserve Monitor-approved BAR GPAs across Guest PCI enumeration. */
+	if (kvm->cfg.cmode && cove_io__direct_mmio_enabled())
+		_FDT(fdt_property_cell(fdt, "linux,pci-probe-only", 1));
 
 	/* Pass on our amended command line to a Linux kernel only. */
 	if (kvm->cfg.firmware_filename) {

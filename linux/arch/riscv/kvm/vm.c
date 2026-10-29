@@ -73,6 +73,7 @@ void kvm_arch_destroy_vm(struct kvm *kvm)
 		if (kvm->cvm_root_ready &&
 		    cvm_sbi_params && ret_params && chunk_vaddr_list) {
 			ret_params->addr = __pa(chunk_vaddr_list);
+			ret_params->ele_num = 1024;
 
 			sbi_ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_RECYCLE_MEMORY,
 					    __pa(cvm_sbi_params), __pa(ret_params),

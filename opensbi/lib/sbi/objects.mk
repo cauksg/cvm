@@ -113,6 +113,9 @@ libsbi-objs-y += sbi_cppc.o
 libsbi-objs-$(CC_SUPPORT_VECTOR) += sbi_vector.o
 libsbi-objs-y += sbi_fp.o
 libsbi-objs-y += sbi_cvm.o
+libsbi-objs-y += sbi_cvm_state.o
+libsbi-objs-y += sbi_cvm_fp.o
+libsbi-objs-y += sbi_cvm_mmio.o
 libsbi-objs-y += sbi_multi_key.o
 libsbi-objs-y += sm/sm.o
 libsbi-objs-y += sm/thread.o
@@ -133,3 +136,7 @@ libsbi-objs-y += sm/gm/miracl/mrsroot.o
 libsbi-objs-y += sm/gm/miracl/mrlucas.o
 libsbi-objs-y += sm/gm/SM2_sv.o
 libsbi-objs-y += sm/gm/SM3.o
+
+libsbi-objs-y += sbi_cvm_bitmap.o
+
+libsbi-objs-y += sbi_cvm_iommu.o

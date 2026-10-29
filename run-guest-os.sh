@@ -3,6 +3,7 @@ set -e
 
 INITRD=${INITRD:-/rootfs.cpio}
 GUEST_CPUS=${GUEST_CPUS:-1}
+GUEST_MEMORY=${GUEST_MEMORY:-512}
 GUEST_NETWORK=${GUEST_NETWORK:-mode=none}
 GUEST_APPEND=${GUEST_APPEND:-unaligned_scalar_speed=fast}
 GUEST_COVE_IO_AUTORUN=${GUEST_COVE_IO_AUTORUN:-}
@@ -78,7 +79,9 @@ if [ "$GUEST_VFIO_PCI" = "auto" ]; then
 		"($VFIO_AUTO_VENDOR:$VFIO_AUTO_DEVICE)" >&2
 fi
 if [ -n "$GUEST_VFIO_PCI" ]; then
-	VFIO_PCI_ARG="--vfio-pci $GUEST_VFIO_PCI"
+	for guest_bdf in $GUEST_VFIO_PCI; do
+        VFIO_PCI_ARG="$VFIO_PCI_ARG --vfio-pci $guest_bdf"
+    done
 fi
 if [ -n "$GUEST_COVE_IO_AUTORUN" ]; then
 	GUEST_APPEND="$GUEST_APPEND cove_io_guest_test=$GUEST_COVE_IO_AUTORUN cove_io_guest_poweroff=$GUEST_COVE_IO_AUTORUN_POWEROFF"
@@ -126,7 +129,7 @@ if [ -n "$GUEST_COVE_IO_AUTORUN" ]; then
 	fi
 fi
 
-./apps/lkvm-static run -m 512 -c "$GUEST_CPUS" --console serial \
+exec ./apps/lkvm-static run -m "$GUEST_MEMORY" -c "$GUEST_CPUS" --console serial \
 	-p "root=/dev/ram rw console=ttyS0 $GUEST_APPEND" \
 	-k ./apps/Image $INITRD_ARG -n "$GUEST_NETWORK" \
 	$RNG_ARG $BALLOON_ARG $VIRTIO_TRANSPORT_ARG $VFIO_PCI_ARG \

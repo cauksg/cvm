@@ -1,6 +1,9 @@
 // #define DEBUG_WSW
 //#define PROG_LBL
 #include <sbi/sbi_cvm.h>
+#include <sbi/sbi_cvm_mmio.h>
+#include <sbi/sbi_cvm_bitmap.h>
+#include <sbi/sbi_cvm_iommu.h>
 #include <sbi/sbi_console.h>
 #include <sbi/sbi_hfence.h>
 #include <sbi/sbi_hart.h>
@@ -40,6 +43,17 @@ unsigned long *bitmap;
 unsigned long bitmap_max_ele;
 
 static paddr_t metadataPage = 12;
+static struct kvm_vmid host_create_id;
+static void host_release_chunk(struct cvm_mem_chunk_infor *info);
+static bool cvm_shared_contains(struct sbi_cvm *cvm, unsigned long gpa, bool accepted)
+{
+ if (!sbi_cvm_iommu_active()) return gpa >= cvm->swiotlb_addr &&
+  gpa - cvm->swiotlb_addr < cvm->swiotlb_size;
+ for (unsigned int i = 0; i < cvm->shared_count; i++)
+  if ((!accepted || cvm->shared[i].accepted) && gpa >= cvm->shared[i].base &&
+      gpa - cvm->shared[i].base < cvm->shared[i].size) return true;
+ return false;
+}
 unsigned long PAGE_LEVEL;
 
 int sbi_cvm_print(unsigned long reg){
@@ -117,6 +131,9 @@ struct cove_io_tdi_entry {
 	u64 mmio_gpa;
 	u64 mmio_size;
 	u64 mmio_map_generation;
+	u64 mmio_hpa;
+	bool mmio_installed;
+	bool mmio_revoke_pending;
 	u64 dma_gpa;
 	u64 dma_size;
 	u64 irq_id;
@@ -136,17 +153,34 @@ static unsigned long cvm_identity(const struct kvm_vmid *vmid)
 {
 	if (!vmid)
 		return COVE_IO_NO_VMID;
+	if (sbi_cvm_iommu_active() && iie_cvm_list_head) {
+		for (struct cvm_node *node = iie_cvm_list_head->next; node;
+		     node = node->next)
+			if (node->cvm.vmid == vmid)
+				return node->cvm.trusted_identity;
+	}
 
+	if (sbi_cvm_iommu_active()) return COVE_IO_NO_VMID;
 	return vmid->cvm_id ? vmid->cvm_id : vmid->vmid;
 }
 
+static int cove_io_update_mmio(struct cove_io_tdi_entry *tdi, bool install);
+
+static u64 cove_io_features(void)
+{
+	return COVE_IO_FEATURES_SUPPORTED |
+	       (sbi_cvm_mmio_bitmap_available() ? COVE_IO_FEAT_MMIO_BITMAP : 0);
+}
+
 static void cove_io_clear_irq_ranges(struct cove_io_tdi_entry *tdi);
-static void cove_io_remove_irq_range(struct cove_io_tdi_entry *tdi,
+static int cove_io_remove_irq_range(struct cove_io_tdi_entry *tdi,
 				     u64 irq_id, u64 irq_num);
 static int cove_io_translate_private_dma(struct cove_io_tdi_entry *tdi,
 					 u64 gpa, u64 *hpa);
 static int cove_io_copy_to_guest(struct cvm_node *cvm_node, u64 gpa,
 					 const void *src, u64 len);
+static bool cove_io_private_page_owned_by(struct sbi_cvm *cvm, paddr_t hpa);
+static int find_sw_pte(struct sbi_cvm *cvm, paddr_t gpa, pt_entry_t **pte);
 
 static struct cove_io_tdi_entry *cove_io_find_tdi(u64 tdi_id)
 {
@@ -201,8 +235,50 @@ static struct cove_io_tdi_entry *cove_io_alloc_auto_tdi(u64 *tdi_id)
 	return free_entry;
 }
 
-static void cove_io_reset_binding(struct cove_io_tdi_entry *tdi)
+static int cove_io_reclaim_mmio(struct cove_io_tdi_entry *tdi)
 {
+	int ret = cove_io_update_mmio(tdi, false);
+
+	if (ret)
+		goto failed;
+	ret = sbi_cvm_mmio_release(tdi);
+	if (ret)
+		goto failed;
+	tdi->mmio_hpa = 0;
+	tdi->flags &= ~(COVE_IO_TDI_F_DIRECT_MMIO | COVE_IO_TDI_F_MMIO_BITMAP);
+	tdi->mmio_gpa = 0;
+	tdi->mmio_size = 0;
+	tdi->mmio_map_generation = 0;
+	return 0;
+
+failed:
+	/* A partial stop must not be followed by a fresh Guest START. */
+	tdi->state = COVE_IO_TDI_STATE_ERROR;
+	tdi->mmio_map_generation = 0;
+	return ret;
+}
+
+static bool cove_io_uses_trusted_iommu(u64 device_id)
+{
+ return sbi_cvm_iommu_active() &&
+        ((device_id & COVE_IO_DEVICE_TYPE_MASK) >>
+         COVE_IO_DEVICE_TYPE_SHIFT) == COVE_IO_DEVICE_TYPE_PCI_RID;
+}
+
+static int cove_io_reset_binding(struct cove_io_tdi_entry *tdi)
+{
+ int ret;
+ /* Retain RID ownership until every CPU alias has been revoked and the
+  * platform has drained/scrubbed the device. A failed reclaim must not make
+  * an endpoint available to the Host or to a different TVM. */
+ if (cove_io_uses_trusted_iommu(tdi->device_id) &&
+     sbi_cvm_iommu_stop(tdi->device_id & 0xffff)) return CVM_ERROR;
+ ret = cove_io_reclaim_mmio(tdi);
+
+	if (ret)
+		return ret;
+ if (cove_io_uses_trusted_iommu(tdi->device_id) &&
+     sbi_cvm_iommu_release(tdi->device_id & 0xffff)) return CVM_ERROR;
 	tdi->flags = 0;
 	tdi->vmid_ptr = NULL;
 	tdi->vmid = COVE_IO_NO_VMID;
@@ -213,6 +289,7 @@ static void cove_io_reset_binding(struct cove_io_tdi_entry *tdi)
 	tdi->dma_size = 0;
 	cove_io_clear_irq_ranges(tdi);
 	tdi->device_id = COVE_IO_DEVICE_ANY;
+	return 0;
 }
 
 static bool cove_io_tdi_unbound(struct cove_io_tdi_entry *tdi)
@@ -307,7 +384,7 @@ static void cove_io_remove_irq_range_index(struct cove_io_tdi_entry *tdi,
 	tdi->irq_ranges[index] = tdi->irq_ranges[tdi->irq_range_count];
 }
 
-static int cove_io_add_irq_range(struct cove_io_tdi_entry *tdi,
+static int cove_io_update_irq_range(struct cove_io_tdi_entry *tdi,
 				 u64 irq_id, u64 irq_num, u64 vcpu_id,
 				 u64 irq_iid, u64 device_id)
 {
@@ -317,7 +394,8 @@ static int cove_io_add_irq_range(struct cove_io_tdi_entry *tdi,
 	if (!cove_io_range_valid(irq_id, irq_num))
 		return CVM_ERROR;
 
-	cove_io_remove_irq_range(tdi, irq_id, irq_num);
+	if (cove_io_remove_irq_range(tdi, irq_id, irq_num))
+		return CVM_ERROR;
 	end = cove_io_range_end(irq_id, irq_num);
 
 	for (int i = 0; i < tdi->irq_range_count; ) {
@@ -361,16 +439,52 @@ static int cove_io_add_irq_range(struct cove_io_tdi_entry *tdi,
 	return 0;
 }
 
-static void cove_io_remove_irq_range(struct cove_io_tdi_entry *tdi,
+static int cove_io_add_irq_range(struct cove_io_tdi_entry *tdi,
+				 u64 irq_id, u64 irq_num, u64 vcpu_id,
+				 u64 irq_iid, u64 device_id)
+{
+	static struct cove_io_tdi_entry pending;
+	int ret;
+
+	pending = *tdi;
+	ret = cove_io_update_irq_range(&pending, irq_id, irq_num, vcpu_id,
+				      irq_iid, device_id);
+	if (!ret)
+		*tdi = pending;
+	return ret;
+}
+
+static int cove_io_remove_irq_range(struct cove_io_tdi_entry *tdi,
 				     u64 irq_id, u64 irq_num)
 {
 	u64 remove_start = irq_id;
 	u64 remove_end;
+	u64 needed = tdi->irq_range_count;
 
 	if (!cove_io_range_valid(irq_id, irq_num))
-		return;
+		return CVM_ERROR;
 
 	remove_end = cove_io_range_end(irq_id, irq_num);
+	for (u64 index = 0; index < tdi->irq_range_count; index++) {
+		struct cove_io_irq_range *range = &tdi->irq_ranges[index];
+		u64 end = cove_io_range_end(range->irq_id, range->irq_num);
+
+		if (remove_start <= range->irq_id && remove_end >= end)
+			needed--;
+		else if (remove_start > range->irq_id && remove_end < end)
+			needed++;
+	}
+	if (needed > COVE_IO_MAX_IRQ_RANGES_PER_TDI)
+		return CVM_ERROR;
+	for (u64 index = 0; index < tdi->irq_range_count; ) {
+		struct cove_io_irq_range *range = &tdi->irq_ranges[index];
+
+		if (remove_start <= range->irq_id && remove_end >=
+		    cove_io_range_end(range->irq_id, range->irq_num))
+			cove_io_remove_irq_range_index(tdi, index);
+		else
+			index++;
+	}
 
 	for (int i = 0; i < tdi->irq_range_count; ) {
 		struct cove_io_irq_range *range = &tdi->irq_ranges[i];
@@ -416,6 +530,7 @@ static void cove_io_remove_irq_range(struct cove_io_tdi_entry *tdi,
 	}
 
 	cove_io_sync_irq_output(tdi);
+	return 0;
 }
 
 static bool cove_io_irq_device_allowed(struct cove_io_tdi_entry *tdi,
@@ -515,7 +630,7 @@ static void cove_io_set_output(struct cove_io_tdi_sbi_params *params,
 	params->irq_iid = tdi->irq_iid;
 	params->device_id = tdi->device_id;
 	params->state = tdi->state;
-	params->features = COVE_IO_FEATURES_SUPPORTED;
+	params->features = cove_io_features();
 }
 
 static struct cove_io_tdi_entry *
@@ -609,6 +724,7 @@ static bool cove_io_op_uses_generation(u32 op)
 	switch (op) {
 	case COVE_IO_TDI_UNREGISTER:
 	case COVE_IO_TDI_ADD_MMIO:
+	case COVE_IO_TDI_SET_BAR:
 	case COVE_IO_TDI_RECLAIM_MMIO:
 	case COVE_IO_TDI_BIND:
 	case COVE_IO_TDI_UNBIND:
@@ -684,9 +800,15 @@ int cove_io_tdi_op(struct cove_io_tdi_sbi_params *params)
 			params->op != COVE_IO_TDI_GET_FEATURES &&
 			params->op != COVE_IO_TDI_ENUM_OWNED))
 		return CVM_ERROR;
-	if (params->op > COVE_IO_TDI_ENUM_OWNED)
+	if (params->op > COVE_IO_TDI_SET_BAR)
 		return CVM_ERROR;
 
+	if (sbi_cvm_iommu_active() && params->vmid_ptr) {
+		struct cvm_node *node = iie_cvm_list_head ? iie_cvm_list_head->next : NULL;
+		for (; node && node->cvm.vmid != params->vmid_ptr; node = node->next) {}
+		if (!node)
+			return CVM_ERROR;
+	}
 	vmid = cvm_identity(params->vmid_ptr);
 
 	spin_lock(&cove_io_lock);
@@ -719,25 +841,30 @@ int cove_io_tdi_op(struct cove_io_tdi_sbi_params *params)
 			ret = CVM_ERROR;
 			break;
 		}
+		ret = cove_io_reset_binding(tdi);
+		if (ret)
+			break;
 		tdi->valid = true;
 		tdi->flags = 0;
 		tdi->tdi_id = params->tdi_id;
 		tdi->generation++;
 		tdi->state = COVE_IO_TDI_STATE_REGISTERED;
 		tdi->link_connected = true;
-		cove_io_reset_binding(tdi);
 		break;
 	case COVE_IO_TDI_UNREGISTER:
 		if (!cove_io_tdi_reclaim_allowed(tdi, params->vmid_ptr)) {
 			ret = CVM_ERROR;
 			break;
 		}
-		cove_io_reset_binding(tdi);
+		ret = cove_io_reset_binding(tdi);
+		if (ret)
+			break;
 		tdi->state = COVE_IO_TDI_STATE_FREE;
 		tdi->generation++;
 		break;
 	case COVE_IO_TDI_ADD_MMIO:
 		if (!cove_io_tdi_modify_allowed(tdi, params->vmid_ptr) ||
+		    tdi->mmio_hpa ||
 		    !tdi->link_connected ||
 		    !params->mmio_size ||
 		    params->mmio_gpa + params->mmio_size < params->mmio_gpa) {
@@ -748,14 +875,58 @@ int cove_io_tdi_op(struct cove_io_tdi_sbi_params *params)
 		tdi->mmio_size = params->mmio_size;
 		tdi->mmio_map_generation = 0;
 		break;
+	case COVE_IO_TDI_SET_BAR:
+		/* Only the kernel supplies HPA, from PCI resource 0, in this ABI. */
+		if (!tdi || tdi->state != COVE_IO_TDI_STATE_BOUND ||
+		    !cove_io_tdi_owned_by(tdi, params->vmid_ptr) ||
+		    !(tdi->flags & COVE_IO_TDI_F_DIRECT_DMA) ||
+		    tdi->mmio_hpa || tdi->mmio_map_generation ||
+		    sbi_hart_count() != 1 ||
+		    params->device_id != tdi->device_id ||
+		    params->mmio_gpa != tdi->mmio_gpa ||
+		    params->mmio_size != tdi->mmio_size ||
+		    (tdi->mmio_size != 0x100000 && tdi->mmio_size != 0x20000) ||
+		    tdi->mmio_gpa < 0x40000000 ||
+		    tdi->mmio_gpa + tdi->mmio_size > 0x80000000 ||
+		    params->dma_hpa < 0x40000000 ||
+		    params->dma_hpa >= SBI_CVM_MMIO_END ||
+		    tdi->mmio_size > SBI_CVM_MMIO_END - params->dma_hpa ||
+		    ((params->dma_hpa | tdi->mmio_gpa | tdi->mmio_size) &
+		     (PAGE_SIZE - 1)) ||
+		    !sbi_hart_has_extension(sbi_scratch_thishart_ptr(),
+				    SBI_HART_EXT_SVPBMT)) {
+			ret = CVM_ERROR;
+			break;
+		}
+		{
+			struct cvm_node *node = get_cvm(vmid);
+			struct cvm_vcpu_node *head = node ?
+				node->cvm.cvm_vcpu_list_head : NULL;
+
+			if (!head || !head->next) {
+				ret = CVM_ERROR;
+				break;
+			}
+		}
+		ret = sbi_cvm_mmio_reserve(tdi, tdi->device_id, params->dma_hpa,
+					  tdi->mmio_size,
+					  sbi_cvm_mmio_bitmap_available() ||
+					  (params->flags & COVE_IO_TDI_F_MMIO_BITMAP));
+		if (ret)
+			break;
+		tdi->mmio_hpa = params->dma_hpa;
+		tdi->flags |= COVE_IO_TDI_F_DIRECT_MMIO;
+		/* A Host cannot opt out once trusted platform policy enables it. */
+		if (sbi_cvm_mmio_bitmap_available() ||
+		    (params->flags & COVE_IO_TDI_F_MMIO_BITMAP))
+			tdi->flags |= COVE_IO_TDI_F_MMIO_BITMAP;
+		break;
 	case COVE_IO_TDI_RECLAIM_MMIO:
 		if (!cove_io_tdi_reclaim_allowed(tdi, params->vmid_ptr)) {
 			ret = CVM_ERROR;
 			break;
 		}
-		tdi->mmio_gpa = 0;
-		tdi->mmio_size = 0;
-		tdi->mmio_map_generation = 0;
+		ret = cove_io_reclaim_mmio(tdi);
 		break;
 	case COVE_IO_TDI_BIND:
 		if (!tdi || !params->vmid_ptr ||
@@ -773,14 +944,16 @@ int cove_io_tdi_op(struct cove_io_tdi_sbi_params *params)
 			ret = CVM_ERROR;
 			break;
 		}
-		cove_io_reset_binding(tdi);
+		ret = cove_io_reset_binding(tdi);
+		if (ret)
+			break;
 		tdi->state = COVE_IO_TDI_STATE_REGISTERED;
 		tdi->generation++;
 		break;
 	case COVE_IO_TDI_DMA_MAP:
 		if (!tdi || tdi->state != COVE_IO_TDI_STATE_BOUND ||
 		    !cove_io_tdi_owned_by(tdi, params->vmid_ptr) ||
-		    !params->dma_size ||
+		    tdi->mmio_hpa || !params->dma_size ||
 		    !cove_io_valid_dma_device_id(params->device_id) ||
 		    params->dma_gpa + params->dma_size < params->dma_gpa ||
 		    cove_io_device_id_in_use(tdi, params->device_id)) {
@@ -788,6 +961,18 @@ int cove_io_tdi_op(struct cove_io_tdi_sbi_params *params)
 			break;
 		}
 		tdi->vmid = vmid;
+		if (cove_io_uses_trusted_iommu(params->device_id) &&
+		    ((params->device_id & ~0xffffUL) !=
+		     ((u64)COVE_IO_DEVICE_TYPE_PCI_RID << COVE_IO_DEVICE_TYPE_SHIFT) ||
+		     sbi_cvm_iommu_claim(params->device_id & 0xffff))) {
+			ret = CVM_ERROR;
+			break;
+		}
+        if (cove_io_uses_trusted_iommu(params->device_id)) {
+            struct cvm_node *owner = get_cvm(vmid);
+            if (!owner || sbi_cvm_iommu_set_owner(params->device_id & 0xffff,
+                    owner->cvm.imsic_file, vmid)) { ret = CVM_ERROR; break; }
+        }
 		tdi->flags = params->flags & COVE_IO_TDI_F_DIRECT_DMA;
 		tdi->device_id = params->device_id;
 		tdi->dma_gpa = params->dma_gpa;
@@ -795,6 +980,16 @@ int cove_io_tdi_op(struct cove_io_tdi_sbi_params *params)
 		break;
 	case COVE_IO_TDI_DMA_UNMAP:
 		if (!cove_io_tdi_reclaim_allowed(tdi, params->vmid_ptr)) {
+			ret = CVM_ERROR;
+			break;
+		}
+		/* MMIO protection and its quiesce callback still depend on this RID. */
+		if (tdi->mmio_hpa) {
+			ret = CVM_ERROR;
+			break;
+		}
+		if (cove_io_uses_trusted_iommu(tdi->device_id) &&
+		    sbi_cvm_iommu_release(tdi->device_id & 0xffff)) {
 			ret = CVM_ERROR;
 			break;
 		}
@@ -839,7 +1034,7 @@ int cove_io_tdi_op(struct cove_io_tdi_sbi_params *params)
 			break;
 		}
 		if (params->irq_num)
-			cove_io_remove_irq_range(tdi, params->irq_id,
+			ret = cove_io_remove_irq_range(tdi, params->irq_id,
 						 params->irq_num);
 		else
 			cove_io_clear_irq_ranges(tdi);
@@ -858,6 +1053,12 @@ int cove_io_tdi_op(struct cove_io_tdi_sbi_params *params)
 		}
 		tdi->vmid = vmid;
 		tdi->state = COVE_IO_TDI_STATE_STOPPING;
+		if (cove_io_uses_trusted_iommu(tdi->device_id) &&
+		    sbi_cvm_iommu_stop(tdi->device_id & 0xffff)) {
+			ret = CVM_ERROR;
+			break;
+		}
+		ret = cove_io_update_mmio(tdi, false);
 		tdi->mmio_map_generation = 0;
 		break;
 	case COVE_IO_TDI_SET_ERROR:
@@ -871,6 +1072,12 @@ int cove_io_tdi_op(struct cove_io_tdi_sbi_params *params)
 		}
 		tdi->vmid = vmid;
 		tdi->state = COVE_IO_TDI_STATE_ERROR;
+		if (cove_io_uses_trusted_iommu(tdi->device_id) &&
+		    sbi_cvm_iommu_stop(tdi->device_id & 0xffff)) {
+			ret = CVM_ERROR;
+			break;
+		}
+		ret = cove_io_update_mmio(tdi, false);
 		break;
 	case COVE_IO_TDI_GET_STATE:
 		if (!tdi) {
@@ -922,7 +1129,7 @@ int cove_io_tdi_op(struct cove_io_tdi_sbi_params *params)
 		}
 		break;
 	case COVE_IO_TDI_GET_FEATURES:
-		params->features = COVE_IO_FEATURES_SUPPORTED;
+		params->features = cove_io_features();
 		break;
 	case COVE_IO_TDI_FINALIZE_STOP:
 		if (!tdi ||
@@ -933,7 +1140,9 @@ int cove_io_tdi_op(struct cove_io_tdi_sbi_params *params)
 			ret = CVM_ERROR;
 			break;
 		}
-		cove_io_reset_binding(tdi);
+		ret = cove_io_reset_binding(tdi);
+		if (ret)
+			break;
 		tdi->state = COVE_IO_TDI_STATE_REGISTERED;
 		tdi->generation++;
 		break;
@@ -1017,7 +1226,9 @@ int cove_io_covh_ecall(unsigned long funcid, struct sbi_trap_regs *regs,
 			break;
 		}
 		if (!cove_io_tdi_unbound(tdi)) {
-			cove_io_reset_binding(tdi);
+			ret = cove_io_reset_binding(tdi);
+			if (ret)
+				break;
 			tdi->state = COVE_IO_TDI_STATE_REGISTERED;
 			tdi->generation++;
 		} else {
@@ -1044,7 +1255,9 @@ int cove_io_covh_ecall(unsigned long funcid, struct sbi_trap_regs *regs,
 			ret = SBI_ERR_DENIED;
 			break;
 		}
-		cove_io_reset_binding(tdi);
+		ret = cove_io_reset_binding(tdi);
+		if (ret)
+			break;
 		tdi->state = COVE_IO_TDI_STATE_REGISTERED;
 		tdi->generation++;
 		break;
@@ -1093,6 +1306,52 @@ static u64 cove_io_covg_state(const struct cove_io_tdi_entry *tdi)
 	}
 }
 
+/* Proposed windows are untrusted until Guest acceptance. Never tear down
+ * a private leaf merely because its GPA appears in a Host proposal. */
+static void cvm_shared_revoke(struct sbi_cvm *cvm, struct cvm_shared_window *w)
+{
+    if (!w->accepted) return;
+    for (unsigned long gpa = w->base; gpa < w->base + w->size; gpa += PAGE_SIZE) {
+        pt_entry_t *pte;
+        if (!find_sw_pte(cvm, gpa, &pte) && (*pte & PTE_V)) {
+            unsigned long pa = ((*pte >> PAGE_PFN_SHIFT) & ~KEYID_MASK) << PAGE_SHIFT;
+            if (!sbi_cvm_iommu_host_buffer(pa, PAGE_SIZE))
+                sbi_panic("CVM shared mapping is private");
+            *pte = 0;
+            if (reset_page_own_table(pa, &cvm->vmid->vmid))
+                sbi_panic("CVM unshare ownership mismatch");
+        }
+    }
+    w->accepted = false;
+}
+
+/* Exact Guest-authorized declassification; called only from a COVG trap. */
+static int cvm_shared_request(struct sbi_cvm *cvm, unsigned long funcid,
+                              unsigned long tdi_id, unsigned long arg1,
+                              unsigned long arg2, unsigned long arg3)
+{
+        for (unsigned int i = 0; i < cvm->shared_count; i++) {
+            struct cvm_shared_window *w = &cvm->shared[i];
+            if (w->base != tdi_id || w->size != arg1 || arg2 || arg3) continue;
+            if (funcid == SBI_EXT_COVG_SIM_ACCEPT_SHARED) {
+                if (w->accepted) return SBI_EALREADY;
+                /* An untrusted boot description cannot declassify loaded code/data. */
+                for (unsigned long gpa = w->base; gpa < w->base + w->size; gpa += PAGE_SIZE) {
+                    pt_entry_t *pte;
+                    if (!find_sw_pte(cvm, gpa, &pte) && (*pte & PTE_V)) return SBI_EDENIED;
+                }
+                w->accepted = true;
+            } else {
+                if (!w->accepted) return SBI_EDENIED;
+                cvm_shared_revoke(cvm, w);
+                __sbi_hfence_gvma_all();
+                __sbi_hfence_vvma_all();
+            }
+            return 0;
+        }
+        return SBI_EDENIED;
+}
+
 int cove_io_covg_ecall(unsigned long vmid, unsigned long funcid,
 		       unsigned long tdi_id, unsigned long arg1,
 		       unsigned long arg2, unsigned long arg3,
@@ -1108,6 +1367,10 @@ int cove_io_covg_ecall(unsigned long vmid, unsigned long funcid,
 	if (!cvm_node)
 		return SBI_ERR_FAILED;
 
+    if (sbi_cvm_iommu_active() &&
+        (funcid == SBI_EXT_COVG_SIM_ACCEPT_SHARED || funcid == SBI_EXT_COVG_SIM_UNSHARE)) {
+        return cvm_shared_request(&cvm_node->cvm, funcid, tdi_id, arg1, arg2, arg3);
+    }
 	spin_lock(&cove_io_lock);
 	tdi = cove_io_find_tdi(tdi_id);
 
@@ -1152,7 +1415,7 @@ int cove_io_covg_ecall(unsigned long vmid, unsigned long funcid,
 			.device_id = tdi->device_id,
 			.state = cove_io_covg_state(tdi),
 			.flags = tdi->flags,
-			.features = COVE_IO_FEATURES_SUPPORTED,
+			.features = cove_io_features(),
 			.mmio_gpa = tdi->mmio_gpa,
 			.mmio_size = tdi->mmio_size,
 			.dma_gpa = tdi->dma_gpa,
@@ -1191,6 +1454,17 @@ int cove_io_covg_ecall(unsigned long vmid, unsigned long funcid,
 			ret = SBI_ERR_INVALID_STATE;
 			break;
 		}
+		ret = cove_io_update_mmio(tdi, true);
+		if (ret) {
+			ret = SBI_ERR_FAILED;
+			break;
+		}
+		if (cove_io_uses_trusted_iommu(tdi->device_id) &&
+		    sbi_cvm_iommu_start(tdi->device_id & 0xffff)) {
+			tdi->state = COVE_IO_TDI_STATE_ERROR;
+			ret = SBI_ERR_FAILED;
+			break;
+		}
 		tdi->state = COVE_IO_TDI_STATE_STARTED;
 		break;
 	case SBI_EXT_COVG_STOP_INTERFACE:
@@ -1209,7 +1483,38 @@ int cove_io_covg_ecall(unsigned long vmid, unsigned long funcid,
 		}
 		/* Access checks fail immediately; the host can only finish cleanup. */
 		tdi->state = COVE_IO_TDI_STATE_STOPPING;
+		if (cove_io_uses_trusted_iommu(tdi->device_id) &&
+		    sbi_cvm_iommu_stop(tdi->device_id & 0xffff)) {
+			ret = CVM_ERROR;
+			break;
+		}
+		ret = cove_io_update_mmio(tdi, false);
 		tdi->mmio_map_generation = 0;
+		break;
+	case SBI_EXT_COVG_SIM_PREPARE_DMA:
+		/* Simulator-only synchronous preparation, before device submission.
+		 * The whole private RAM window is a TDI-lifetime DMA grant; this is
+		 * not a per-buffer grant/revoke ABI. Never accept an HPA from Guest.
+		 */
+		if (!tdi || !cove_io_tdi_owned_by(tdi, cvm_node->cvm.vmid) ||
+		    tdi->state != COVE_IO_TDI_STATE_STARTED ||
+		    !(tdi->flags & COVE_IO_TDI_F_DIRECT_DMA) || !arg2 ||
+		    arg2 > 0x10000 || ((arg1 | arg2) & (PAGE_SIZE - 1)) ||
+		    arg1 < tdi->dma_gpa || arg1 + arg2 < arg1 ||
+		    arg1 + arg2 > tdi->dma_gpa + tdi->dma_size) {
+			ret = SBI_ERR_INVALID_PARAM;
+			break;
+		}
+		for (u64 gpa = arg1; gpa < arg1 + arg2; gpa += PAGE_SIZE) {
+			u64 hpa;
+
+			if (cove_io_translate_private_dma(tdi, gpa, &hpa) ||
+			    (cove_io_uses_trusted_iommu(tdi->device_id) &&
+			     sbi_cvm_iommu_map(tdi->device_id & 0xffff, gpa, hpa))) {
+				ret = SBI_ERR_INVALID_ADDRESS;
+				break;
+			}
+		}
 		break;
 	case SBI_EXT_COVG_SIM_GET_INTERFACE_ID:
 		/*
@@ -1234,8 +1539,8 @@ int cove_io_covg_ecall(unsigned long vmid, unsigned long funcid,
 			break;
 		}
 		/*
-		 * The simulator has no guest-visible HPA mapping to install. The
-		 * operation records that the exact host-registered range was checked.
+		 * Accept the exact report range. Direct BAR PTEs are installed at
+		 * START, so accepting MMIO alone does not enable device access.
 		 */
 		tdi->mmio_map_generation = tdi->generation;
 		*value = 1;
@@ -1303,10 +1608,12 @@ int cove_io_irq_allowed(struct kvm_vmid *vmid_ptr, unsigned long irq)
 	return allowed;
 }
 
-void cove_io_destroy_cvm(struct kvm_vmid *vmid_ptr)
+int cove_io_destroy_cvm(struct kvm_vmid *vmid_ptr)
 {
+	int ret = 0;
+
 	if (!vmid_ptr)
-		return;
+		return 0;
 
 	spin_lock(&cove_io_lock);
 	for (int i = 0; i < COVE_IO_MAX_TDIS; i++) {
@@ -1315,11 +1622,14 @@ void cove_io_destroy_cvm(struct kvm_vmid *vmid_ptr)
 		if (!tdi->valid || !cove_io_tdi_owned_by(tdi, vmid_ptr))
 			continue;
 
-		cove_io_reset_binding(tdi);
+		ret = cove_io_reset_binding(tdi);
+		if (ret)
+			break;
 		tdi->state = COVE_IO_TDI_STATE_REGISTERED;
 		tdi->generation++;
 	}
 	spin_unlock(&cove_io_lock);
+	return ret;
 }
 
 
@@ -1389,6 +1699,8 @@ static int cvm_delete_node(struct cvm_node *node)
                 nxt->next = NULL;
                 release_key_id(nxt->cvm.KeyID);
                 cvm_delete_all_vcpu_node(nxt->cvm.cvm_vcpu_list_head);
+                mfree_cvm_page_only((paddr_t)nxt->cvm.cvm_vcpu_list_head,
+                                   &nxt->cvm.vmid->vmid);
                 break;
             }
         }
@@ -1566,7 +1878,9 @@ void init_cvm_vcpu(struct cvm_vcpu* cvm_vcpu)
     cvm_vcpu->guest_csr.scounteren = 0x7;
 
     cvm_vcpu->guest_mie = 0;
-    cvm_vcpu->guest_mie |= MIP_VSTIP | MIP_MTIP | MIP_VSSIP | MIP_MSIP | MIP_SEIP | MIP_VSEIP;
+    /* Host Sstc deadlines must preempt a spinning secondary vCPU. STIP is
+     * routed through M-mode by the bitmap delegation guard before HS runs. */
+    cvm_vcpu->guest_mie |= MIP_STIP | MIP_VSTIP | MIP_MTIP | MIP_VSSIP | MIP_MSIP | MIP_SEIP | MIP_VSEIP;
     
     cvm_vcpu->guest_mstatus = 0;
     cvm_vcpu->guest_mstatus |= MSTATUS_MPIE | MSTATUS_SPIE | MSTATUS_FS;
@@ -1595,7 +1909,8 @@ static unsigned long cvm_make_hgatp(struct sbi_cvm *cvm)
     unsigned long hgatp = 0;
 
     hgatp |= SATP_MODE_SV57 << HGATP64_MODE_SHIFT;
-    hgatp |= (cvm->vmid->vmid << HGATP64_VMID_SHIFT) & HGATP64_VMID_MASK;
+    hgatp |= ((sbi_cvm_iommu_active() ? cvm->trusted_identity :
+               cvm->vmid->vmid) << HGATP64_VMID_SHIFT) & HGATP64_VMID_MASK;
     hgatp |= (cvm->root_pt >> RISCV_PGSHIFT) & HGATP64_PPN;
 
     return hgatp;
@@ -1616,15 +1931,22 @@ int check_in_cmode()
 	return cpus[csr_read(CSR_MHARTID)].cmode;
 }
 
+static bool cove_io_has_direct_mmio(struct cvm_vcpu *vcpu);
+
 static void enter_cmode(uint32_t cvmid, uint32_t vcpuid)
 {
 	cpus[csr_read(CSR_MHARTID)].cmode = 1;
 	cpus[csr_read(CSR_MHARTID)].cvmid = cvmid;
 	cpus[csr_read(CSR_MHARTID)].vcpuid = vcpuid;
+	sbi_cvm_bitmap_set_trusted(true);
+	sbi_cvm_mmio_set_trusted(true);
 }
 
 static void exit_cmode()
 {
+	sbi_cvm_iommu_guest_context(false);
+	sbi_cvm_mmio_set_trusted(false);
+	sbi_cvm_bitmap_set_trusted(false);
 	cpus[csr_read(CSR_MHARTID)].cmode = 0;
 	cpus[csr_read(CSR_MHARTID)].cvmid = -1;
 	cpus[csr_read(CSR_MHARTID)].vcpuid = -1;
@@ -1699,6 +2021,65 @@ static void swap_in_medeleg(uint64_t* next_val, uint64_t* prev_val)
     *prev_val = csr_swap(CSR_MEDELEG, *next_val);
 }
 
+/* A direct device can deliver interrupts while Guest runs without a Host
+ * exit. Keep HS interrupts on the Monitor context-switch path even when the
+ * optional bitmap hardware is disabled, so HS is entered with its own context
+ * and protection state restored.
+ */
+static bool cove_io_has_direct_mmio(struct cvm_vcpu *vcpu)
+{
+	bool direct = false;
+
+	spin_lock(&cove_io_lock);
+	for (unsigned int i = 0; i < COVE_IO_MAX_TDIS; i++) {
+		struct cove_io_tdi_entry *tdi = &cove_io_tdis[i];
+
+		if ((tdi->flags & COVE_IO_TDI_F_DIRECT_MMIO) &&
+		    cove_io_tdi_owned_by(tdi, vcpu->cvm->vmid)) {
+			direct = true;
+			break;
+		}
+	}
+	spin_unlock(&cove_io_lock);
+	return direct;
+}
+
+/* MMIO bitmap bypass must never reach Host via a directly delegated trap. */
+static void cove_io_enter_mmio_context(struct cvm_vcpu *vcpu)
+{
+	unsigned long virtual_irqs = MIP_VSSIP | MIP_VSTIP | MIP_VSEIP;
+
+	vcpu->io_trap_guard_active = sbi_cvm_mmio_bitmap_active() ||
+		sbi_cvm_bitmap_active() || sbi_cvm_iommu_active() ||
+		cove_io_has_direct_mmio(vcpu);
+	if (!vcpu->io_trap_guard_active)
+		return;
+	vcpu->host_hedeleg = csr_swap(CSR_HEDELEG, vcpu->guest_medeleg);
+	vcpu->host_hideleg = csr_swap(CSR_HIDELEG, virtual_irqs);
+	/* Delegate only events which hardware will deliver all the way to VS. */
+	csr_write(CSR_MEDELEG, csr_read(CSR_MEDELEG) & csr_read(CSR_HEDELEG));
+	csr_write(CSR_MIDELEG, csr_read(CSR_MIDELEG) &
+		  csr_read(CSR_HIDELEG) & virtual_irqs);
+	/* H-extension mandates mideleg.SGEIP=1; it cannot be redirected to M.
+	 * Mask its delivery while CVM bypass is active. Host MIE was saved above.
+	 */
+	csr_clear(CSR_MIE, MIP_SGEIP);
+	if ((csr_read(CSR_MEDELEG) & ~csr_read(CSR_HEDELEG)) ||
+	    (csr_read(CSR_MIDELEG) &
+	     ~((csr_read(CSR_HIDELEG) & virtual_irqs) | MIP_SGEIP)) ||
+	    (csr_read(CSR_MIE) & MIP_SGEIP))
+		sbi_panic("bitmap: unsafe trap delegation\n");
+}
+
+static void cove_io_exit_mmio_context(struct cvm_vcpu *vcpu)
+{
+	if (!vcpu->io_trap_guard_active)
+		return;
+	csr_write(CSR_HEDELEG, vcpu->host_hedeleg);
+	csr_write(CSR_HIDELEG, vcpu->host_hideleg);
+	vcpu->io_trap_guard_active = false;
+}
+
 static void context_switch_to_cvm(struct sbi_trap_regs* host_regs, struct cvm_vcpu* cvm_vcpu)
 {
     swap_in_context((uint64_t*)&cvm_vcpu->guest_context, (uint64_t*)&cvm_vcpu->host_context, (uint64_t*)host_regs);
@@ -1715,11 +2096,13 @@ static void context_switch_to_cvm(struct sbi_trap_regs* host_regs, struct cvm_vc
     swap_in_medeleg(&cvm_vcpu->guest_medeleg, &cvm_vcpu->host_medeleg);
     csr_clear(CSR_MIDELEG, MIP_SEIP);
     csr_clear(CSR_MIP, MIP_SEIP);
+    cove_io_enter_mmio_context(cvm_vcpu);
     // csr_set(CSR_MIE, MIP_SEIP);
 }
 
 static void context_switch_to_host(struct sbi_trap_regs* host_regs, struct cvm_vcpu* cvm_vcpu)
 {
+    cove_io_exit_mmio_context(cvm_vcpu);
     swap_in_context((uint64_t*)&cvm_vcpu->host_context, (uint64_t*)&cvm_vcpu->guest_context, (uint64_t*)host_regs);
     swap_in_ptbr(&cvm_vcpu->host_hgatp, &cvm_vcpu->guest_hgatp);
     swap_in_sstatus(&cvm_vcpu->host_context.sstatus, &cvm_vcpu->guest_context.sstatus);
@@ -1776,6 +2159,136 @@ static void save_guest_vs_csrs(struct vcpu_csr *csr)
         csr->vstimecmp = csr_read(CSR_VSTIMECMP);
 #endif
     }
+}
+
+/* Protect actual hardware state as well as the saved memory image. */
+static void cvm_private_hardware_enter(struct cvm_vcpu *vcpu)
+{
+	unsigned long env = ENVCFG_CBIE_INV | ENVCFG_CBCFE | ENVCFG_CBZE;
+	struct sbi_scratch *scratch = sbi_scratch_thishart_ptr();
+
+	save_guest_vs_csrs(&vcpu->host_vs_csr);
+	vcpu->host_viselect = csr_read(CSR_VSISELECT);
+	csr_write(CSR_VSISELECT, vcpu->guest_viselect);
+	if (sbi_hart_has_extension(scratch, SBI_HART_EXT_SSTC)) env |= ENVCFG_STCE;
+	if (sbi_hart_has_extension(scratch, SBI_HART_EXT_SVPBMT)) env |= ENVCFG_PBMTE;
+	if (sbi_hart_has_extension(scratch, SBI_HART_EXT_SVADU)) env |= ENVCFG_ADUE;
+	vcpu->host_henvcfg = csr_swap(CSR_HENVCFG, env);
+	vcpu->host_hcounteren = csr_swap(CSR_HCOUNTEREN, 7);
+	if (sbi_hart_has_extension(scratch, SBI_HART_EXT_SMSTATEEN)) {
+		vcpu->host_hstateen0 = csr_swap(CSR_HSTATEEN0,
+			SMSTATEEN0_IMSIC | SMSTATEEN0_AIA | SMSTATEEN0_SVSLCT);
+		/* SSTATEEN0 and HSENVCFG stay inaccessible in VS for this prototype. */
+	}
+    vcpu->host_htimedelta = csr_swap(CSR_HTIMEDELTA, 0);
+    if (sbi_hart_has_extension(scratch, SBI_HART_EXT_SMAIA)) {
+        vcpu->host_hvictl = csr_swap(CSR_HVICTL, 0);
+        vcpu->host_hviprio1 = csr_swap(CSR_HVIPRIO1, 0);
+        vcpu->host_hviprio2 = csr_swap(CSR_HVIPRIO2, 0);
+        vcpu->host_hvien = csr_swap(CSR_HVIEN, 0);
+    }
+	sbi_cvm_fp_save(&vcpu->host_fp);
+	sbi_cvm_fp_restore(&vcpu->guest_fp);
+}
+
+static void cvm_private_hardware_exit(struct cvm_vcpu *vcpu)
+{
+	sbi_cvm_fp_save(&vcpu->guest_fp);
+	sbi_cvm_fp_restore(&vcpu->host_fp);
+	vcpu->guest_viselect = csr_read(CSR_VSISELECT);
+	csr_write(CSR_VSISELECT, vcpu->host_viselect);
+	load_guest_vs_csrs(&vcpu->host_vs_csr);
+	csr_write(CSR_HENVCFG, vcpu->host_henvcfg);
+	csr_write(CSR_HCOUNTEREN, vcpu->host_hcounteren);
+    csr_write(CSR_HTIMEDELTA, vcpu->host_htimedelta);
+    if (sbi_hart_has_extension(sbi_scratch_thishart_ptr(), SBI_HART_EXT_SMAIA)) {
+        csr_write(CSR_HVICTL, vcpu->host_hvictl);
+        csr_write(CSR_HVIPRIO1, vcpu->host_hviprio1);
+        csr_write(CSR_HVIPRIO2, vcpu->host_hviprio2);
+        csr_write(CSR_HVIEN, vcpu->host_hvien);
+    }
+	if (sbi_hart_has_extension(sbi_scratch_thishart_ptr(), SBI_HART_EXT_SMSTATEEN))
+		csr_write(CSR_HSTATEEN0, vcpu->host_hstateen0);
+}
+
+static struct cvm_node *cvm_registered(struct kvm_vmid *key)
+{
+	struct cvm_node *node = iie_cvm_list_head ? iie_cvm_list_head->next : NULL;
+	for (; node; node = node->next)
+		if (node->cvm.vmid == key) return node;
+	return NULL;
+}
+
+static bool cvm_boot_page(struct sbi_cvm *cvm, unsigned long gpa,
+			 unsigned long permission)
+{
+	pt_entry_t *pte;
+	unsigned long phys;
+	bool valid;
+
+	if (gpa < 0x80000000UL || gpa >= 0xc0000000UL) return false;
+	spin_lock(&cvm->page_table_lock);
+	valid = !find_sw_pte(cvm, gpa, &pte) && (*pte & PTE_V) &&
+		(*pte & permission);
+	phys = valid ? (((*pte >> PAGE_PFN_SHIFT) & ~KEYID_MASK) << PAGE_SHIFT) : 0;
+	spin_unlock(&cvm->page_table_lock);
+	return valid && cove_io_private_page_owned_by(cvm, phys);
+}
+
+int sbi_cvm_finalize_vcpu(struct iie_cvm_sbi_params *params,
+			const struct cpu_context *initial)
+{
+	struct cvm_node *node = cvm_registered(params->vmid_ptr);
+	struct cvm_vcpu_node *vcpu_node;
+	struct cvm_vcpu *vcpu;
+
+	_Static_assert(sizeof(struct cvm_vcpu_node) <= 4096, "vCPU exceeds private page");
+	if (!node || (node->cvm.state != INITIALIZING && node->cvm.state != READY) || check_in_cmode())
+		return SBI_EDENIED;
+	/* Vector context is not implemented. Refuse rather than leak live V regs. */
+	if (!misa_extension('D') || misa_extension('V')) return SBI_ENOTSUPP;
+    const unsigned int unsupported[] = {
+        SBI_HART_EXT_ZICFILP, SBI_HART_EXT_ZICFISS,
+        SBI_HART_EXT_SSDBLTRP, SBI_HART_EXT_SMCTR, SBI_HART_EXT_SSCTR,
+        SBI_HART_EXT_SSQOSID, SBI_HART_EXT_SMNPM,
+    };
+    for (unsigned int i = 0; i < sizeof(unsupported) / sizeof(unsupported[0]); i++)
+        if (sbi_hart_has_extension(sbi_scratch_thishart_ptr(), unsupported[i]))
+            return SBI_ENOTSUPP;
+	vcpu_node = get_cvm_vcpu_node(node->cvm.trusted_identity, *params->vcpu_id_ptr);
+	if (!vcpu_node || !node->cvm.root_pt) return SBI_EDENIED;
+	vcpu = &vcpu_node->vcpu;
+	/* Only a trusted Guest HSM request supplies secondary entry registers. */
+	if (vcpu->trusted_vcpu_id) {
+		vcpu->state_finalized = true;
+		return 0;
+	}
+	if (!node->cvm.aia_initialized) return SBI_EDENIED;
+	for (struct cvm_vcpu_node *v = node->cvm.cvm_vcpu_list_head->next;
+	     v; v = v->next)
+		if (!v->vcpu.imsic.configured) return SBI_EDENIED;
+	if (vcpu->state_finalized || (initial->sepc & 1) ||
+	    initial->a0 != (unsigned long)vcpu->trusted_vcpu_id ||
+	    !cvm_boot_page(&node->cvm, initial->sepc, PTE_X) ||
+	    !cvm_boot_page(&node->cvm, initial->a1, PTE_R))
+		return SBI_EDENIED;
+	sbi_memset(&vcpu->guest_context, 0, sizeof(vcpu->guest_context));
+	sbi_memset(&vcpu->guest_csr, 0, sizeof(vcpu->guest_csr));
+	vcpu->guest_context.sepc = initial->sepc;
+	vcpu->guest_context.a0 = initial->a0;
+	vcpu->guest_context.a1 = initial->a1;
+	vcpu->guest_context.sstatus = MSTATUS_SPP | MSTATUS_SPIE;
+	vcpu->guest_context.hstatus = HSTATUS_SPV | HSTATUS_SPVP | HSTATUS_VTW;
+	vcpu->guest_csr.scounteren = 7;
+	vcpu->guest_csr.vstimecmp = ~0UL;
+	vcpu->guest_mstatus &= ~MSTATUS_VS;
+	vcpu->state_finalized = true;
+	vcpu->hart_started = true;
+	node->cvm.state = READY;
+	/* The KVM file allocation is authorized separately before first entry. */
+	sbi_printf("CVM private CPU state finalized: vmid=%lu vcpu=%d\n",
+		   node->cvm.trusted_identity, vcpu->trusted_vcpu_id);
+	return 0;
 }
 
 unsigned long tag_mmio_load(unsigned long htinst)
@@ -1968,8 +2481,34 @@ int cvm_vcpu_enter(struct sbi_trap_regs* host_regs, struct cvm_vcpu* cvm_vcpu, u
      * tag-based copy misses state after multi-vCPU exits, which can restore
      * stale sp/tp and break the guest's trap entry path.
      */
-    sbi_memcpy(&cvm_vcpu->guest_context, kvm_guest_context, sizeof(struct cpu_context));
-    sbi_memcpy(&cvm_vcpu->guest_csr, kvm_guest_csr, sizeof(struct vcpu_csr));
+    if (sbi_cvm_iommu_active()) {
+        struct cpu_context response;
+        unsigned long hvip;
+        int ret;
+
+        sbi_memcpy(&response, kvm_guest_context, sizeof(response));
+        ret = sbi_cvm_state_resume(cvm_vcpu, &response);
+        if (ret) {
+            sbi_printf("COVI resume denied: cvm=%lu vcpu=%d token=%lu expected=%u\n",
+                cvm->trusted_identity, cvm_vcpu->trusted_vcpu_id,
+                response.sepc, cvm_vcpu->resume_len);
+            return ret;
+        }
+        /* Legacy virtual IRQs remain untrusted device/scheduling inputs. */
+        /* External IRQs must pass the COVI allow policy or trusted device
+         * MSI remapping. A Host HVIP shadow must not bypass that policy. */
+        hvip = kvm_guest_csr->hvip & (MIP_VSSIP | MIP_VSTIP);
+        cvm_vcpu->guest_csr.hvip = hvip;
+        cvm_private_hardware_enter(cvm_vcpu);
+    } else {
+        sbi_memcpy(&cvm_vcpu->guest_context, kvm_guest_context, sizeof(struct cpu_context));
+        sbi_memcpy(&cvm_vcpu->guest_csr, kvm_guest_csr, sizeof(struct vcpu_csr));
+    }
+    /* A malicious Host must not select a different interrupt file for the
+     * assigned TVM, or run another TVM with the assigned file privileges. */
+    if (sbi_cvm_iommu_active())
+        cvm_vcpu->guest_context.hstatus =
+            (cvm_vcpu->guest_context.hstatus & ~HSTATUS_VGEIN) | (cvm_vcpu->imsic.file << 12);
     cvm_vcpu->guest_hgatp = cvm_make_hgatp(cvm);
     load_guest_vs_csrs(&cvm_vcpu->guest_csr);
     /* copy_regs_tagged(&cvm_vcpu->guest_context, kvm_guest_context, (uint32_t)cvm_vcpu->cxt_tag); */
@@ -1994,117 +2533,176 @@ int cvm_vcpu_enter(struct sbi_trap_regs* host_regs, struct cvm_vcpu* cvm_vcpu, u
     // sbi_printf("enter: mepc %lx hstatus %lx mstatus %lx\r\n", host_regs->mepc, cvm_vcpu->guest_context.hstatus, cvm_vcpu->guest_mstatus);
     // sbi_printf("enter: medeleg %lx mideleg %lx mie %lx\r\n", csr_read(CSR_MEDELEG), csr_read(CSR_MIDELEG), csr_read(CSR_MIE));
     // sbi_printf("enter: hgatp %lx vsatp %lx host_hgatp %lx\r\n", csr_read(CSR_HGATP), csr_read(CSR_VSATP), cvm_vcpu->host_hgatp);
+	sbi_cvm_iommu_guest_context(sbi_cvm_iommu_active() ?
+        cvm->trusted_identity : cove_io_has_direct_mmio(cvm_vcpu));
 	enter_cmode(cvm_identity(cvm->vmid), *cvm_vcpu->vcpu_id);
     // sbi_printf("enter cvm vcpu trap %lx\n", kvm_trap);
     return 0;
 }
 
-int cvm_vcpu_exit(struct sbi_trap_regs* host_regs)
+/* Build the Host request while translation and instruction fetch still use
+ * the private Guest context. No untrusted trap buffer is ever read back. */
+static int cvm_private_exit_request(struct cvm_vcpu *vcpu,
+                                    struct cpu_trap *trap)
 {
-    uint32_t vmid = get_cvm_id();
-    uint32_t vcpuid = get_cvm_vcpu_id();
-    struct cvm_vcpu_node *vcpu_node;
-    struct cvm_vcpu* cvm_vcpu;
+    unsigned long instruction = 0;
+    struct sbi_trap_info uptrap = {0};
+    int args;
+
+    vcpu->resume_kind = CVM_RESUME_RETRY;
+    vcpu->resume_len = 0;
+    vcpu->resume_in_mask = vcpu->resume_out_mask = 0;
+    if (trap->scause & (1UL << 63)) {
+        sbi_memset(trap, 0, sizeof(*trap));
+        trap->scause = 1UL << 63;
+        return 0;
+    }
+    switch (trap->scause) {
+    case CAUSE_VIRTUAL_SUPERVISOR_ECALL:
+        args = sbi_cvm_state_sbi_args(vcpu->guest_context.a7,
+                                     vcpu->guest_context.a6);
+        if (args < 0) return SBI_EDENIED;
+        vcpu->resume_kind = CVM_RESUME_SBI;
+        vcpu->resume_len = 4;
+        vcpu->resume_out_mask = ((1U << args) - 1) << 10;
+        /* Legacy SBI has no FID and preserves a1. */
+        if (vcpu->guest_context.a7 > 8) {
+            vcpu->resume_out_mask |= 1U << 16;
+            vcpu->resume_in_mask = (1U << 10) | (1U << 11);
+        } else vcpu->resume_in_mask = 1U << 10;
+        vcpu->resume_out_mask |= 1U << 17;
+        if ((vcpu->guest_context.a7 == SBI_EXT_COVG &&
+             (vcpu->guest_context.a6 == 4 || vcpu->guest_context.a6 == 5)) ||
+            (vcpu->guest_context.a7 == SBI_EXT_HSM &&
+             vcpu->guest_context.a6 <= SBI_EXT_HSM_HART_STOP)) {
+            vcpu->resume_kind = CVM_RESUME_NOTIFY;
+            vcpu->resume_in_mask = 0;
+        }
+        trap->stval = trap->htval = trap->htinst = 0;
+        break;
+    case CAUSE_VIRTUAL_INST_FAULT:
+        instruction = trap->stval;
+        if (!instruction) instruction = sbi_get_insn(trap->sepc, &uptrap);
+        /* WRS.NTO traps under VTW just like WFI. Publish only its opcode;
+         * the Host may yield, but cannot inspect or replace private state. */
+        if (uptrap.cause || (instruction != 0x10500073 &&
+                            instruction != 0x00d00073)) return SBI_EDENIED;
+        vcpu->resume_kind = CVM_RESUME_WFI;
+        vcpu->resume_len = 4;
+        trap->stval = instruction;
+        trap->htval = trap->htinst = 0;
+        break;
+    case CAUSE_FETCH_GUEST_PAGE_FAULT:
+    case CAUSE_LOAD_GUEST_PAGE_FAULT:
+    case CAUSE_STORE_GUEST_PAGE_FAULT: {
+        unsigned long gpa = (trap->htval << 2) | (trap->stval & 3);
+        if (gpa >= 0x80000000UL) {
+            /* Private page pool refill is a retry, not an emulated load. */
+            unsigned long cause = trap->scause;
+            sbi_memset(trap, 0, sizeof(*trap));
+            trap->scause = 1UL << 63;
+            if (vcpu->exit_reason == SWIOTLB) {
+                vcpu->pending_share_gpa = gpa;
+                /* KVM must populate its public backing-page mapping before
+                 * RUN supplies the HPA. No private PC/instruction/GPR leaks.
+                 */
+                trap->scause = cause;
+                trap->htval = gpa >> 2;
+                trap->stval = gpa & 3;
+            }
+            return 0;
+        }
+        if (!(trap->htinst & 1) && !trap->htinst) {
+            instruction = sbi_get_insn(trap->sepc, &uptrap);
+            if (uptrap.cause) return SBI_EDENIED;
+        }
+        /* Direct BARs are never handled through Host register emulation. */
+        spin_lock(&cove_io_lock);
+        for (unsigned int i = 0; i < COVE_IO_MAX_TDIS; i++) {
+            struct cove_io_tdi_entry *tdi = &cove_io_tdis[i];
+            if (cove_io_tdi_owned_by(tdi, vcpu->cvm->vmid) &&
+                (tdi->flags & COVE_IO_TDI_F_DIRECT_MMIO) &&
+                cove_io_range_contains(tdi->mmio_gpa, tdi->mmio_size, gpa)) {
+                spin_unlock(&cove_io_lock);
+                return SBI_EDENIED;
+            }
+        }
+        spin_unlock(&cove_io_lock);
+        if (sbi_cvm_state_mmio(vcpu, trap, instruction)) return SBI_EDENIED;
+        spin_lock(&cove_io_lock);
+        struct cove_io_tdi_entry *emulated = cove_io_find_started_mmio_tdi(
+            vcpu->cvm->vmid, gpa, vcpu->mmio_width, false);
+        bool allowed = emulated && !(emulated->flags & COVE_IO_TDI_F_DIRECT_MMIO);
+        spin_unlock(&cove_io_lock);
+        if (!allowed) return SBI_EDENIED;
+        break;
+    }
+    default:
+        return SBI_EDENIED;
+    }
+    trap->sepc = 0;
+    return 0;
+}
+
+int cvm_vcpu_exit(struct sbi_trap_regs *host_regs)
+{
+    struct cvm_vcpu_node *node = get_cvm_vcpu_node(get_cvm_id(), get_cvm_vcpu_id());
+    struct cvm_vcpu *vcpu;
     struct cpu_trap trap;
-	struct cpu_context* kvm_vcpu_context;
-	struct vcpu_csr* kvm_vcpu_csr;
-    struct cpu_trap* kvm_vcpu_trap;
+    bool trusted = sbi_cvm_iommu_active();
+    int ret = 0;
 
-    vcpu_node = get_cvm_vcpu_node(vmid, vcpuid);
-    if(!vcpu_node)
-	{
-		sbi_printf("[IIE CVM Monitor@%s] vcpu_node is NULL!\n", __func__);
-		return -1;
-	}
-
-	cvm_vcpu = &vcpu_node->vcpu;
-	if(!cvm_vcpu)
-	{
-		sbi_printf("[IIE CVM Monitor@%s] vcpu is NULL!\n", __func__);
-		return -1;
-	}
-    // 更新kvm_vcpu_context 和 kvm_vcpu_trap; 
-	kvm_vcpu_context = cvm_vcpu->kvm_vcpu_context;
-	kvm_vcpu_csr = cvm_vcpu->kvm_vcpu_csr;
-	kvm_vcpu_trap = cvm_vcpu->kvm_vcpu_trap;
-    
-    /* 
+    if (!node) return SBI_EINVAL;
+    vcpu = &node->vcpu;
+    trap.sepc = csr_read(CSR_MEPC);
     trap.scause = csr_read(CSR_MCAUSE);
     trap.stval = csr_read(CSR_MTVAL);
     trap.htval = csr_read(CSR_MTVAL2);
-    // trap.htinst = csr_read(CSR_MTINST);
-    csr_write(CSR_SCAUSE, trap.scause);
-    csr_write(CSR_STVAL, trap.stval);
-    csr_write(CSR_HTVAL, trap.htval);
-    // csr_write(CSR_HTINST, 0);
-    // TODO 读取inst 更新CSR_HTINST
-    // csr_write(CSR_HTINST, trap.htinst);
-    */
-    kvm_vcpu_trap->sepc = csr_read(CSR_MEPC);
-    kvm_vcpu_trap->scause = csr_read(CSR_MCAUSE);
-    kvm_vcpu_trap->stval = csr_read(CSR_MTVAL);
-    kvm_vcpu_trap->htval = csr_read(CSR_MTVAL2);
-    kvm_vcpu_trap->htinst = csr_read(CSR_MTINST);
-    if (kvm_vcpu_trap->scause == CAUSE_VIRTUAL_INST_FAULT &&
-        !kvm_vcpu_trap->stval) {
-        struct sbi_trap_info uptrap;
-        unsigned long insn = sbi_get_insn(kvm_vcpu_trap->sepc, &uptrap);
-
-        if (!uptrap.cause)
-            kvm_vcpu_trap->stval = insn;
+    trap.htinst = csr_read(CSR_MTINST);
+    save_guest_vs_csrs(&vcpu->guest_csr);
+    if (!trusted && trap.scause == CAUSE_VIRTUAL_INST_FAULT && !trap.stval) {
+        struct sbi_trap_info uptrap = {0};
+        unsigned long insn = sbi_get_insn(trap.sepc, &uptrap);
+        if (!uptrap.cause) trap.stval = insn;
     }
-    save_guest_vs_csrs(&cvm_vcpu->guest_csr);
-
-
-    // set exit_reason
-    // exit_reason = trap.scause & ~(1UL << (__riscv_xlen - 1));
-
-    context_switch_to_host(host_regs, cvm_vcpu);
-    host_regs->mepc +=4;
-
-    /*
-     * SBI_EXT_CVM_RUN_VCPU skips OpenSBI's generic SBI return register
-     * update because the trap handler swaps between host and CVM register
-     * contexts itself.  Make the return ABI explicit here, otherwise the
-     * host kernel observes stale guest/host a0/a1 values as sbiret.
-     */
-    host_regs->a0 = 0;
+    /* Capture GPRs for request filtering before exchanging Host registers. */
+    if (trusted) {
+        sbi_memcpy(&vcpu->guest_context, host_regs, 32 * sizeof(unsigned long));
+        ret = cvm_private_exit_request(vcpu, &trap);
+        cvm_private_hardware_exit(vcpu);
+    }
+    context_switch_to_host(host_regs, vcpu);
+    host_regs->mepc += 4;
+    host_regs->a0 = ret;
     host_regs->a1 = 0;
 
-    cvm_vcpu->guest_context.hstatus &= ~HSTATUS_SPVP;
-    if((cvm_vcpu->guest_mstatus & MSTATUS_MPP) == (PRV_S<< MSTATUS_MPP_SHIFT))
-        cvm_vcpu->guest_context.hstatus |= HSTATUS_SPVP;
+    vcpu->guest_context.hstatus &= ~(HSTATUS_SPVP | HSTATUS_SPV | HSTATUS_GVA);
+    if ((vcpu->guest_mstatus & MSTATUS_MPP) == (PRV_S << MSTATUS_MPP_SHIFT))
+        vcpu->guest_context.hstatus |= HSTATUS_SPVP;
+    if (vcpu->guest_mstatus & MSTATUS_MPV) vcpu->guest_context.hstatus |= HSTATUS_SPV;
+    if (vcpu->guest_mstatus & MSTATUS_GVA) vcpu->guest_context.hstatus |= HSTATUS_GVA;
 
-    cvm_vcpu->guest_context.hstatus &= ~HSTATUS_SPV;
-    if((cvm_vcpu->guest_mstatus & MSTATUS_MPV) == MSTATUS_MPV)
-        cvm_vcpu->guest_context.hstatus |= HSTATUS_SPV;
-
-    cvm_vcpu->guest_context.hstatus &= ~HSTATUS_GVA;
-    if((cvm_vcpu->guest_mstatus & MSTATUS_GVA) == MSTATUS_GVA)
-        cvm_vcpu->guest_context.hstatus |= HSTATUS_GVA;
-
-    cvm_vcpu->cxt_tag = vcpu_reg_tag(kvm_vcpu_trap);
-    sbi_memcpy(kvm_vcpu_context, &cvm_vcpu->guest_context, sizeof(struct cpu_context));
-    /* copy_regs_tagged(kvm_vcpu_context, &cvm_vcpu->guest_context, (uint32_t)(cvm_vcpu->cxt_tag >> 32)); */
-    sbi_memcpy(kvm_vcpu_csr, &cvm_vcpu->guest_csr, sizeof(struct vcpu_csr));
-
-    // sbi_memcpy(kvm_vcpu_context, &cvm_vcpu->guest_context, sizeof(struct cpu_context));
-    // sbi_memcpy(kvm_vcpu_csr, &cvm_vcpu->guest_csr, sizeof(struct vcpu_csr));
-    // sbi_printf("*******************exit*********************\r\n");
-    // debug_print_csr(host_regs, cvm_vcpu);
-    // if(exit_reason == IRQ_S_EXT)
-    // {
-    //     sbi_printf("exit: mepc %lx mie %lx mip %lx mideleg %lx\r\n", host_regs->mepc, csr_read(CSR_MIE),  csr_read(CSR_MIP),  csr_read(CSR_MIDELEG));
-    // }
-    // sbi_printf("exit: trap sepc %lx scause %lx stval %lx htval %lx htinst %lx \r\n", 
-    //     cvm_vcpu->guest_context.sepc, trap.scause, trap.stval, trap.htval, trap.htinst);
-    // sbi_printf("exit: mepc %lx hstatus %lx mstatus %lx\r\n", host_regs->mepc, cvm_vcpu->guest_context.hstatus, cvm_vcpu->guest_mstatus);
-	// sbi_printf("exit: hgatp %lx vsatp %lx host_hgatp %lx\r\n", csr_read(CSR_HGATP), csr_read(CSR_VSATP), cvm_vcpu->host_hgatp);
-    //TODO flush TLB
+    if (trusted) {
+        struct cpu_context output;
+        struct vcpu_csr csr_output;
+        if (ret) {
+            vcpu->state_failed = true;
+            sbi_memset(&trap, 0, sizeof(trap));
+            vcpu->resume_in_mask = vcpu->resume_out_mask = 0;
+            vcpu->resume_len = 0;
+        }
+        sbi_cvm_state_export(vcpu, &output, &csr_output);
+        sbi_memcpy(vcpu->kvm_vcpu_context, &output, sizeof(output));
+        sbi_memcpy(vcpu->kvm_vcpu_csr, &csr_output, sizeof(csr_output));
+    } else {
+        vcpu->cxt_tag = vcpu_reg_tag(&trap);
+        sbi_memcpy(vcpu->kvm_vcpu_context, &vcpu->guest_context, sizeof(struct cpu_context));
+        sbi_memcpy(vcpu->kvm_vcpu_csr, &vcpu->guest_csr, sizeof(struct vcpu_csr));
+    }
+    sbi_memcpy(vcpu->kvm_vcpu_trap, &trap, sizeof(trap));
     __sbi_hfence_gvma_all();
     __sbi_hfence_vvma_all();
     exit_cmode();
-    // sbi_printf("exit cvm vcpu trap %lx\n", kvm_vcpu_trap);
     return 0;
 }
 /* CVM Ctx Switch ------------------------------------------------------------------------------ */
@@ -2113,12 +2711,14 @@ int cvm_vcpu_exit(struct sbi_trap_regs* host_regs)
 
 int sbi_cvm_create(struct iie_cvm_sbi_params *cvm_sbi_params)
 {
+    unsigned long identity = sbi_cvm_iommu_active() ? host_create_id.cvm_id :
+                             cvm_identity(cvm_sbi_params->vmid_ptr);
 	sbi_printf("[IIE CVM Monitor@%s] cvm_id = %ld\n", __func__,
-		   cvm_identity(cvm_sbi_params->vmid_ptr));
+		   identity);
     int ret=0;
     paddr_t free_page;
 	/* alloc a memory block for cvm struct */
-	struct cvm_node *cvm_node = get_cvm(cvm_identity(cvm_sbi_params->vmid_ptr));
+	struct cvm_node *cvm_node = get_cvm(identity);
     if(!cvm_node)
     {   
         ret = alloc_cvm_node(&cvm_sbi_params->vmid_ptr->vmid, &free_page);
@@ -2135,11 +2735,18 @@ int sbi_cvm_create(struct iie_cvm_sbi_params *cvm_sbi_params)
 
 	/* Initialize cvm structure*/
 	cvm_node->cvm.vmid = cvm_sbi_params->vmid_ptr;
+	cvm_node->cvm.trusted_identity = identity;
+	cvm_node->cvm.imsic_file = 0;
+	cvm_node->cvm.aia_initialized = false;
+	cvm_node->cvm.trusted_vmid = sbi_cvm_iommu_active() ? host_create_id.vmid : cvm_sbi_params->vmid_ptr->vmid;
 	cvm_node->cvm.KeyID = get_keyID(cvm_node->cvm.vmid);
 	cvm_node->cvm.state = INITIALIZING;
     ret = alloc_cvm_vcpu_node(&cvm_sbi_params->vmid_ptr->vmid, &free_page);
-    if(ret)
+    if(ret) {
+        mfree_cvm_page_only((paddr_t)cvm_node,
+                           &cvm_sbi_params->vmid_ptr->vmid);
         return ret;
+    }
 	cvm_node->cvm.cvm_vcpu_list_head = (struct cvm_vcpu_node *)free_page;
 	cvm_node->cvm.cvm_vcpu_list_head->next = NULL;
 	cvm_node->cvm.cmode = 1;
@@ -2159,8 +2766,14 @@ int sbi_cvm_create(struct iie_cvm_sbi_params *cvm_sbi_params)
         paddr_t free_page;
         int ret=0;
         ret = alloc_cvm_node(&cvm_sbi_params->vmid_ptr->vmid, &free_page);
-        if(ret)
+        if(ret) {
+            release_key_id(cvm_node->cvm.KeyID);
+            mfree_cvm_page_only((paddr_t)cvm_node->cvm.cvm_vcpu_list_head,
+                               &cvm_sbi_params->vmid_ptr->vmid);
+            mfree_cvm_page_only((paddr_t)cvm_node,
+                               &cvm_sbi_params->vmid_ptr->vmid);
             return ret;
+        }
 		iie_cvm_list_head = (struct cvm_node *)free_page;
 		iie_cvm_list_head->next = cvm_node;
 	}
@@ -2200,6 +2813,12 @@ int sbi_cvm_create_vcpu(struct iie_cvm_sbi_params * cvm_sbi_params)
     int ret=0;
 	struct kvm_vmid *vmid_ptr = cvm_sbi_params->vmid_ptr;
 	int *vcpu_id_ptr = cvm_sbi_params->vcpu_id_ptr;
+	if (sbi_cvm_iommu_active()) {
+		struct cvm_node *registered = cvm_registered(vmid_ptr);
+		if (*vcpu_id_ptr < 0 || *vcpu_id_ptr >= CVM_MAX_VCPUS ||
+		    !registered || registered->cvm.state != INITIALIZING)
+			return SBI_EDENIED;
+	}
 	struct cvm_node *cvm_node = get_cvm(cvm_identity(vmid_ptr));
 	if(!cvm_node)
 	{
@@ -2209,6 +2828,15 @@ int sbi_cvm_create_vcpu(struct iie_cvm_sbi_params * cvm_sbi_params)
 	struct cvm_vcpu_node *vcpu_list_head = cvm_node->cvm.cvm_vcpu_list_head;
 	struct cvm_vcpu_node *vcpu_node = get_cvm_vcpu_node(cvm_identity(vmid_ptr),
 						       *vcpu_id_ptr);
+	spin_lock(&cove_io_lock);
+	for (int i = 0; i < COVE_IO_MAX_TDIS; i++) {
+		if (!vcpu_node && cove_io_tdi_owned_by(&cove_io_tdis[i], vmid_ptr) &&
+		    cove_io_tdis[i].mmio_hpa) {
+			spin_unlock(&cove_io_lock);
+			return CVM_ERROR;
+		}
+	}
+	spin_unlock(&cove_io_lock);
     if(!vcpu_node)
     {
         paddr_t free_page;
@@ -2230,6 +2858,10 @@ int sbi_cvm_create_vcpu(struct iie_cvm_sbi_params * cvm_sbi_params)
 	sbi_printf("[IIE CVM Monitor@%s] CVM %ld vcpu Node allocation is successful!\n",
 		   __func__, cvm_identity(vmid_ptr));
 	vcpu_node->vcpu.vcpu_id = vcpu_id_ptr;
+	if (sbi_cvm_iommu_active()) {
+		vcpu_node->vcpu.trusted_vcpu_id = *vcpu_id_ptr;
+		vcpu_node->vcpu.vcpu_id = &vcpu_node->vcpu.trusted_vcpu_id;
+	}
 	vcpu_node->vcpu.cvm = &cvm_node->cvm;
 
     // init vcpu ctx
@@ -2254,6 +2886,12 @@ int sbi_cvm_create_vcpu(struct iie_cvm_sbi_params * cvm_sbi_params)
 
 int sbi_cvm_run_vcpu(struct sbi_trap_regs *regs, struct iie_cvm_sbi_params * cvm_sbi_params, uint64_t kvm_vcpu_context, uint64_t kvm_vcpu_csr, uint64_t kvm_trap)
 {   
+	if (sbi_cvm_iommu_active()) {
+		struct cvm_node *node = iie_cvm_list_head ? iie_cvm_list_head->next : NULL;
+		for (; node && node->cvm.vmid != cvm_sbi_params->vmid_ptr; node = node->next) {}
+		if (!node || node->cvm.state != READY || check_in_cmode())
+			return SBI_EDENIED;
+	}
 	struct cvm_vcpu_node *vcpu_node = get_cvm_vcpu_node(
 		cvm_identity(cvm_sbi_params->vmid_ptr),
 		*cvm_sbi_params->vcpu_id_ptr);
@@ -2264,6 +2902,9 @@ int sbi_cvm_run_vcpu(struct sbi_trap_regs *regs, struct iie_cvm_sbi_params * cvm
 	}
 
 	struct cvm_vcpu *vcpu = &vcpu_node->vcpu;
+	if (sbi_cvm_iommu_active() &&
+	    (!vcpu->state_finalized || !vcpu->hart_started ||
+	     !vcpu->imsic.file || vcpu->state_failed)) return SBI_EDENIED;
 	if(!vcpu)
 	{
 		sbi_printf("[IIE CVM Monitor@%s] vcpu is NULL!\n", __func__);
@@ -2284,8 +2925,8 @@ int sbi_cvm_run_vcpu(struct sbi_trap_regs *regs, struct iie_cvm_sbi_params * cvm
 		// sbi_printf("[IIE CVM Monitor@%s] Exception: CVM hasn't been initialized.\n", __func__);
 		// exit(0);
 
-        /* Here should terminate, do not delete!!! */
-		// return 0xff;
+		if (sbi_cvm_iommu_active())
+			return SBI_EDENIED;
 	}
 
     // TODO
@@ -2297,16 +2938,13 @@ int sbi_cvm_run_vcpu(struct sbi_trap_regs *regs, struct iie_cvm_sbi_params * cvm
 		int ret;
 		paddr_t gpa = cvm_sbi_params->gpa;
 		paddr_t hpa = cvm_sbi_params->hpa;
+		if (sbi_cvm_iommu_active() && gpa != vcpu->pending_share_gpa)
+			return SBI_EDENIED;
 
-		if (!cove_io_dma_allowed(cvm->vmid, cvm_sbi_params->device_id,
-					 gpa)) {
-			sbi_printf("[COVE-IO] reject DMA share vmid=%lu device=%lx gpa=%lx\n",
-			   cvm_identity(cvm->vmid),
-				   cvm_sbi_params->device_id, gpa);
-			return CVM_ERROR;
-		}
+        /* CPU sharing is authorized by its registered/accepted window;
+         * device DMA permissions are independently checked on PREPARE_DMA. */
 		ret = add_cvm_share_pages(cvm, gpa, hpa, true, 0);
-		if(ret == CVM_ERROR || ret == TEE_NO_MEMORY){
+		if(ret){
 			sbi_printf("[IIE CVM Monitor@%s] SWIOTLB PF failed!\n", __func__);
 			return ret;
 		}
@@ -2314,9 +2952,7 @@ int sbi_cvm_run_vcpu(struct sbi_trap_regs *regs, struct iie_cvm_sbi_params * cvm
 	}
 
     // enter cvm vcpu ctx
-    cvm_vcpu_enter(regs, vcpu, kvm_vcpu_context, kvm_vcpu_csr, kvm_trap);
-
-	return 0;
+    return cvm_vcpu_enter(regs, vcpu, kvm_vcpu_context, kvm_vcpu_csr, kvm_trap);
 }
 
 int sbi_cvm_create_finalize(struct iie_cvm_sbi_params * cvm_sbi_params)
@@ -2444,6 +3080,8 @@ int sbi_cvm_init_mem_pool(struct iie_cvm_sbi_params * cvm_sbi_params)
 	return 0;
 }
 
+static void covi_forget_file(unsigned long file);
+
 int sbi_cvm_destroy(struct iie_cvm_sbi_params * cvm_sbi_params)
 {
 	struct kvm_vmid *vmid_ptr = cvm_sbi_params->vmid_ptr;
@@ -2457,7 +3095,18 @@ int sbi_cvm_destroy(struct iie_cvm_sbi_params * cvm_sbi_params)
 		return -1;
 	}
 
-	cove_io_destroy_cvm(vmid_ptr);
+	ret = cove_io_destroy_cvm(vmid_ptr);
+	if (ret)
+		return ret;
+    if (sbi_cvm_iommu_active()) {
+        for (struct cvm_vcpu_node *v = cvm_node->cvm.cvm_vcpu_list_head->next;
+             v; v = v->next) {
+            ret = sbi_cvm_iommu_file_release(v->vcpu.imsic.file,
+                                             cvm_node->cvm.trusted_identity);
+            if (ret) return ret;
+            covi_forget_file(v->vcpu.imsic.file);
+        }
+    }
 	ret = cvm_delete_node(cvm_node);
     if(ret)
     {
@@ -2492,28 +3141,47 @@ inline void print_vcpu_list(struct cvm_node *cvm_node)
 
 //bitmap operation
 //todo : here is no check about whether bitmap bit is already set(share condition).
-void set_bitmap(paddr_t page_address){
-    uint64_t index = (page_address - 0x80000000) >> PAGE_SHIFT >> BITMAP_OFFSET;
-    if(index > bitmap_max_ele){
-        sbi_printf("index is %lx, own_max_num is %lx, addr is %lx\n", index, bitmap_max_ele, page_address);
-        sbi_printf("[IIE CVM Monitor@%s] phy addr index > max entry when set bitmap\n", __func__);
-    }
-    uint64_t offset = ((page_address - 0x80000000) >> PAGE_SHIFT) & ((1 << BITMAP_OFFSET) - 1);
+static void update_ram_bitmap(paddr_t page_address, bool protect)
+{
+    uint64_t index, offset, mask;
+
+    if (page_address < 0x80000000UL)
+        sbi_panic("MBMC: RAM address below bitmap coverage\n");
+    index = (page_address - 0x80000000UL) >> PAGE_SHIFT >> BITMAP_OFFSET;
+    offset = ((page_address - 0x80000000UL) >> PAGE_SHIFT) & 63;
+    if (index >= bitmap_max_ele)
+        sbi_panic("MBMC: RAM address outside bitmap coverage\n");
+    mask = 1ULL << offset;
+    if (sbi_cvm_iommu_protect(page_address, protect))
+        sbi_panic("trusted IOMMU: RAM revoke failed; refusing reuse\n");
     spin_lock(&spin_lock_bitmap);
-    uint64_t bits = *(bitmap + index);
-    *(bitmap + index) = bits | (1<<offset);
+    if (protect)
+        bitmap[index] |= mask;
+    else
+        bitmap[index] &= ~mask;
+    sbi_cvm_bitmap_sync();
     spin_unlock(&spin_lock_bitmap);
 }
-void reset_bitmap(paddr_t page_address){
-    uint64_t index = (page_address - 0x80000000) >> PAGE_SHIFT >> BITMAP_OFFSET;
-    uint64_t offset = ((page_address - 0x80000000) >> PAGE_SHIFT) & ((1 << BITMAP_OFFSET) - 1);
-    spin_lock(&spin_lock_bitmap);
-    uint64_t bits = *(bitmap + index);
-    *(bitmap + index) = bits & (~(1<<offset));
-    spin_unlock(&spin_lock_bitmap);
+
+void set_bitmap(paddr_t page_address)
+{
+    update_ram_bitmap(page_address, true);
 }
+
+void reset_bitmap(paddr_t page_address)
+{
+    update_ram_bitmap(page_address, false);
+}
+
 int init_bitmap(struct cvm_list_params* bmp){
     unsigned long i;
+    if (sbi_cvm_bitmap_active())
+        return SBI_EALREADY;
+    if (!bmp->addr || (bmp->addr & (PAGE_SIZE - 1)) || !bmp->ele_num ||
+        bmp->ele_num > (~0UL / sizeof(unsigned long)) ||
+        bmp->page_num > (~0UL / PAGE_SIZE) ||
+        bmp->page_num * PAGE_SIZE < bmp->ele_num * sizeof(unsigned long))
+        return SBI_EINVAL;
     bitmap_max_ele = bmp->ele_num;
     //sbi_printf("bitmap addr is 0x%lx\n", (paddr_t)bmp->addr);
     bitmap = (unsigned long *)bmp->addr;
@@ -2536,7 +3204,7 @@ int init_bitmap(struct cvm_list_params* bmp){
 //todo : there must be another check mechanism for CM share pages.
 int set_page_own_table(paddr_t page_address, paddr_t* vmidp){
     uint64_t index = (page_address - 0x80000000) >> PAGE_SHIFT;
-    if(index > own_max_num){
+    if (!page_own_table || (page_address & (PAGE_SIZE - 1)) || page_address < 0x80000000UL || index >= own_max_num){
             sbi_printf("index is %lx, own_max_num is %lx\n", index, own_max_num);
             sbi_printf("[IIE CVM Monitor@%s] phy addr index > max entry when set page_own_table----------\n", __func__);
             return CVM_ERROR;
@@ -2578,7 +3246,7 @@ int set_page_own_table(paddr_t page_address, paddr_t* vmidp){
 }
 int reset_page_own_table(paddr_t page_address, paddr_t* vmidp){
     uint64_t index = (page_address - 0x80000000) >> PAGE_SHIFT;
-    if(index > own_max_num){
+    if (!page_own_table || (page_address & (PAGE_SIZE - 1)) || page_address < 0x80000000UL || index >= own_max_num){
         sbi_printf("paddr is %lx, index is %lx, own_max_num is %lx\n", page_address, index, own_max_num);
         sbi_printf("[IIE CVM Monitor@%s] phy addr index > max entry when reset page_own_table.\n", __func__);
         return -1;
@@ -2683,8 +3351,9 @@ static void chunk2list(struct sbi_cvm *cvm, struct cvm_mem_chunk_node *chunk_nod
     
     for(i=0; i<512; i++){
         set_bitmap(*(chunk_node->chunk_infor->paddr_list + i));
-        set_page_own_table(*(chunk_node->chunk_infor->paddr_list + i), &cvm->vmid->vmid);
-        if(i>(512-num))
+        if (set_page_own_table(*(chunk_node->chunk_infor->paddr_list + i), &cvm->vmid->vmid))
+            sbi_panic("CVM chunk ownership conflict\n");
+        if(i >= (512-num))
             put_free_page(cvm->free_mem_list_head, *(chunk_node->chunk_infor->paddr_list + i) , cvm);
     }
 }
@@ -2751,36 +3420,52 @@ void put_free_page(struct list_head* free_mem, paddr_t paddr, struct sbi_cvm *cv
 }
 
 //after we create cvm vcpu, we allocate a special page as the root_pt and allocate one chunk. 
-int init_cvm_vcpu_rootptAndChunk(struct iie_cvm_sbi_params *cvm_sbi_params){
-    //allocate root page table.
-    paddr_t free_page;
-    int ret=0;
-    ret = get_free_page(free_root_pt_list_head, NULL, &free_page);
-    if(ret)
-        return ret;
-    if(&cvm_sbi_params->vmid_ptr->vmid == NULL){
-        sbi_printf("[IIE CVM DEBUG@%s] &cvm->vmid->vmid is NULL, hpa os 0x%lx.\n", __func__, free_page);
-        return CVM_ERROR;
-    }
-    for(int i=0; i<4; i++){
-        set_page_own_table(free_page+i*PAGE_SIZE, &cvm_sbi_params->vmid_ptr->vmid);
-    }
-	struct cvm_node *node = get_cvm(cvm_identity(cvm_sbi_params->vmid_ptr));
-    
-    node->cvm.root_pt = free_page;
-    //allocate one chunk to the cvm.
-    struct cvm_mem_chunk_node *chunk_node = (struct cvm_mem_chunk_node *)get_chunk();
-    if(chunk_node == NULL){
-        return TEE_NO_MEMORY;
-    }
-    // sbi_memset((void *)*(chunk_node->chunk_infor->paddr_list), 0, PAGE_SIZE);
-    node->cvm.used_chunk_list_head = (struct cvm_mem_chunk_node *)(*(chunk_node->chunk_infor->paddr_list+1));
-    node->cvm.used_chunk_list_head->next = NULL;
-    node->cvm.free_mem_list_head = (struct list_head *)(*(chunk_node->chunk_infor->paddr_list+2));
-    node->cvm.free_mem_list_head -> next = node->cvm.free_mem_list_head;
-    //we already used first three pages, so chunk2list only have 509 pages.
-    chunk2list(&node->cvm, chunk_node, 509);
-    return 0;
+int init_cvm_vcpu_rootptAndChunk(struct iie_cvm_sbi_params *cvm_sbi_params)
+{
+	struct cvm_mem_chunk_node *chunk_node;
+	struct cvm_node *node;
+	paddr_t free_page;
+	unsigned long claimed;
+	int ret;
+
+	if (!cvm_sbi_params || !cvm_sbi_params->vmid_ptr)
+		return SBI_EINVAL;
+	node = get_cvm(cvm_identity(cvm_sbi_params->vmid_ptr));
+	if (!node)
+		return SBI_EINVAL;
+	if (node->cvm.root_pt)
+		return SBI_EALREADY;
+	ret = get_free_page(free_root_pt_list_head, NULL, &free_page);
+	if (ret)
+		return SBI_ENO_SHMEM;
+	for (claimed = 0; claimed < 4; claimed++) {
+		ret = set_page_own_table(free_page + claimed * PAGE_SIZE,
+					&cvm_sbi_params->vmid_ptr->vmid);
+		if (ret)
+			goto rollback;
+	}
+	chunk_node = get_chunk();
+	if (!chunk_node) {
+		ret = TEE_NO_MEMORY;
+		goto rollback;
+	}
+	sbi_memset((void *)free_page, 0, 4 * PAGE_SIZE);
+	node->cvm.used_chunk_list_head =
+		(void *)chunk_node->chunk_infor->paddr_list[1];
+	node->cvm.used_chunk_list_head->next = NULL;
+	node->cvm.free_mem_list_head =
+		(void *)chunk_node->chunk_infor->paddr_list[2];
+	node->cvm.free_mem_list_head->next = node->cvm.free_mem_list_head;
+	chunk2list(&node->cvm, chunk_node, 509);
+	node->cvm.root_pt = free_page;
+	return 0;
+
+rollback:
+	while (claimed)
+		reset_page_own_table(free_page + --claimed * PAGE_SIZE,
+				     &cvm_sbi_params->vmid_ptr->vmid);
+	put_free_page(free_root_pt_list_head, free_page, NULL);
+	return ret;
 }
 
 static int find_pte(struct sbi_cvm* cvm, paddr_t gpa, pt_entry_t **pte){
@@ -2852,6 +3537,78 @@ static int find_sw_pte(struct sbi_cvm* cvm, paddr_t gpa, pt_entry_t **pte){
         return 1;
 }
 
+/* Simulator direct BAR0 mappings: RW, NX, uncached I/O, never RAM ownership. */
+#define COVE_IO_PTE_IO (1ULL << 62)
+static int cove_io_update_mmio(struct cove_io_tdi_entry *tdi, bool install)
+{
+	struct cvm_node *node;
+	struct sbi_cvm *cvm;
+	struct sbi_tlb_info tlb;
+	pt_entry_t *pte;
+	u64 off;
+	int ret = 0;
+
+	if (!tdi->mmio_hpa || (!install && !tdi->mmio_installed))
+		return 0;
+	if (install && tdi->mmio_revoke_pending)
+		return CVM_ERROR;
+	if (install && tdi->mmio_installed)
+		return 0;
+	if (install && !sbi_cvm_mmio_reserved(tdi, tdi->mmio_hpa,
+					    tdi->mmio_size,
+					    tdi->flags & COVE_IO_TDI_F_MMIO_BITMAP))
+		return CVM_ERROR;
+	node = get_cvm(tdi->vmid);
+	if (!node)
+		return CVM_ERROR;
+	cvm = &node->cvm;
+	spin_lock(&cvm->page_table_lock);
+	if (install) {
+		/* Allocate/check every PTE before making any device page accessible. */
+		for (off = 0; off < tdi->mmio_size; off += PAGE_SIZE) {
+			ret = find_pte(cvm, tdi->mmio_gpa + off, &pte);
+			if (ret)
+				goto unlock;
+		}
+		for (off = 0; off < tdi->mmio_size; off += PAGE_SIZE) {
+			find_pte(cvm, tdi->mmio_gpa + off, &pte);
+			*pte = ((tdi->mmio_hpa + off) >> PAGE_SHIFT << PAGE_PFN_SHIFT) |
+				PTE_V | PTE_R | PTE_W | PTE_U | PTE_A | PTE_D |
+				COVE_IO_PTE_IO;
+		}
+	} else {
+		for (off = 0; off < tdi->mmio_size; off += PAGE_SIZE) {
+			if (!find_sw_pte(cvm, tdi->mmio_gpa + off, &pte))
+				*pte = 0;
+		}
+	}
+	tdi->mmio_installed = install;
+unlock:
+	spin_unlock(&cvm->page_table_lock);
+	if (ret)
+		return ret;
+	/* Include remote harts: a single vCPU can migrate between physical CPUs. */
+	SBI_TLB_INFO_INIT(&tlb, 0, SBI_TLB_FLUSH_ALL, 0, 0,
+			  SBI_TLB_HFENCE_GVMA, current_hartid());
+	ret = sbi_tlb_request(0, -1UL, &tlb);
+	sbi_printf("COVE-IO direct MMIO: tdi=%lu %s gpa=0x%lx hpa=0x%lx size=0x%lx fence=%d\n",
+		   (unsigned long)tdi->tdi_id, install ? "installed" : "revoked",
+		   (unsigned long)tdi->mmio_gpa, (unsigned long)tdi->mmio_hpa,
+		   (unsigned long)tdi->mmio_size, ret);
+	if (ret && install) {
+		cove_io_update_mmio(tdi, false);
+		return ret;
+	}
+	/* Retry a failed revoke fence before releasing the BAR or its bitmap. */
+	if (ret && !install) {
+		tdi->mmio_installed = true;
+		tdi->mmio_revoke_pending = true;
+	} else if (!ret) {
+		tdi->mmio_revoke_pending = false;
+	}
+	return ret;
+}
+
 static bool cove_io_private_page_owned_by(struct sbi_cvm *cvm, paddr_t hpa)
 {
 	unsigned long owner = 0;
@@ -2877,7 +3634,13 @@ static bool cove_io_private_page_owned_by(struct sbi_cvm *cvm, paddr_t hpa)
 	}
 	spin_unlock(&spin_lock_page_own_table);
 
-	return owner == (unsigned long)&cvm->vmid->vmid;
+	/* Shared RAM has an owner record too, but must never pass as private
+     * DMA/report/boot memory. Donation bitmap is Monitor-owned. */
+    if (sbi_cvm_iommu_active() &&
+        (!bitmap || index / 64 >= bitmap_max_ele ||
+         !(bitmap[index / 64] & (1UL << (index % 64)))))
+        return false;
+    return owner == (unsigned long)&cvm->vmid->vmid;
 }
 
 static int cove_io_copy_to_guest(struct cvm_node *cvm_node, u64 gpa,
@@ -2989,13 +3752,18 @@ int malloc_cvm_empty_page_only(paddr_t* vmidp, paddr_t *hpa){
     if(ret){
         return ret;
     }
-    set_page_own_table(free_page, vmidp);
+    if (set_page_own_table(free_page, vmidp)) {
+        put_free_page(cvm_metadata_list_head, free_page, NULL);
+        return SBI_EDENIED;
+    }
     *hpa = free_page;
     return 0;
 }
 
 void mfree_cvm_page_only(paddr_t paddr, paddr_t* vmid_addr){
-    reset_page_own_table(paddr, vmid_addr);
+    if (reset_page_own_table(paddr, vmid_addr))
+        sbi_panic("CVM metadata ownership mismatch");
+    sbi_memset((void *)paddr, 0, PAGE_SIZE);
     put_free_page(cvm_metadata_list_head, paddr, NULL);
 }
 
@@ -3008,30 +3776,76 @@ void mfree_cvm_root_pt(paddr_t paddr, paddr_t* vmid_addr){
 }
 
 int recycle_one_chunk(struct cvm_mem_chunk_node *cursor, struct cvm_mem_chunk_node *chunk_node, paddr_t* vmidp, struct cvm_list_params *ret_sbi_params){
+    struct cvm_mem_chunk_infor *info = chunk_node->chunk_infor;
+    struct cvm_mem_chunk_node *next = chunk_node->next;
+    unsigned long token = info->chunk_infor_vaddr;
+    unsigned int type = info->type;
     int ret;
-    unsigned long i;
-    for(i=0; i<512; i++){
-        ret = reset_page_own_table(*(chunk_node->chunk_infor->paddr_list+i), vmidp);
-        if (ret)
-        return ret;
+
+    /* The node itself lives in paddr_list[0]. Snapshot its control fields
+     * before scrubbing that page; never dereference the zeroed node. */
+    for (unsigned int i = 0; i < 512; i++) {
+        sbi_memset((void *)info->paddr_list[i], 0, PAGE_SIZE);
+        ret = reset_page_own_table(info->paddr_list[i], vmidp);
+        if (ret) return ret;
     }
-    if(chunk_node->chunk_infor->type == 0){
-        cursor->next = chunk_node->next;
+    cursor->next = next;
+    if (type == 0) {
+        chunk_node->chunk_infor = info;
         put_chunk(chunk_node);
-    }else{
-        cursor->next = chunk_node->next;
-        for(i=0;i<512;i++)
-            reset_bitmap(*(chunk_node->chunk_infor->paddr_list+i));
-        reset_bitmap((unsigned long)chunk_node->chunk_infor);
-        *((unsigned long *)ret_sbi_params->addr + ret_sbi_params->ele_num) = (unsigned long)chunk_node->chunk_infor->chunk_infor_vaddr;
-        ret_sbi_params->ele_num += 1;
-        // mfree_cvm_page_only((unsigned long)chunk_node, &metadataPage);
+    } else {
+        if (sbi_cvm_iommu_active()) {
+            host_release_chunk(info);
+        } else {
+            for (unsigned int i = 0; i < 512; i++) reset_bitmap(info->paddr_list[i]);
+            reset_bitmap((unsigned long)info);
+        }
+        ((unsigned long *)ret_sbi_params->addr)[ret_sbi_params->ele_num++] = token;
     }
     return 0;
 }
 
 //reset the pageownership table, then recycle the used chunk.
 int mfree_cvm_page(struct sbi_cvm *cvm, struct cvm_list_params *ret_sbi_params){
+    if (sbi_cvm_iommu_active()) {
+        int ret = cove_io_destroy_cvm(cvm->vmid);
+        if (ret) return ret; /* failed drain retains every page and object */
+        cvm->state = RECLAIMED;
+        __sbi_hfence_gvma_all();
+        __sbi_hfence_vvma_all();
+        /* Only accepted windows can own public shared leaves. */
+        for (unsigned int w = 0; w < cvm->shared_count; w++)
+            cvm_shared_revoke(cvm, &cvm->shared[w]);
+        struct cvm_mem_chunk_node *c = cvm->used_chunk_list_head->next;
+        ret_sbi_params->ele_num = 0;
+        cvm->free_mem_list_head = NULL;
+        cvm->used_chunk_list_head = NULL;
+        while (c) {
+            struct cvm_mem_chunk_node *next = c->next;
+            struct cvm_mem_chunk_infor *info = c->chunk_infor;
+            unsigned long token = info->chunk_infor_vaddr;
+            unsigned long node_pa = info->paddr_list[0];
+            for (unsigned int i = 0; i < 512; i++) {
+                unsigned long pa = info->paddr_list[i];
+                sbi_memset((void *)pa, 0, PAGE_SIZE);
+                if (reset_page_own_table(pa, &cvm->vmid->vmid))
+                    sbi_panic("CVM private ownership mismatch");
+            }
+            if (info->type) {
+                host_release_chunk(info);
+                ((unsigned long *)ret_sbi_params->addr)[ret_sbi_params->ele_num++] = token;
+            } else {
+                struct cvm_mem_chunk_node *free_node = (void *)node_pa;
+                free_node->chunk_infor = info;
+                put_chunk(free_node);
+            }
+            c = next;
+        }
+        mfree_cvm_root_pt(cvm->root_pt, &cvm->vmid->vmid);
+        cvm->root_pt = 0;
+        cvm->shared_count = 0;
+        return 0;
+    }
     int ret=0;
     paddr_t root_pt = cvm->root_pt;
     paddr_t* vmidp = &cvm->vmid->vmid;
@@ -3042,6 +3856,16 @@ int mfree_cvm_page(struct sbi_cvm *cvm, struct cvm_list_params *ret_sbi_params){
     unsigned long swiotlb_addr = cvm->swiotlb_addr;
     unsigned long swiotlb_size = cvm->swiotlb_size;
 
+    /* Host recycle requests cannot outlive trusted device DMA grants. */
+    if (sbi_cvm_iommu_active()) {
+        ret = cove_io_destroy_cvm(cvm->vmid);
+        if (ret) return ret;
+    }
+    if (sbi_cvm_iommu_active()) {
+        cvm->state = RECLAIMED;
+        __sbi_hfence_gvma_all();
+        __sbi_hfence_vvma_all();
+    }
     ret_sbi_params->ele_num = 0;
     for(i=swiotlb_addr; i<swiotlb_addr+swiotlb_size; i += PAGE_SIZE){
         ret = find_sw_pte(cvm, i, &sw_pte);
@@ -3102,7 +3926,7 @@ static int init_cvm_memorypool(struct cvm_list_params* chunk_infor_list){
     unsigned long i,j;
     //the first chunk is used for allocating metadata of cvm.
     struct cvm_mem_chunk_infor *first_chunk_infor = (struct cvm_mem_chunk_infor *)*((unsigned long *)chunk_infor_list->addr);
-    set_bitmap((unsigned long)first_chunk_infor);
+    if (!sbi_cvm_iommu_active()) set_bitmap((unsigned long)first_chunk_infor);
     for(i=0; i<512; i++){
         set_bitmap((unsigned long)*((unsigned long *)first_chunk_infor->paddr_list+i));
         if(i==0){
@@ -3125,7 +3949,7 @@ static int init_cvm_memorypool(struct cvm_list_params* chunk_infor_list){
     struct cvm_mem_chunk_infor *remaining_chunk_infor;
     for(i=1; i<chunk_infor_list->ele_num; i++){
         remaining_chunk_infor = (struct cvm_mem_chunk_infor *)*((unsigned long *)chunk_infor_list->addr+i);
-        set_bitmap((unsigned long)remaining_chunk_infor);
+        if (!sbi_cvm_iommu_active()) set_bitmap((unsigned long)remaining_chunk_infor);
         struct cvm_mem_chunk_node *chunk_node = (struct cvm_mem_chunk_node *)*(remaining_chunk_infor->paddr_list);
         chunk_node->chunk_infor = remaining_chunk_infor;
         put_chunk(chunk_node);
@@ -3177,16 +4001,22 @@ int convert_cvm_pages(struct cvm_list_params* chunk_infor_list, struct cvm_list_
 
     //init root_pt_list
     ret = init_root_pt_list(root_pt_list);
-    return ret;
+    if (ret)
+        return ret;
+    return sbi_cvm_bitmap_init((unsigned long)bitmap);
 }
 
 //used for swiotlb, create shared memory between cvm and hypervisor.
 int add_cvm_share_pages(struct sbi_cvm* cvm, paddr_t gpa, paddr_t hpa, bool swiotlb, unsigned long KeyID){
     int ret=0;
     pt_entry_t *pte;
-    if(hpa == 0){
+    /* Shared RAM cannot alias a BAR, even before that BAR is reserved. */
+    if (hpa < SBI_CVM_MMIO_END ||
+        ((hpa | gpa) & (PAGE_SIZE - 1)))
         return CVM_ERROR;
-    }
+    if (!cvm_shared_contains(cvm, gpa, true) ||
+        (sbi_cvm_iommu_active() &&
+         !sbi_cvm_iommu_host_buffer(hpa, PAGE_SIZE))) return SBI_EDENIED;
     //we don't set keyid, bitmap,  because the page is shared between host and guest;
     spin_lock(&cvm->page_table_lock);
     ret = find_pte(cvm, gpa, &pte);
@@ -3200,11 +4030,12 @@ int add_cvm_share_pages(struct sbi_cvm* cvm, paddr_t gpa, paddr_t hpa, bool swio
 
     //TODO: KeyID of swiotlb pages should be hypervisor's KeyID? Is it 0?
     uint64_t keyid_ppn = ppn;
-    *pte = (keyid_ppn << PAGE_PFN_SHIFT) | PTE_X | PTE_U | PTE_R | PTE_W | PTE_A | PTE_D | PTE_V;
-    if(&cvm->vmid->vmid == NULL){
-        sbi_printf("[IIE CVM DEBUG@%s] &cvm->vmid->vmid is NULL, hpa os 0x%lx.\n", __func__, hpa);
+    if (sbi_cvm_iommu_active() && set_page_own_table(hpa, &cvm->vmid->vmid)) {
+        spin_unlock(&cvm->page_table_lock);
+        return SBI_EDENIED;
     }
-    set_page_own_table(hpa, &cvm->vmid->vmid);
+    *pte = (keyid_ppn << PAGE_PFN_SHIFT) | PTE_U | PTE_R | PTE_W | PTE_A | PTE_D | PTE_V;
+    if (!sbi_cvm_iommu_active()) set_page_own_table(hpa, &cvm->vmid->vmid);
     spin_unlock(&cvm->page_table_lock);
     
     return 0;
@@ -3213,6 +4044,8 @@ int add_cvm_share_pages(struct sbi_cvm* cvm, paddr_t gpa, paddr_t hpa, bool swio
 int load_file(struct iie_cvm_sbi_params_load *load_file){
     int ret=0;
 	struct cvm_node *cvm_node = get_cvm(cvm_identity(load_file->vmid_ptr));
+    if (sbi_cvm_iommu_active() &&
+        (!cvm_node || cvm_node->cvm.state != INITIALIZING)) return SBI_EDENIED;
     if(!cvm_node){
         sbi_printf("function %s get_cvm by id 0x%lx failed!\n", __func__, load_file->vmid_ptr->vmid);
         return CVM_ERROR;
@@ -3244,6 +4077,8 @@ int retry_load_after_refill(struct iie_cvm_sbi_params_load *load_file){
     // sbi_printf("retry_load_after_refill here\n");
     int ret=0;
 	struct cvm_node *cvm_node = get_cvm(cvm_identity(load_file->vmid_ptr));
+    if (sbi_cvm_iommu_active() &&
+        (!cvm_node || cvm_node->cvm.state != INITIALIZING)) return SBI_EDENIED;
     if(!cvm_node){
         sbi_printf("function %s get_cvm by id 0x%lx failed!\n", __func__, load_file->vmid_ptr->vmid);
         return CVM_ERROR;
@@ -3289,10 +4124,26 @@ int init_swiotlb_params(struct iie_cvm_sbi_params_swiotlb *swiotlb, struct kvm_v
         return CVM_ERROR;
     }
 	struct cvm_node *cvm_node = get_cvm(cvm_identity(vmid_ptr));
+    if (sbi_cvm_iommu_active() &&
+        (!cvm_node || cvm_node->cvm.state != INITIALIZING)) return SBI_EDENIED;
     if(!cvm_node){
 	sbi_printf("function %s get_cvm by id 0x%lx failed!\n", __func__,
 		   cvm_identity(vmid_ptr));
         return CVM_ERROR;
+    }
+    if (sbi_cvm_iommu_active()) {
+        struct sbi_cvm *cvm = &cvm_node->cvm;
+        if (!swiotlb->size || ((swiotlb->addr | swiotlb->size) & (PAGE_SIZE - 1)) ||
+            swiotlb->addr < 0x80000000UL || swiotlb->addr >= 0xc0000000UL ||
+            swiotlb->size > 0xc0000000UL - swiotlb->addr ||
+            cvm->shared_count == CVM_SHARED_WINDOWS) return SBI_EINVAL;
+        for (unsigned int i = 0; i < cvm->shared_count; i++)
+            if (swiotlb->addr < cvm->shared[i].base + cvm->shared[i].size &&
+                cvm->shared[i].base < swiotlb->addr + swiotlb->size) return SBI_EDENIED;
+        cvm->shared[cvm->shared_count++] = (struct cvm_shared_window) {
+            .base = swiotlb->addr, .size = swiotlb->size, .accepted = false,
+        };
+        return 0;
     }
     if (!cvm_node->cvm.swiotlb_size) {
         cvm_node->cvm.swiotlb_addr = swiotlb->addr;
@@ -3319,7 +4170,7 @@ int refill_memory_pool(struct cvm_list_params *chunk_infor_list){
     struct cvm_mem_chunk_infor *chunk_infor;
     for(i=0; i<chunk_infor_list->ele_num; i++){
         chunk_infor = (struct cvm_mem_chunk_infor *)*((unsigned long *)chunk_infor_list->addr+i);
-        set_bitmap((unsigned long)chunk_infor);
+        if (!sbi_cvm_iommu_active()) set_bitmap((unsigned long)chunk_infor);
         struct cvm_mem_chunk_node *chunk_node = (struct cvm_mem_chunk_node *)*(chunk_infor->paddr_list);
         chunk_node->chunk_infor = chunk_infor;
         put_chunk(chunk_node);
@@ -3345,14 +4196,45 @@ int recycle_memory(struct iie_cvm_sbi_params *cvm_sbi_params, struct cvm_list_pa
 }
 
 /*-------------------------------CVM trap handler----------------------------------------*/
+static int cvm_private_redirect(struct sbi_trap_regs *regs, unsigned long cause,
+				unsigned long value)
+{
+	unsigned long status = csr_read(CSR_VSSTATUS);
+	unsigned long previous = (regs->mstatus & MSTATUS_MPP) >> MSTATUS_MPP_SHIFT;
+
+	status &= ~(MSTATUS_SPP | MSTATUS_SPIE);
+	if (previous == PRV_S) status |= MSTATUS_SPP;
+	if (status & MSTATUS_SIE) status |= MSTATUS_SPIE;
+	status &= ~MSTATUS_SIE;
+	csr_write(CSR_VSSTATUS, status);
+	csr_write(CSR_VSEPC, regs->mepc);
+	csr_write(CSR_VSCAUSE, cause);
+	csr_write(CSR_VSTVAL, value);
+	regs->mepc = csr_read(CSR_VSTVEC) & ~3UL;
+	regs->mstatus = (regs->mstatus & ~MSTATUS_MPP) |
+		(PRV_S << MSTATUS_MPP_SHIFT) | MSTATUS_MPV;
+	return 0;
+}
+
 int cvm_trap_redirect_to_hs(struct sbi_trap_regs* host_regs)
 {
+    if (sbi_cvm_iommu_active())
+        return cvm_private_redirect(host_regs, csr_read(CSR_MCAUSE), csr_read(CSR_MTVAL));
     // 传递trap 同步上下文
     return cvm_vcpu_exit(host_regs);
 }
 
 int cvm_trap_virtual_inst(struct sbi_trap_regs* host_regs)
 {
+    if (sbi_cvm_iommu_active()) {
+        unsigned long insn = csr_read(CSR_MTVAL);
+        struct sbi_trap_info trap = {0};
+        if (!insn) insn = sbi_get_insn(host_regs->mepc, &trap);
+        if (trap.cause)
+            return cvm_private_redirect(host_regs, CAUSE_FETCH_PAGE_FAULT, host_regs->mepc);
+        if (insn != 0x10500073 && insn != 0x00d00073)
+            return cvm_private_redirect(host_regs, CAUSE_ILLEGAL_INSTRUCTION, insn);
+    }
     // TODO 读取虚拟机中指令并保存到csr mtval, 目前没看到需要读CVM中指令的需求
     // 传递trap 同步上下文
     return cvm_vcpu_exit(host_regs);
@@ -3383,7 +4265,7 @@ int cvm_trap_gstage_page_fault(struct sbi_trap_regs* host_regs)
         cvm_vcpu_exit(host_regs);
         return ret;
     }
-    else if(addr >= swiotlb_addr && addr < swiotlb_addr + swiotlb_size){
+    else if(cvm_shared_contains(&cvm_node->cvm, addr, true)){
         uint32_t vmid = get_cvm_id();
         uint32_t vcpuid = get_cvm_vcpu_id();
         struct cvm_vcpu_node *vcpu = get_cvm_vcpu_node(vmid, vcpuid);
@@ -3392,6 +4274,13 @@ int cvm_trap_gstage_page_fault(struct sbi_trap_regs* host_regs)
         return ret;
     }
     else{
+        if (sbi_cvm_iommu_active() &&
+            (addr >= 0xc0000000UL || cvm_shared_contains(&cvm_node->cvm, addr, false))) {
+            unsigned long cause = csr_read(CSR_MCAUSE);
+            unsigned long access = cause == CAUSE_FETCH_GUEST_PAGE_FAULT ? CAUSE_FETCH_ACCESS :
+                cause == CAUSE_STORE_GUEST_PAGE_FAULT ? CAUSE_STORE_ACCESS : CAUSE_LOAD_ACCESS;
+            return cvm_private_redirect(host_regs, access, csr_read(CSR_MTVAL));
+        }
 	paddr_t hpa;
 	struct cvm_node *cvm = get_cvm(get_cvm_id());
         ret = malloc_cvm_empty_page(&cvm->cvm, addr, &hpa);
@@ -3425,16 +4314,65 @@ int cvm_trap_gstage_page_fault(struct sbi_trap_regs* host_regs)
     // sbi_printf("CSR_HTINST %lx\r\n", csr_read(CSR_HTINST));
 }
 
+static int cvm_covi_guest(struct sbi_trap_regs *r, bool *handled);
+
 int cvm_trap_sbi_ecall(struct sbi_trap_regs* host_regs)
 {
 	unsigned long value = 0;
 	int ret;
+
+	bool handled = false;
+	if (sbi_cvm_iommu_active()) {
+		ret = cvm_covi_guest(host_regs, &handled);
+		if (handled) return ret;
+	}
+
+	if (sbi_cvm_iommu_active() && host_regs->a7 != SBI_EXT_COVG) {
+		if ((host_regs->a7 == SBI_EXT_TIME && !host_regs->a6) ||
+		    host_regs->a7 == 0) {
+			/* TIME is a Guest-authorized update. Host scheduling still sees
+			 * the deadline, but no arbitrary Host VSTIMECMP is imported.
+			 */
+			if (sbi_hart_has_extension(sbi_scratch_thishart_ptr(), SBI_HART_EXT_SSTC))
+				csr_write(CSR_VSTIMECMP, host_regs->a0);
+			csr_clear(CSR_HVIP, MIP_VSTIP);
+		}
+		if (host_regs->a7 == SBI_EXT_BASE &&
+		    host_regs->a6 == SBI_EXT_BASE_PROBE_EXT) {
+			unsigned long ext = host_regs->a0;
+			/* Do not advertise pointer-based, multi-hart, or unimplemented
+			 * SBI services through an untrusted Host discovery response.
+			 */
+			host_regs->a0 = SBI_SUCCESS;
+			host_regs->a1 = ext == SBI_EXT_COVG || ext == SBI_EXT_BASE ||
+				ext == SBI_EXT_TIME || ext == SBI_EXT_IPI ||
+			ext == SBI_EXT_HSM || ext == SBI_EXT_RFENCE ||
+				ext == SBI_EXT_SRST || ext <= 2 || ext == 8;
+			host_regs->mepc += 4;
+			return 0;
+		}
+		if (sbi_cvm_state_sbi_args(host_regs->a7, host_regs->a6) < 0) {
+			host_regs->a0 = SBI_ENOTSUPP;
+			host_regs->a1 = 0;
+			host_regs->mepc += 4;
+			return 0;
+		}
+	}
 
 	/* COVG is consumed inside the monitor, without exposing it to the host. */
 	if (host_regs->a7 == SBI_EXT_COVG) {
 		ret = cove_io_covg_ecall(get_cvm_id(), host_regs->a6,
 					 host_regs->a0, host_regs->a1,
 					 host_regs->a2, host_regs->a3, &value);
+		if (host_regs->a6 == SBI_EXT_COVG_STOP_INTERFACE &&
+		    (ret == SBI_SUCCESS || ret == SBI_ERR_ALREADY_STOPPED)) {
+			/* Preserve a0=ID; KVM completes synchronous IOMMU revocation. */
+			host_regs->a1 = ret;
+			return cvm_vcpu_exit(host_regs);
+		}
+		if (host_regs->a6 == SBI_EXT_COVG_SIM_PREPARE_DMA &&
+		    ret == SBI_SUCCESS)
+			return cvm_vcpu_exit(host_regs);
 		host_regs->a0 = ret;
 		host_regs->a1 = value;
 		host_regs->mepc += 4;
@@ -3452,4 +4390,51 @@ int cvm_trap_sbi_ecall(struct sbi_trap_regs* host_regs)
 	}
 
 	return cvm_vcpu_exit(host_regs);
+}
+
+/* Fixed single-hart IMSIC target. Binding alone grants no device DMA: the
+ * context remains invalid until Guest START. No MRIF or Host PTE pointer. */
+int cove_io_trusted_msi(unsigned long rid, unsigned long addr,
+                       unsigned long target, unsigned long iid)
+{
+ int ret = SBI_EDENIED;
+ if (rid >= CVM_IOMMU_MAX_RIDS) return SBI_EINVAL;
+ spin_lock(&cove_io_lock);
+ for (unsigned int i = 0; i < COVE_IO_MAX_TDIS; i++) {
+  struct cove_io_tdi_entry *tdi = &cove_io_tdis[i];
+  if (!tdi->valid || !cove_io_uses_trusted_iommu(tdi->device_id) ||
+      (tdi->device_id & 0xffff) != rid || !cove_io_tdi_has_owner(tdi)) continue;
+  struct cvm_node *owner = get_cvm(tdi->vmid);
+  if (!owner) break;
+  if (!target) { ret = sbi_cvm_iommu_msi_install(rid, addr, 0, 0); break; }
+  if (tdi->state != COVE_IO_TDI_STATE_BOUND &&
+      tdi->state != COVE_IO_TDI_STATE_STARTED) break;
+  for (unsigned int n = 0; n < tdi->irq_range_count; n++) {
+   struct cvm_vcpu_node *v = get_cvm_vcpu_node(tdi->vmid,
+                                               tdi->irq_ranges[n].vcpu_id);
+   if (tdi->irq_ranges[n].irq_iid == iid && v && v->vcpu.imsic.file &&
+       target == 0x28000000UL + v->vcpu.imsic.file * PAGE_SIZE) {
+    ret = sbi_cvm_iommu_set_owner(rid, v->vcpu.imsic.file, tdi->vmid);
+    if (!ret) ret = sbi_cvm_iommu_msi_install(rid, addr, target, iid);
+    break;
+   }
+  }
+  break;
+ }
+ spin_unlock(&cove_io_lock);
+ return ret;
+}
+
+#include "sbi_cvm_host.c.inc"
+
+#include "sbi_cvm_covi.c.inc"
+
+/* Legacy adapter; new callers use COVI. */
+int cove_io_bind_imsic(unsigned long vmid_ptr, unsigned long file,
+                       unsigned long gpa, unsigned long hart)
+{
+ struct cvm_node *n = cvm_registered((void *)vmid_ptr);
+ struct cvm_vcpu_node *v = n ? get_cvm_vcpu_node(n->cvm.trusted_identity, 0) : NULL;
+ if (!v || hart || !file || file >= 8 || v->vcpu.imsic.gpa != gpa) return SBI_EDENIED;
+ return sbi_cvm_covi_ecall(4, n->cvm.trusted_identity, 0, 1UL << file);
 }

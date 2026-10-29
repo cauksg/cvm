@@ -37,6 +37,9 @@ struct riscv_iommu_device {
 	/* iommu core interface */
 	struct iommu_device iommu;
 
+	bool cove_trusted;
+	int cove_trusted_error;
+
 	/* iommu hardware */
 	struct device *dev;
 
@@ -72,6 +75,9 @@ struct riscv_iommu_device {
 	bool cove_io_isolated_msi;
 };
 
+int riscv_iommu_trusted_call(unsigned long op, unsigned long a, unsigned long b,
+			    unsigned long c, unsigned long d, unsigned long *value);
+int riscv_iommu_trusted_probe(struct riscv_iommu_device *iommu);
 int riscv_iommu_init(struct riscv_iommu_device *iommu);
 void riscv_iommu_remove(struct riscv_iommu_device *iommu);
 void riscv_iommu_disable(struct riscv_iommu_device *iommu);

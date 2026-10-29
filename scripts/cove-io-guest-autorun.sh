@@ -220,12 +220,12 @@ run_edu_msi()
 
 	edu_msi_write_message "$config" "$msi_cap" "$addr_lo" "$addr_hi" "$data"
 	edu_msi_set_enabled "$config" "$msi_cap" 1
-	edu_msi_trigger_irq "$bdf" || true
+	edu_msi_trigger_irq "$bdf" || fail 'EDU interrupt request/acknowledgement failed'
 
 	if [ "$mode" = "retarget" ]; then
 		edu_msi_write_message "$config" "$msi_cap" "$addr1_lo" "$addr1_hi" "$data1"
 		edu_msi_set_enabled "$config" "$msi_cap" 1
-		edu_msi_trigger_irq "$bdf" || true
+		edu_msi_trigger_irq "$bdf" || fail 'EDU retarget request/acknowledgement failed'
 		echo "COVE-IO guest edu-msi-retarget: retargeted MSI for $bdf addr=0x$(printf '%x' "$addr1_hi")$(printf '%08x' "$addr1_lo") data=$data1"
 	fi
 
@@ -268,16 +268,22 @@ edu_msi_set_enabled()
 
 edu_msi_trigger_irq()
 {
-	bdf="$1"
+	local bdf="$1" bar0 status
 
-	command -v devmem >/dev/null 2>&1 || return 0
+	command -v devmem >/dev/null 2>&1 || return 1
 	bar0="$(resource_bar_start "$bdf" 0)"
 	case "$bar0" in
 	0x*) ;;
-	*) return 0 ;;
+	*) return 1 ;;
 	esac
-	devmem "$(( bar0 + 0x60 ))" 32 1 >/dev/null
-	devmem "$(( bar0 + 0x64 ))" 32 1 >/dev/null
+	[ "$((bar0))" -ne 0 ] || return 1
+	devmem "$(( bar0 + 0x60 ))" 32 1 >/dev/null || return 1
+	status=$(devmem "$(( bar0 + 0x24 ))" 32) || return 1
+	[ "$((status & 1))" -eq 1 ] || return 1
+	devmem "$(( bar0 + 0x64 ))" 32 1 >/dev/null || return 1
+	status=$(devmem "$(( bar0 + 0x24 ))" 32) || return 1
+	[ "$((status & 1))" -eq 0 ] || return 1
+	echo 'COVE-IO guest edu-msi: request-ack verified; irq-handler delivery not verified'
 }
 
 run_edu_pri()
@@ -475,12 +481,135 @@ edu_pri_wait()
 	fail "EDU PRI timed out expect=$expect status=$status error=$err completed=$completed success=$success invalid=$invalid errors=$errors"
 }
 
+run_edu_stop_dma()
+{
+	bdf="$(find_edu_device)"
+	bar0="$(resource_bar_start "$bdf" 0)"
+	config="/sys/bus/pci/devices/$bdf/config"
+	command="$(read_u16 "$config" 4)"
+	write_u16 "$config" 4 "$((command | 6))"
+	target=0x82d00000
+	devmem "$target" 64 0x1020304050607080 >/dev/null
+	devmem "$((bar0 + 0x80))" 64 0x40000 >/dev/null
+	devmem "$((bar0 + 0x88))" 64 "$target" >/dev/null
+	devmem "$((bar0 + 0x90))" 64 8 >/dev/null
+	devmem "$((bar0 + 0x98))" 64 0x103 >/dev/null
+	sleep 1
+	value="$(devmem "$target" 64)"
+	[ "$((value))" -eq 0 ] || fail "EDU DMA positive control value=$value"
+	echo 'CHECK: EDU DMA positive control completed'
+	devmem "$((bar0 + 0x80))" 64 0x40000 >/dev/null
+	devmem "$((bar0 + 0x88))" 64 "$target" >/dev/null
+	devmem "$((bar0 + 0x90))" 64 8 >/dev/null
+	devmem "$((bar0 + 0x98))" 64 3 >/dev/null
+	echo 'COVE-IO guest edu-stop-dma: completed'
+}
+
+run_nic_interface()
+{
+    local nic_path="$1" iface="$2" subnet="$3" i rx_before tx_before size rx tx irq
+    ifconfig "$iface" "10.0.$subnet.15" netmask 255.255.255.0 up
+    i=0
+    while [ "$(cat "/sys/class/net/$iface/carrier")" != 1 ]; do
+        [ "$i" -lt 20 ] || fail "NIC link did not come up: $iface"
+        sleep 1; i=$((i + 1))
+    done
+    rx_before="$(cat "/sys/class/net/$iface/statistics/rx_packets")"
+    tx_before="$(cat "/sys/class/net/$iface/statistics/tx_packets")"
+    for size in 56 512 1472; do
+        ping -I "$iface" -c 4 -W 5 -s "$size" "10.0.$subnet.2" > /tmp/nic-ping.log 2>&1 || {
+            cat /tmp/nic-ping.log; fail "NIC ICMP roundtrip interface=$iface size=$size"
+        }
+        cat /tmp/nic-ping.log
+        grep -Fq ' 0% packet loss' /tmp/nic-ping.log || fail "NIC packet loss: $iface"
+    done
+    rx="$(cat "/sys/class/net/$iface/statistics/rx_packets")"
+    tx="$(cat "/sys/class/net/$iface/statistics/tx_packets")"
+    [ "$((rx - rx_before))" -ge 12 ] || fail "NIC RX interface=$iface packets=$rx"
+    [ "$((tx - tx_before))" -ge 12 ] || fail "NIC TX interface=$iface packets=$tx"
+    set -- "$nic_path"/msi_irqs/*
+    [ "$#" -eq 1 ] && [ -f "$1" ] && [ "$(cat "$1")" = msi ] || fail "NIC did not use single MSI: $iface"
+    irq=$(basename "$1")
+    awk -v irq="$irq:" '$1 == irq { for (i=2; i<=NF && $i ~ /^[0-9]+$/; i++) total += $i } END { exit !(total > 0) }' /proc/interrupts ||
+        fail "NIC MSI handler count is zero: $iface IRQ=$irq"
+    if [ "$(cmdline_value cove_io_irq_split || true)" = 1 ]; then
+        local cpu=$((subnet % 2)) column=$((subnet % 2 + 2))
+        [ "$(cat "/sys/devices/system/cpu/online")" = 0-1 ] || fail 'expected two online CPUs'
+        [ "$(cat "/proc/irq/$irq/effective_affinity_list")" = "$cpu" ] || fail "wrong MSI CPU: $iface"
+        awk -v irq="$irq:" -v col="$column" '$1 == irq { found=1; good=($col > 0 && $(5-col) == 0) } END { exit !(found && good) }' /proc/interrupts ||
+            fail "NIC MSI did not execute exclusively on CPU$cpu: $iface"
+        echo "COVE-IO NIC: targeted MSI verified interface=$iface irq=$irq cpu=$cpu"
+    fi
+    echo "COVE-IO NIC: packet roundtrip verified interface=$iface bdf=$(basename "$nic_path") mac=$(cat "/sys/class/net/$iface/address") irq=$irq rx=$rx tx=$tx sizes=56,512,1472"
+    ifconfig "$iface" down
+}
+
+run_nic_direct()
+{
+    local expected="$1" count=0 path net iface mac subnet
+    dmesg | grep -Fq 'COVE-IO NIC: private DMA enabled' || fail 'no private DMA backend'
+    for path in /sys/bus/pci/devices/*; do
+        [ "$(cat "$path/vendor")" = 0x8086 ] || continue
+        [ "$(cat "$path/device")" = 0x10d3 ] || continue
+        [ "$(basename "$(readlink "$path/driver")")" = e1000e ] || fail '82574L has no e1000e driver'
+        iface=
+        for net in "$path"/net/*; do [ -d "$net" ] && iface="$(basename "$net")"; done
+        [ -n "$iface" ] || fail 'e1000e has no network interface'
+        mac=$(cat "/sys/class/net/$iface/address")
+        subnet=2
+        if [ "$expected" -eq 2 ]; then
+            case "$mac" in
+                52:54:00:12:34:56) subnet=2 ;;
+                52:54:00:12:34:57) subnet=3 ;;
+                52:54:00:12:34:58) subnet=4 ;;
+                52:54:00:12:34:59) subnet=5 ;;
+                *) fail "unexpected NIC MAC: $mac" ;;
+            esac
+        fi
+        dmesg | grep -F "e1000e $(basename "$path"): COVE-IO NIC: private DMA enabled TDI=" >/dev/null ||
+            fail "missing per-device private DMA TDI: $iface"
+        run_nic_interface "$path" "$iface" "$subnet"
+        count=$((count + 1))
+    done
+    [ "$count" -eq "$expected" ] || fail "NIC count expected=$expected actual=$count"
+    echo "COVE-IO NIC: all interfaces verified count=$count"
+}
+
 TEST="$(cmdline_value cove_io_guest_test || true)"
 [ -n "$TEST" ] || exit 0
 POWEROFF="$(cmdline_value cove_io_guest_poweroff || printf '1\n')"
 
 echo "COVE-IO guest autorun: test=$TEST"
+HOLD="$(cmdline_value cove_io_guest_hold || printf '0\n')"
+case "$HOLD" in ''|*[!0-9]*) fail 'invalid cove_io_guest_hold' ;; esac
+[ "$HOLD" -le 240 ] || fail 'cove_io_guest_hold too large'
+if [ "$HOLD" -gt 0 ]; then
+    echo "COVE-IO guest hold: ready seconds=$HOLD"
+    sleep "$HOLD"
+fi
 case "$TEST" in
+nic-pair-direct)
+    run_nic_direct 2
+    ;;
+multi-direct)
+    dmesg | grep -Fq 'COVE-IO EDU test: PASS direct BAR private DMA IRQ and Guest STOP' ||
+        fail 'second device EDU did not complete private DMA/MSI/STOP'
+    run_nic_direct 1
+    echo 'COVE-IO multi: NIC DMA/MSI survives independent EDU STOP'
+    ;;
+nic-direct)
+	run_nic_direct 1
+	;;
+edu-direct)
+	dmesg | grep -Fq 'COVE-IO EDU test: PASS direct BAR private DMA IRQ and Guest STOP' ||
+		fail 'EDU direct kernel test did not complete'
+	if dmesg | grep -Fq 'COVE-IO EDU test: FAIL'; then
+		fail 'EDU direct kernel test failed'
+	fi
+	;;
+edu-stop-dma)
+	run_edu_stop_dma
+	;;
 covg|covg-abi)
 	run_covg
 	;;
@@ -508,5 +637,7 @@ esac
 echo "COVE-IO guest autorun: PASS $TEST"
 
 if [ "$POWEROFF" != "0" ]; then
+	# Allow the emulated UART to drain completion and teardown messages.
+	sleep 1
 	poweroff -f || reboot -f || true
 fi

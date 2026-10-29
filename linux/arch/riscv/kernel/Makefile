@@ -68,6 +68,9 @@ obj-y	+= riscv_ksyms.o
 obj-y	+= stacktrace.o
 obj-y	+= cacheinfo.o
 obj-$(CONFIG_COVE_IO_GUEST) += cove_io_guest.o
+obj-$(CONFIG_COVE_IO_GUEST) += cvm_cpu_state_test.o cvm_cpu_state_probe.o
+obj-$(CONFIG_COVE_IO_EDU_TEST) += cove_io_edu_test.o
+obj-$(CONFIG_PCI) += cove_io_pci.o
 obj-y	+= patch.o
 obj-y	+= vendor_extensions.o
 obj-y	+= vendor_extensions/
@@ -129,3 +132,5 @@ obj-$(CONFIG_ACPI_NUMA)	+= acpi_numa.o
 
 obj-$(CONFIG_GENERIC_CPU_VULNERABILITIES) += bugs.o
 obj-$(CONFIG_RISCV_USER_CFI) += usercfi.o
+
+obj-$(CONFIG_COVE_IO_NIC) += cove_io_nic.o

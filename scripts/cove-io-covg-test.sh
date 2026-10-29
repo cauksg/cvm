@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0
 
 set -eu
+. "$(dirname "$0")/cove-io-test-lib.sh"
 
 WAIT_SECS="${WAIT_SECS:-120}"
 RUN_LOG="${RUN_LOG:-/tmp/lkvm-covg-selftest.log}"
@@ -20,6 +21,7 @@ busybox timeout -s KILL "$WAIT_SECS" ./run-guest-os.sh >"$RUN_LOG" 2>&1 ||
 	fail "nested COVG guest test failed"
 }
 
+cove_io_check_guest_log "$RUN_LOG" covg || fail 'Guest completion/teardown checks failed'
 grep -q "CoVE-IO COVG selftest: PASS" "$RUN_LOG" ||
 	fail "kernel COVG selftest did not pass"
 grep -q "owner-scoped interfaces" "$RUN_LOG" ||
@@ -34,4 +36,4 @@ if grep -q "CoVE-IO COVG selftest: FAIL" "$RUN_LOG"; then
 	fail "kernel COVG selftest reported failure"
 fi
 
-echo "PASS: COVG enumeration/link/report/generation/MMIO-map/STOP checks passed"
+echo "PASS: COVG enumeration/link/report/generation/MMIO-map/STOP checks passed; simulator-only authentication boundary remains explicit"

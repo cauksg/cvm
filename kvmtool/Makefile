@@ -52,6 +52,7 @@ OBJS	+= builtin-setup.o
 OBJS	+= builtin-stop.o
 OBJS	+= builtin-version.o
 OBJS	+= cove-io.o
+OBJS	+= cove-io-test.o
 OBJS	+= devices.o
 OBJS	+= disk/core.o
 OBJS	+= framebuffer.o

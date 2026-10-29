@@ -64,6 +64,12 @@ static int riscv_iommu_platform_probe(struct platform_device *pdev)
 
 	dev_set_drvdata(dev, iommu);
 
+ if (device_property_read_bool(dev, "xs,cove-trusted")) {
+  ret = riscv_iommu_trusted_probe(iommu);
+  if (ret) return dev_err_probe(dev, ret, "trusted firmware IOMMU unavailable\n");
+  return riscv_iommu_init(iommu);
+ }
+
 	/* Check device reported capabilities / features. */
 	iommu->caps = riscv_iommu_readq(iommu, RISCV_IOMMU_REG_CAPABILITIES);
 	iommu->fctl = riscv_iommu_readl(iommu, RISCV_IOMMU_REG_FCTL);

@@ -68,9 +68,11 @@ bool cove_io__test_bad_swiotlb_iommu_group(const char *name);
 bool cove_io__test_bad_tdi_rid(const char *name);
 bool cove_io__test_bad_iommu_group(const char *name);
 unsigned int cove_io__test_pause_before_run_secs(void);
-unsigned int cove_io__test_mrif_retarget_loops(void);
+unsigned int cove_io__test_imsic_retarget_loops(void);
 bool cove_io__direct_dma_enabled(void);
+bool cove_io__direct_mmio_enabled(void);
 bool cove_io__lifecycle_test_enabled(void);
+bool cove_io__resource_test(struct kvm *kvm);
 
 void cove_io__tdi_op(struct kvm *kvm, struct kvm_cove_io_tdi *tdi);
 bool cove_io__probe_tdi_op(struct kvm *kvm, struct kvm_cove_io_tdi *tdi);

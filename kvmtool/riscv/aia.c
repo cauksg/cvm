@@ -34,6 +34,7 @@ static struct kvm_device_attr aia_hart_bits_attr = {
 };
 
 static u32 aia_nr_harts = 0;
+static u32 aia_guest_bits;
 
 #define IRQCHIP_AIA_NR			0
 
@@ -173,6 +174,16 @@ static int aia__init(struct kvm *kvm)
 
 	/* Save number of HARTs for FDT generation */
 	aia_nr_harts = kvm->nrcpus;
+	{
+		struct kvm_device_attr attr = {
+			.group = KVM_DEV_RISCV_AIA_GRP_CONFIG,
+			.attr = KVM_DEV_RISCV_AIA_CONFIG_GUEST_BITS,
+			.addr = (u64)(unsigned long)&aia_guest_bits,
+		};
+		ret = ioctl(aia_fd, KVM_GET_DEVICE_ATTR, &attr);
+		if (ret || aia_guest_bits >= 32)
+			return ret ? ret : -EINVAL;
+	}
 
 	/* Set AIA device addresses */
 	aia_addr = AIA_APLIC_ADDR;
@@ -233,13 +244,7 @@ bool riscv__aia_msi_target_vcpu(struct kvm *kvm, const struct msi_msg *msg,
 {
 	u64 target;
 	u64 target_ppn;
-	u64 guest_mask = 0;
-	u32 nr_guest_bits = 0;
-	struct kvm_device_attr config_attr = {
-		.group	= KVM_DEV_RISCV_AIA_GRP_CONFIG,
-		.attr	= KVM_DEV_RISCV_AIA_CONFIG_GUEST_BITS,
-		.addr	= (u64)(unsigned long)&nr_guest_bits,
-	};
+	u64 guest_mask = (1ULL << aia_guest_bits) - 1;
 	int i;
 
 	if (riscv_irqchip != IRQCHIP_AIA || aia_fd < 0 || !aia_nr_harts ||
@@ -254,22 +259,13 @@ bool riscv__aia_msi_target_vcpu(struct kvm *kvm, const struct msi_msg *msg,
 	 * matching an IMSIC address. Keep userspace's COVE-IO IRQ binding in
 	 * sync with the same target-vCPU decision.
 	 */
-	if (!ioctl(aia_fd, KVM_GET_DEVICE_ATTR, &config_attr) &&
-	    nr_guest_bits < 64)
-		guest_mask = (1ULL << nr_guest_bits) - 1;
 	target_ppn &= ~guest_mask;
 
 	for (i = 0; i < kvm->nrcpus; i++) {
 		u64 imsic_addr = AIA_IMSIC_ADDR(i);
-		struct kvm_device_attr addr_attr = {
-			.group	= KVM_DEV_RISCV_AIA_GRP_ADDR,
-			.attr	= KVM_DEV_RISCV_AIA_ADDR_IMSIC(i),
-			.addr	= (u64)(unsigned long)&imsic_addr,
-		};
 		u64 imsic_ppn = imsic_addr >> IMSIC_MMIO_PAGE_SHIFT;
-
-		ioctl(aia_fd, KVM_GET_DEVICE_ATTR, &addr_attr);
-		imsic_ppn = imsic_addr >> IMSIC_MMIO_PAGE_SHIFT;
+		/* Addresses are fixed before AIA initialization. A runtime ioctl
+		 * could wait on another vCPU's mutex held across KVM_RUN/WFI. */
 
 		if (imsic_ppn == target_ppn) {
 			*vcpu_id = i;

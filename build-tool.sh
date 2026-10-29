@@ -1,135 +1,31 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-#git submodule update --init
+source "$(dirname "$0")/scripts/build-common.sh"
+build_init
+cd "$TOP_DIR"
 
-TOP_DIR=$(pwd)
-
-export ARCH=${ARCH:-riscv}
-if [ -z "${CROSS_COMPILE:-}" ]; then
-	if [ -n "${RISCV:-}" ]; then
-		export CROSS_COMPILE="$RISCV/bin/riscv64-unknown-linux-gnu-"
-	else
-		export CROSS_COMPILE=riscv64-linux-gnu-
-	fi
-fi
-
-LINUX_DIR=${LINUX_DIR:-linux}
-BUILD_DIR=${BUILD_DIR:-build-riscv64}
-case "$LINUX_DIR" in
-	/*) ;;
-	*) LINUX_DIR="$TOP_DIR/$LINUX_DIR" ;;
-esac
-case "$BUILD_DIR" in
-	/*) BUILD_PATH="$BUILD_DIR" ;;
-	*) BUILD_PATH="$TOP_DIR/$BUILD_DIR" ;;
-esac
-CONFIG_FILE="$BUILD_PATH/.config"
-
-#Compiling the toolchain
-#mkdir ~/riscv
-#export RISCV=~/riscv
-#sudo apt install autoconf automake autotools-dev curl libmpc-dev libmpfr-dev libgmp-dev \
-#                 libusb-1.0-0-dev gawk build-essential bison flex texinfo gperf libtool \
-#                 patchutils bc zlib1g-dev device-tree-compiler pkg-config libexpat-dev  \
-#                 libncurses5-dev libncursesw5-dev git
-##git clone https://github.com/riscv/riscv-gnu-toolchain
-#cd riscv-gnu-toolchain
-#git submodule init
-#git submodule update
-#./configure --prefix=$RISCV --enable-multilib
-#make -j $(nproc)
-#make -j $(nproc) linux
-#eval echo 'export RISCV=$(eval echo ~)/riscv/bin' >> ~/.bashrc
-#echo 'export PATH="$PATH:$RISCV"' >> ~/.bashrc
-#source ~/.bashrc
-#cd ..
-
-
-#Compiling QEMU for RSIC-V with virtualization extensions
-#sudo apt install ninja-build pkg-config libglib2.0-dev libpixman-1-dev libtirpc-dev unzip
-#sudo apt-get install python3-venv
-cd qemu
-git submodule init
-git submodule update
-./configure --target-list="riscv32-softmmu riscv64-softmmu"
-make -j $(nproc)
-cd ..
-
-#M-mode runtime for boot: OpenSBI Firmware
-#cd opensbi
-#git submodule init
-#git submodule update
-#make -j $(nproc) PLATFORM=generic
-#cd ..
-
-#compile Linux with RISC-V KVM support
-#git clone https://github.com/kvm-riscv/linux.git
-mkdir -p "$BUILD_PATH"
-make -C "$LINUX_DIR" O="$BUILD_PATH" defconfig
-sed -i 's|^CONFIG_NET_9P_VIRTIO=.*$|CONFIG_NET_9P_VIRTIO=n|' "$CONFIG_FILE"
-sed -i 's|^CONFIG_VIRTIO_NET=.*$|CONFIG_VIRTIO_NET=n|' "$CONFIG_FILE"
-sed -i 's|.*CONFIG_KVM=.*$|CONFIG_KVM=y|' "$CONFIG_FILE"
-make -C "$LINUX_DIR" O="$BUILD_PATH" -j $(nproc)
-
-#KVM tool depends on dtc at runtime. So we first compile it.
-cd dtc
-git submodule init
-git submodule update
-export CC="${CROSS_COMPILE}gcc -mabi=lp64d -march=rv64gc"
-TRIPLET=$($CC -dumpmachine)
-SYSROOT=$($CC -print-sysroot)
-make libfdt
-make EXTRA_CFLAGS="-mabi=lp64d" DESTDIR=$SYSROOT PREFIX=`pwd` LIBDIR=`pwd`/lib64/lp64d install-lib install-includes
-cd ..
-
-#build kvmtool
-#export LIBFDT_DIR=`pwd`/dtc/lib64/lp64d
-#cd kvmtool
-#git submodule init
-#git submodule update
-#make lkvm-static -j $(nproc)
-#${CROSS_COMPILE}strip lkvm-static
-#cd ..
-
-cd howto
-git submodule init
-git submodule update
-cd ..
-
-#build a root FS for our OS
-if [ ! -d busybox-1.33.1 ]; then
-	if [ ! -f busybox-1.33.1.tar.bz2 ]; then
-		wget https://busybox.net/downloads/busybox-1.33.1.tar.bz2 || {
-			echo "Failed to download busybox-1.33.1.tar.bz2 and no local copy is available." >&2
-			exit 1
-		}
-	fi
-	tar -C . -xvf busybox-1.33.1.tar.bz2
-fi
-cd busybox-1.33.1
-make defconfig
-sed -i 's|^CONFIG_CROSS_COMPILER_PREFIX=.*$|CONFIG_CROSS_COMPILER_PREFIX="riscv64-linux-gnu-"|' .config
-sed -i 's|.*CONFIG_STATIC.*|CONFIG_STATIC=y|' .config
-sed -i 's|^CONFIG_TC=.*$|# CONFIG_TC is not set|' .config
-sed -i 's|^CONFIG_FEATURE_TC_INGRESS=.*$|# CONFIG_FEATURE_TC_INGRESS is not set|' .config
-yes "" | make oldconfig
-cd ..
-#cd busybox-1.33.1
-#make defconfig
-#echo 'CONFIG_CROSS_COMPILER_PREFIX="riscv64-linux-gnu-' >> .config
-#echo 'CONFIG_STATIC=y' >> .config
-#cd ..
-#make -C busybox-1.33.1 install
-#mkdir -p busybox-1.33.1/_install/etc/init.d
-#mkdir -p busybox-1.33.1/_install/dev
-#mkdir -p busybox-1.33.1/_install/proc
-#mkdir -p busybox-1.33.1/_install/sys
-#mkdir -p busybox-1.33.1/_install/apps
-#ln -sf /sbin/init busybox-1.33.1/_install/init
-#cp -f ./howto/configs/busybox/fstab busybox-1.33.1/_install/etc/fstab
-#cp -f ./howto/configs/busybox/rcS busybox-1.33.1/_install/etc/init.d/rcS
-#cp -f ./howto/configs/busybox/motd busybox-1.33.1/_install/etc/motd
-#cp -f ./kvmtool/lkvm-static busybox-1.33.1/_install/apps
-##cp -f ./build-riscv64/arch/riscv/boot/Image busybox-1.33.1/_install/apps
-#cd busybox-1.33.1/_install; find ./ | cpio -o -H newc > ../../rootfs_kvm_riscv64.img; cd -
+command -v "${CROSS_COMPILE}gcc" >/dev/null || {
+	echo "Install the RISC-V cross compiler first: ${CROSS_COMPILE}gcc" >&2
+	exit 1
+}
+for component in "$QEMU_DIR" "$TOP_DIR/dtc" "$TOP_DIR/howto"; do
+	[ -f "$component/Makefile" ] || [ -f "$component/configs/busybox/inittab" ] || {
+		echo "Initialize submodules first: git submodule update --init --recursive" >&2
+		exit 1
+	}
+done
+(
+	cd "$QEMU_DIR"
+	./configure --target-list="riscv32-softmmu riscv64-softmmu"
+	make -j "$JOBS"
+)
+make -C "$TOP_DIR/dtc" CC="${CROSS_COMPILE}gcc" AR="${CROSS_COMPILE}ar" libfdt
+mkdir -p "$LIBFDT_DIR"
+cp "$TOP_DIR/dtc/libfdt/libfdt.a" "$TOP_DIR/dtc/libfdt/libfdt.h" \
+	"$TOP_DIR/dtc/libfdt/libfdt_env.h" "$TOP_DIR/dtc/libfdt/fdt.h" "$LIBFDT_DIR/"
+[ -f "$BUSYBOX_DIR/Makefile" ] || {
+	echo "Extract BusyBox 1.33.1 into $BUSYBOX_DIR before building" >&2
+	exit 1
+}
+build_busybox

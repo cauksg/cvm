@@ -59,6 +59,12 @@ const struct kvm_stats_header kvm_vcpu_stats_header = {
 static struct swiotlb_node *sw_list_head;
 static DEFINE_SPINLOCK(sw_list);
 
+/* Test-only malicious VMM input; never enabled by the normal run path. */
+static bool cvm_state_attack_test;
+module_param(cvm_state_attack_test, bool, 0444);
+MODULE_PARM_DESC(cvm_state_attack_test,
+	"Poison private CVM shadow registers on BASE completions (security test)");
+
 static u64 kvm_cove_io_device_type(u64 device_id);
 static bool kvm_riscv_cove_io_validate_pci_group(u64 device_id,
 						 u64 expected_group);
@@ -150,6 +156,12 @@ static void kvm_riscv_vcpu_context_reset(struct kvm_vcpu *vcpu,
 
 	if (kvm_sbi_reset)
 		kvm_riscv_vcpu_sbi_load_reset_state(vcpu);
+	/* HSM entry PC/a0/a1 were consumed by the Monitor from the Guest.
+	 * A trusted CVM RUN carries a zero resume token, never this Host reset. */
+	if (kvm_sbi_reset && vcpu->kvm->cmode) {
+		cntx->sepc = 0;
+		cntx->a0 = cntx->a1 = 0;
+	}
 
 	/* Setup reset state of shadow SSTATUS and HSTATUS CSRs */
 	cntx->sstatus = SR_SPP | SR_SPIE;
@@ -503,8 +515,13 @@ sync_hvip:
 			clear_bit(IRQ_PMU_OVF, v->irqs_pending);
 	}
 
-	if (vcpu->kvm->cmode)
+	if (vcpu->kvm->cmode) {
+		/* Monitor restored the Host VS bank. Use only the public deadline
+		 * hint for WFI wakeup, never the now-restored hardware VSTIMECMP.
+		 */
+		kvm_riscv_vcpu_timer_sync(vcpu);
 		return;
+	}
 
 	/* Sync-up AIA high interrupts */
 	kvm_riscv_vcpu_aia_sync_interrupts(vcpu);
@@ -773,6 +790,16 @@ void kvm_arch_vcpu_put(struct kvm_vcpu *vcpu)
 					 vcpu->arch.isa);
 	kvm_riscv_vcpu_host_vector_restore(&vcpu->arch.host_context);
 
+	/*
+	 * OpenSBI saves CVM VS CSRs on every exit. The shadow can subsequently
+	 * change before the next Monitor entry (interrupt flush or SBI/CSR
+	 * emulation). A sched-out here must not replace it with the old hardware
+	 * bank: a flushed timer would lose HVIP.VSTIP with no pending mask left
+	 * to inject it again, leaving the guest spinning through WFI forever.
+	 */
+	if (vcpu->kvm->cmode)
+		return;
+
 	if (kvm_riscv_nacl_available()) {
 		nsh = nacl_shmem();
 		csr->vsstatus = nacl_csr_read(nsh, CSR_VSSTATUS);
@@ -1005,6 +1032,29 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 	if (!vcpu->arch.ran_atleast_once)
 		kvm_riscv_vcpu_setup_config(vcpu);
 
+	if (vcpu->kvm->cmode && !vcpu->arch.ran_atleast_once) {
+		struct sbiret result;
+
+		/* One-time boot configuration; subsequent RUNs exchange only the
+		 * Monitor's bounded emulation response, never the private context.
+		 */
+		result = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_FINALIZE,
+				   __pa(cvm_sbi_params),
+				   __pa(&vcpu->arch.guest_context),
+				   __pa(&vcpu->arch.guest_csr), __pa(trap_ptr), 0, 0);
+		if (result.error) {
+			kfree(cvm_sbi_params);
+			kfree(cvm_trap);
+			return result.error;
+		}
+		if (result.value == 1) {
+			memset(&vcpu->arch.guest_context, 0,
+			       sizeof(vcpu->arch.guest_context));
+			memset(&vcpu->arch.guest_csr, 0,
+			       sizeof(vcpu->arch.guest_csr));
+		}
+	}
+
 	/* Mark this VCPU ran at least once */
 	vcpu->arch.ran_atleast_once = true;
 
@@ -1129,7 +1179,9 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 					kvm_riscv_cove_io_dma_allowed(vcpu->kvm,
 								      sw.device_id,
 								      cvm_sbi_params->gpa);
-				if (dma_allowed) {
+                /* This is a CPU shared-memory fault. Monitor checks exact
+                 * Guest consent; a device DMA grant is independent. */
+                if (dma_allowed || vcpu->kvm->cmode) {
 					cvm_sbi_params->hpa =
 						kvm_riscv_gstage_gpa_to_hpa(vcpu->kvm,
 									    cvm_sbi_params->gpa);
@@ -1141,11 +1193,82 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 				cvm_sbi_params->hpa = 0;
 			}
 
+			if (cvm_state_attack_test && trap_ptr->scause == EXC_SUPERVISOR_SYSCALL &&
+			    ((vcpu->arch.guest_context.a7 == SBI_EXT_COVG &&
+			      (vcpu->arch.guest_context.a6 == 4 || vcpu->arch.guest_context.a6 == 5)) ||
+			     (vcpu->arch.guest_context.a7 == SBI_EXT_HSM &&
+			      vcpu->arch.guest_context.a6 <= SBI_EXT_HSM_HART_STOP))) {
+				vcpu->arch.guest_context.a0 = ~0UL;
+				vcpu->arch.guest_context.a1 = ~0UL;
+			}
+			if (cvm_state_attack_test &&
+			    trap_ptr->scause == EXC_SUPERVISOR_SYSCALL &&
+			    vcpu->arch.guest_context.a7 == SBI_EXT_BASE &&
+			    vcpu->arch.guest_context.a6 == SBI_EXT_BASE_GET_SPEC_VERSION) {
+				/* BASE replies authorize only a0/a1 and a fixed PC step. */
+				vcpu->arch.guest_context.sp = 0xdead000000001000UL;
+				vcpu->arch.guest_context.ra = 0xdead000000002000UL;
+				vcpu->arch.guest_context.tp = 0xdead000000003000UL;
+				vcpu->arch.guest_context.t3 = 0xdead000000004000UL;
+				vcpu->arch.guest_context.t4 = 0xdead000000005000UL;
+				vcpu->arch.guest_csr.vsatp = 0;
+				vcpu->arch.guest_csr.vstvec = 0xdead000000006000UL;
+				vcpu->arch.guest_csr.vsscratch = 0xdead000000007000UL;
+				vcpu->arch.guest_csr.vsepc = 0xdead000000008000UL;
+				vcpu->arch.guest_csr.vsstatus = 0;
+				pr_info_once("CVM CPU state attack test: poisoned Host GPR/VS CSR responses\n");
+			}
+
 			sbi_ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_RUN_VCPU,
 					    __pa(cvm_sbi_params),
 					    __pa(&vcpu->arch.guest_context),
 					    __pa(&vcpu->arch.guest_csr),
 					    __pa(trap_ptr), 0, 0);
+			if (cvm_state_attack_test && !sbi_ret.error &&
+			    trap_ptr->scause == EXC_SUPERVISOR_SYSCALL &&
+			    vcpu->arch.guest_context.a7 == SBI_EXT_COVG &&
+			    (vcpu->arch.guest_context.a6 == 4 || vcpu->arch.guest_context.a6 == 5) &&
+			    (vcpu->arch.guest_context.a0 == 254 ||
+			     vcpu->arch.guest_context.a6 == 5)) {
+				struct sbiret probe = sbi_ecall(SBI_EXT_COVI, 7,
+					vcpu->kvm->arch.vmid.cvm_id, vcpu->vcpu_id, 254, 0, 0, 0);
+				bool allow = vcpu->arch.guest_context.a6 == 4;
+				if ((!probe.error) != allow) {
+					pr_err("COVI injection selftest: FAIL vcpu=%d\n", vcpu->vcpu_id);
+					cvm_run_error = -EPERM;
+				} else
+					pr_info("COVI injection selftest: PASS cvm=%lu vcpu=%d policy=%s\n",
+						vcpu->kvm->arch.vmid.cvm_id, vcpu->vcpu_id,
+						allow ? "allow" : "deny");
+			}
+			if (cvm_state_attack_test && !sbi_ret.error &&
+			    trap_ptr->scause == EXC_SUPERVISOR_SYSCALL &&
+			    vcpu->arch.guest_context.a7 == SBI_EXT_BASE &&
+			    vcpu->arch.guest_context.a6 == SBI_EXT_BASE_GET_SPEC_VERSION) {
+				unsigned long original, fp0, fp31, fcsr;
+				struct kvm_cpu_context *public = &vcpu->arch.guest_context;
+				struct kvm_vcpu_csr *public_csr = &vcpu->arch.guest_csr;
+				bool leaked;
+
+				original = csr_read_set(CSR_SSTATUS, SR_FS);
+				asm volatile(".option push\n.option arch, +d\n"
+					"fmv.x.d %0, f0\nfmv.x.d %1, f31\nfrcsr %2\n.option pop"
+					: "=r"(fp0), "=r"(fp31), "=r"(fcsr));
+				csr_write(CSR_SSTATUS, original);
+				leaked = public->sp || public->ra || public->tp ||
+					public->t3 || public->t4 || public->sepc ||
+					public_csr->vsatp || public_csr->vstvec ||
+					public_csr->vsscratch || public_csr->vsepc ||
+					fp0 == 0x1122334455667788UL ||
+					fp31 == 0x8877665544332211UL || fcsr == 0x61 ||
+					csr_read(CSR_VSSCRATCH) == 0x1928374655aaeeffUL;
+				if (leaked) {
+					pr_err("CVM CPU state attack selftest: FAIL private state exposed\n");
+					cvm_run_error = -EPERM;
+				} else {
+					pr_info_once("CVM CPU state attack selftest: PASS shared output and live FP/VS bank sanitized\n");
+				}
+			}
 			if (sbi_ret.error == TEE_NO_MEMORY) {
 				cvm_run_error = refill_KVM_memory_pool();
 				if (!cvm_run_error)
@@ -1255,7 +1378,9 @@ int kvm_vm_ioctl_swiotlb(struct kvm *kvm, void __user *argp)
 			/* A PCI RID is a physical identity and cannot be shared by
 			 * two CVMs, even when their restricted pools differ.
 			 */
-			if (cur->kvm != kvm) {
+			if (cur->kvm != kvm &&
+			    kvm_cove_io_device_type(sw_node->sw.device_id) ==
+			    KVM_COVE_IO_DEVICE_TYPE_PCI_RID) {
 				spin_unlock(&sw_list);
 				kfree(sw_node);
 				return -EBUSY;
@@ -1286,7 +1411,7 @@ static u64 kvm_cove_io_device_type(u64 device_id)
 	       KVM_COVE_IO_DEVICE_TYPE_SHIFT;
 }
 
-static bool kvm_cove_io_mrif_irq_bind_candidate(
+static bool kvm_cove_io_imsic_irq_bind_candidate(
 	const struct cove_io_tdi_sbi_params *params)
 {
 	return params->device_id != KVM_COVE_IO_DEVICE_ANY &&
@@ -1351,10 +1476,89 @@ static bool kvm_riscv_cove_io_validate_pci_group(u64 device_id,
 	return valid;
 }
 
+/* Prototype direct mapping supports EDU or QEMU e1000e page-aligned BAR0.
+ * Obtain the physical resource here; never accept an HPA from userspace.
+ * This validates an honest simulator host, not a malicious-host trust root.
+ */
+static int kvm_cove_io_direct_bar(struct kvm *kvm,
+			     const struct kvm_cove_io_tdi *user, u64 *hpa)
+{
+	struct pci_dev *pdev;
+	int i, ret = -EINVAL;
+	bool nic;
+	u64 bar_size;
+
+	if (atomic_read(&kvm->online_vcpus) > 4 ||
+	    kvm_cove_io_device_type(user->device_id) !=
+			KVM_COVE_IO_DEVICE_TYPE_PCI_RID ||
+	    !kvm_riscv_cove_io_validate_pci_group(user->device_id,
+						user->iommu_group))
+		return -EINVAL;
+	pdev = pci_get_domain_bus_and_slot((user->device_id >> 16) & 0xffff,
+					   (user->device_id >> 8) & 0xff,
+					   user->device_id & 0xff);
+	if (!pdev)
+		return -ENODEV;
+	nic = pdev->vendor == 0x8086 && pdev->device == 0x10d3;
+	bar_size = nic ? SZ_128K : SZ_1M;
+	if ((!nic && (pdev->vendor != 0x1234 || pdev->device != 0x11e8)) ||
+	    (!nic && pci_find_capability(pdev, PCI_CAP_ID_MSIX)) ||
+	    !(pci_resource_flags(pdev, 0) & IORESOURCE_MEM) ||
+	    pci_resource_len(pdev, 0) != bar_size || user->mmio_size != bar_size ||
+	    !IS_ALIGNED(user->mmio_gpa, PAGE_SIZE) ||
+	    !IS_ALIGNED(pci_resource_start(pdev, 0), PAGE_SIZE))
+		goto out;
+	for (i = 1; i < PCI_STD_NUM_BARS; i++) {
+		u64 expected = nic ? (i == 1 ? SZ_128K :
+				     i == 2 ? 32 : i == 3 ? SZ_16K : 0) : 0;
+
+		/* Flash, port I/O and MSI-X BARs are deliberately not direct.
+		 * The supported 82574L driver uses BAR0 and one MSI vector.
+		 */
+		if (pci_resource_len(pdev, i) != expected)
+			goto out;
+	}
+	*hpa = pci_resource_start(pdev, 0);
+	ret = 0;
+out:
+	pci_dev_put(pdev);
+	return ret;
+}
+
+/* Monitor has already changed the owner-checked TDI to STOPPING and removed
+ * its BAR PTEs. Do not acknowledge Guest STOP until IOMMU revocation completes.
+ */
+int kvm_riscv_cove_io_guest_stop(struct kvm_vcpu *vcpu, u64 id)
+{
+	struct cove_io_tdi_sbi_params *params;
+	struct sbiret res;
+	int ret = -EINVAL;
+
+	params = kzalloc(sizeof(*params), GFP_KERNEL);
+	if (!params)
+		return -ENOMEM;
+	params->vmid_ptr = (struct kvm_vmid *)__pa(&vcpu->kvm->arch.vmid);
+	params->op = KVM_COVE_IO_TDI_GET_STATE;
+	params->tdi_id = id;
+	res = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_COVE_IO_TDI_OP,
+			__pa(params), 0, 0, 0, 0, 0);
+	if (res.error || params->state != KVM_COVE_IO_TDI_STATE_STOPPING)
+		goto out;
+	ret = 0;
+	if (kvm_cove_io_device_type(params->device_id) ==
+	    KVM_COVE_IO_DEVICE_TYPE_PCI_RID)
+		ret = riscv_iommu_cove_io_stop(params->device_id, vcpu->kvm);
+	if (!ret)
+		pr_info("COVE-IO guest STOP completed: tdi=%llu DMA/MSI revoked\n", id);
+out:
+	kfree(params);
+	return ret;
+}
+
 int kvm_vm_ioctl_cove_io_tdi(struct kvm *kvm, void __user *argp)
 {
 	struct cove_io_tdi_sbi_params *params;
-	struct cove_io_tdi_sbi_params *mrif_params;
+	struct cove_io_tdi_sbi_params *imsic_params;
 	struct kvm_cove_io_tdi user;
 	struct sbiret sbi_ret;
 	u64 teardown_device_id = KVM_COVE_IO_DEVICE_INVALID;
@@ -1386,12 +1590,12 @@ int kvm_vm_ioctl_cove_io_tdi(struct kvm *kvm, void __user *argp)
 	}
 
 	params = kzalloc(sizeof(*params), GFP_KERNEL);
-	mrif_params = kzalloc_obj(*mrif_params, GFP_KERNEL);
-	if (!params || !mrif_params) {
+	imsic_params = kzalloc_obj(*imsic_params, GFP_KERNEL);
+	if (!params || !imsic_params) {
 		if (owner_claimed)
 			riscv_iommu_cove_io_release(user.device_id, kvm);
 		kfree(params);
-		kfree(mrif_params);
+		kfree(imsic_params);
 		return -ENOMEM;
 	}
 
@@ -1412,6 +1616,12 @@ int kvm_vm_ioctl_cove_io_tdi(struct kvm *kvm, void __user *argp)
 	params->state = user.state;
 	params->dma_hpa = user.dma_hpa;
 	params->features = user.features;
+	if (user.op == KVM_COVE_IO_TDI_SET_BAR) {
+		ret = kvm_cove_io_direct_bar(kvm, &user, &params->dma_hpa);
+		if (ret)
+			goto out_free;
+	}
+
 	if (user.op == KVM_COVE_IO_TDI_IRQ_UNBIND ||
 	    user.op == KVM_COVE_IO_TDI_DMA_UNMAP ||
 	    user.op == KVM_COVE_IO_TDI_UNBIND ||
@@ -1419,14 +1629,14 @@ int kvm_vm_ioctl_cove_io_tdi(struct kvm *kvm, void __user *argp)
 	    user.op == KVM_COVE_IO_TDI_FINALIZE_STOP ||
 	    user.op == KVM_COVE_IO_TDI_UNREGISTER ||
 	    user.op == KVM_COVE_IO_TDI_SET_ERROR) {
-		*mrif_params = *params;
-		mrif_params->op = KVM_COVE_IO_TDI_GET_STATE;
-		mrif_params->flags = 0;
+		*imsic_params = *params;
+		imsic_params->op = KVM_COVE_IO_TDI_GET_STATE;
+		imsic_params->flags = 0;
 		sbi_ret = sbi_ecall(SBI_EXT_CVM,
 				    SBI_EXT_CVM_COVE_IO_TDI_OP,
-				    __pa(mrif_params), 0, 0, 0, 0, 0);
+				    __pa(imsic_params), 0, 0, 0, 0, 0);
 		if (!sbi_ret.error)
-			teardown_device_id = mrif_params->device_id;
+			teardown_device_id = imsic_params->device_id;
 	}
 
 	sbi_ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_COVE_IO_TDI_OP,
@@ -1438,55 +1648,72 @@ int kvm_vm_ioctl_cove_io_tdi(struct kvm *kvm, void __user *argp)
 		goto out_free;
 	}
 
-	*mrif_params = *params;
+	*imsic_params = *params;
 	if (user.op == KVM_COVE_IO_TDI_IRQ_BIND) {
 		if (user.device_id != KVM_COVE_IO_DEVICE_ANY &&
 		    user.device_id != KVM_COVE_IO_DEVICE_INVALID)
-			mrif_params->device_id = user.device_id;
-		mrif_params->vcpu_id = user.vcpu_id;
+			imsic_params->device_id = user.device_id;
+		imsic_params->vcpu_id = user.vcpu_id;
 		if (user.irq_iid != KVM_COVE_IO_IRQ_IID_ANY)
-			mrif_params->irq_iid = user.irq_iid;
+			imsic_params->irq_iid = user.irq_iid;
 	}
 
 	if (user.op == KVM_COVE_IO_TDI_IRQ_BIND &&
-	    kvm_cove_io_mrif_irq_bind_candidate(mrif_params)) {
-		ret = riscv_iommu_cove_io_mrif_bind(mrif_params->device_id, kvm,
-						    mrif_params->vcpu_id,
-						    mrif_params->irq_iid);
+	    kvm_cove_io_imsic_irq_bind_candidate(imsic_params)) {
+		ret = riscv_iommu_cove_io_imsic_bind(imsic_params->device_id, kvm,
+						    imsic_params->vcpu_id,
+						    imsic_params->irq_iid);
 		if (ret) {
-			pr_warn_ratelimited("kvm: COVE-IO MRIF bind failed device_id=0x%llx vcpu=%llu iid=%llu ret=%d\n",
-					    (unsigned long long)mrif_params->device_id,
-					    (unsigned long long)mrif_params->vcpu_id,
-					    (unsigned long long)mrif_params->irq_iid,
+			pr_warn_ratelimited("kvm: COVE-IO IMSIC bind failed device_id=0x%llx vcpu=%llu iid=%llu ret=%d\n",
+					    (unsigned long long)imsic_params->device_id,
+					    (unsigned long long)imsic_params->vcpu_id,
+					    (unsigned long long)imsic_params->irq_iid,
 					    ret);
-			/* OpenSBI authorization was committed before the hardware MRIF
+			/* OpenSBI authorization was committed before the hardware IMSIC
 			 * transaction. Roll it back with the returned generation and
 			 * the exact IRQ tuple so no stale target remains allowed.
 			 */
-			mrif_params->op = KVM_COVE_IO_TDI_IRQ_UNBIND;
-			mrif_params->flags |= KVM_COVE_IO_TDI_F_EXPECT_GENERATION;
-			mrif_params->irq_id = user.irq_id;
-			mrif_params->irq_num = user.irq_num;
+			imsic_params->op = KVM_COVE_IO_TDI_IRQ_UNBIND;
+			imsic_params->flags |= KVM_COVE_IO_TDI_F_EXPECT_GENERATION;
+			imsic_params->irq_id = user.irq_id;
+			imsic_params->irq_num = user.irq_num;
 			sbi_ret = sbi_ecall(SBI_EXT_CVM,
 					    SBI_EXT_CVM_COVE_IO_TDI_OP,
-					    __pa(mrif_params), 0, 0, 0, 0, 0);
+					    __pa(imsic_params), 0, 0, 0, 0, 0);
 			if (sbi_ret.error)
-				pr_err_ratelimited("kvm: COVE-IO MRIF IRQ rollback failed tdi=%llu generation=%llu error=%ld\n",
-						   (unsigned long long)mrif_params->tdi_id,
-						   (unsigned long long)mrif_params->generation,
+				pr_err_ratelimited("kvm: COVE-IO IMSIC IRQ rollback failed tdi=%llu generation=%llu error=%ld\n",
+						   (unsigned long long)imsic_params->tdi_id,
+						   (unsigned long long)imsic_params->generation,
 						   sbi_ret.error);
-			mrif_params->op = KVM_COVE_IO_TDI_SET_ERROR;
-			mrif_params->flags |= KVM_COVE_IO_TDI_F_EXPECT_GENERATION;
+			imsic_params->op = KVM_COVE_IO_TDI_SET_ERROR;
+			imsic_params->flags |= KVM_COVE_IO_TDI_F_EXPECT_GENERATION;
 			sbi_ret = sbi_ecall(SBI_EXT_CVM,
 					    SBI_EXT_CVM_COVE_IO_TDI_OP,
-					    __pa(mrif_params), 0, 0, 0, 0, 0);
+					    __pa(imsic_params), 0, 0, 0, 0, 0);
 			if (sbi_ret.error)
-				pr_err_ratelimited("kvm: COVE-IO MRIF SET_ERROR failed tdi=%llu generation=%llu error=%ld\n",
-						   (unsigned long long)mrif_params->tdi_id,
-						   (unsigned long long)mrif_params->generation,
+				pr_err_ratelimited("kvm: COVE-IO IMSIC SET_ERROR failed tdi=%llu generation=%llu error=%ld\n",
+						   (unsigned long long)imsic_params->tdi_id,
+						   (unsigned long long)imsic_params->generation,
 						   sbi_ret.error);
 			goto out_free;
 		}
+		if (cvm_state_attack_test && kvm->cmode &&
+		    (imsic_params->flags & KVM_COVE_IO_TDI_F_DIRECT_MMIO)) {
+			struct sbiret probe = sbi_ecall(SBI_EXT_COVI, 7,
+				kvm->arch.vmid.cvm_id, imsic_params->vcpu_id,
+				imsic_params->irq_iid, 0, 0, 0);
+			if (!probe.error) {
+				pr_err("COVI device forgery selftest: FAIL\n");
+				ret = -EPERM;
+				goto out_free;
+			}
+			pr_info("COVI device forgery selftest: PASS cvm=%lu vcpu=%llu iid=%llu\n",
+				kvm->arch.vmid.cvm_id, imsic_params->vcpu_id,
+				imsic_params->irq_iid);
+		}
+		if (imsic_params->flags & KVM_COVE_IO_TDI_F_DIRECT_MMIO)
+			riscv_iommu_cove_io_direct_msi(imsic_params->device_id,
+						  imsic_params->irq_iid);
 	} else if (user.op == KVM_COVE_IO_TDI_IRQ_UNBIND ||
 		   user.op == KVM_COVE_IO_TDI_DMA_UNMAP ||
 		   user.op == KVM_COVE_IO_TDI_UNBIND ||
@@ -1499,11 +1726,21 @@ int kvm_vm_ioctl_cove_io_tdi(struct kvm *kvm, void __user *argp)
 		if (device_id == KVM_COVE_IO_DEVICE_ANY ||
 		    device_id == KVM_COVE_IO_DEVICE_INVALID)
 			device_id = teardown_device_id;
+		if (user.op != KVM_COVE_IO_TDI_IRQ_UNBIND &&
+		    kvm_cove_io_device_type(device_id) ==
+			    KVM_COVE_IO_DEVICE_TYPE_PCI_RID) {
+			ret = riscv_iommu_cove_io_stop(device_id, kvm);
+			if (ret)
+				goto out_free;
+		}
 		if (device_id != KVM_COVE_IO_DEVICE_ANY &&
 		    device_id != KVM_COVE_IO_DEVICE_INVALID &&
 		    kvm_cove_io_device_type(device_id) ==
-			    KVM_COVE_IO_DEVICE_TYPE_PCI_RID)
-			riscv_iommu_cove_io_mrif_unbind(device_id);
+			    KVM_COVE_IO_DEVICE_TYPE_PCI_RID) {
+			ret = riscv_iommu_cove_io_imsic_unbind(device_id);
+			if (ret)
+				goto out_free;
+		}
 		if ((user.op == KVM_COVE_IO_TDI_DMA_UNMAP ||
 		     user.op == KVM_COVE_IO_TDI_UNBIND ||
 		     user.op == KVM_COVE_IO_TDI_FINALIZE_STOP ||
@@ -1531,7 +1768,7 @@ int kvm_vm_ioctl_cove_io_tdi(struct kvm *kvm, void __user *argp)
 		ret = -EFAULT;
 
 out_free:
-	kfree(mrif_params);
+	kfree(imsic_params);
 	kfree(params);
 	return ret;
 }
@@ -1602,6 +1839,47 @@ static bool kvm_riscv_cove_io_dma_authorize(struct kvm *kvm,
 
 	kfree(params);
 	return allowed;
+}
+
+int kvm_riscv_cove_io_guest_prepare_dma(struct kvm_vcpu *vcpu,
+				      u64 id, u64 gpa, u64 size)
+{
+	struct cove_io_tdi_sbi_params *params;
+	struct sbiret res;
+	u64 page, device_id;
+	int ret = -EPERM;
+
+	if (!size || size > SZ_64K || ((gpa | size) & ~PAGE_MASK) ||
+	    gpa + size < gpa)
+		return -EINVAL;
+	params = kzalloc(sizeof(*params), GFP_KERNEL);
+	if (!params)
+		return -ENOMEM;
+	params->vmid_ptr = (struct kvm_vmid *)__pa(&vcpu->kvm->arch.vmid);
+	params->op = KVM_COVE_IO_TDI_GET_STATE;
+	params->tdi_id = id;
+	res = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_COVE_IO_TDI_OP,
+			__pa(params), 0, 0, 0, 0, 0);
+	device_id = params->device_id;
+	if (res.error || params->state != KVM_COVE_IO_TDI_STATE_STARTED ||
+	    !(params->flags & KVM_COVE_IO_TDI_F_DIRECT_DMA) ||
+	    gpa < params->dma_gpa || gpa + size > params->dma_gpa + params->dma_size)
+		goto out;
+	for (page = gpa; page < gpa + size; page += PAGE_SIZE) {
+		phys_addr_t phys;
+
+		if (!kvm_riscv_cove_io_dma_authorize(vcpu->kvm, device_id, page, &phys)) {
+			ret = -EPERM;
+			goto out;
+		}
+		ret = riscv_iommu_cove_io_prepare_dma(device_id, page, phys);
+		if (ret)
+			goto out;
+	}
+	ret = 0;
+out:
+	kfree(params);
+	return ret;
 }
 
 bool kvm_riscv_cove_io_dma_allowed(struct kvm *kvm, unsigned long device_id,
@@ -1690,8 +1968,7 @@ void kvm_riscv_cove_io_destroy_vm(struct kvm *kvm)
 	if (!kvm->cmode)
 		return;
 
-	riscv_iommu_cove_io_mrif_unbind_vm(kvm);
-	riscv_iommu_cove_io_release_vm(kvm);
+	riscv_iommu_cove_io_imsic_unbind_vm(kvm);
 
 	params = kzalloc(sizeof(*params), GFP_KERNEL);
 	if (!params)
@@ -1722,6 +1999,10 @@ void kvm_riscv_cove_io_destroy_vm(struct kvm *kvm)
 
 		if (params->state == KVM_COVE_IO_TDI_STATE_STOPPING ||
 		    params->state == KVM_COVE_IO_TDI_STATE_ERROR) {
+			if (kvm_cove_io_device_type(params->device_id) ==
+			    KVM_COVE_IO_DEVICE_TYPE_PCI_RID &&
+			    riscv_iommu_cove_io_stop(params->device_id, kvm))
+				continue;
 			params->op = KVM_COVE_IO_TDI_IRQ_UNBIND;
 			params->flags |= KVM_COVE_IO_TDI_F_EXPECT_GENERATION;
 			params->irq_id = 0;
@@ -1729,15 +2010,19 @@ void kvm_riscv_cove_io_destroy_vm(struct kvm *kvm)
 			sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_COVE_IO_TDI_OP,
 				  __pa(params), 0, 0, 0, 0, 0);
 
-			params->op = KVM_COVE_IO_TDI_DMA_UNMAP;
-			params->flags |= KVM_COVE_IO_TDI_F_EXPECT_GENERATION;
-			sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_COVE_IO_TDI_OP,
-				  __pa(params), 0, 0, 0, 0, 0);
-
 			params->op = KVM_COVE_IO_TDI_RECLAIM_MMIO;
 			params->flags |= KVM_COVE_IO_TDI_F_EXPECT_GENERATION;
-			sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_COVE_IO_TDI_OP,
+			sbi_ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_COVE_IO_TDI_OP,
 				  __pa(params), 0, 0, 0, 0, 0);
+			if (sbi_ret.error)
+				continue;
+
+			params->op = KVM_COVE_IO_TDI_DMA_UNMAP;
+			params->flags |= KVM_COVE_IO_TDI_F_EXPECT_GENERATION;
+			sbi_ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_COVE_IO_TDI_OP,
+				  __pa(params), 0, 0, 0, 0, 0);
+			if (sbi_ret.error)
+				continue;
 
 			params->op = KVM_COVE_IO_TDI_FINALIZE_STOP;
 			params->flags |= KVM_COVE_IO_TDI_F_EXPECT_GENERATION;
@@ -1754,6 +2039,7 @@ void kvm_riscv_cove_io_destroy_vm(struct kvm *kvm)
 		}
 	}
 
+	riscv_iommu_cove_io_release_vm(kvm);
 	kfree(params);
 }
 

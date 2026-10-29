@@ -3,6 +3,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/cove-io-dma.h>
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/init.h>
@@ -4486,6 +4487,15 @@ static int e1000_sw_init(struct e1000_adapter *adapter)
 	return 0;
 }
 
+/* RXSEQ is reserved in the 82574 IMS register (including QEMU's model).
+ * Exercise an enabled cause so MSI-only operation can pass the actual test.
+ */
+static u32 e1000_msi_test_cause(struct e1000_adapter *adapter)
+{
+	return adapter->hw.mac.type == e1000_82574 ?
+		E1000_ICR_RXDMT0 : E1000_ICR_RXSEQ;
+}
+
 /**
  * e1000_intr_msi_test - Interrupt Handler
  * @irq: interrupt number
@@ -4499,7 +4509,7 @@ static irqreturn_t e1000_intr_msi_test(int __always_unused irq, void *data)
 	u32 icr = er32(ICR);
 
 	e_dbg("icr is %08X\n", icr);
-	if (icr & E1000_ICR_RXSEQ) {
+	if (icr & e1000_msi_test_cause(adapter)) {
 		adapter->flags &= ~FLAG_MSI_TEST_FAILED;
 		/* Force memory writes to complete before acknowledging the
 		 * interrupt is handled.
@@ -4554,7 +4564,7 @@ static int e1000_test_msi_interrupt(struct e1000_adapter *adapter)
 	e1000_irq_enable(adapter);
 
 	/* fire an unusual interrupt on the test handler */
-	ew32(ICS, E1000_ICS_RXSEQ);
+	ew32(ICS, e1000_msi_test_cause(adapter));
 	e1e_flush();
 	msleep(100);
 
@@ -7391,6 +7401,10 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	err = pci_enable_device_mem(pdev);
 	if (err)
 		return err;
+
+	err = cove_io_nic_enable(pdev);
+	if (err)
+		goto err_dma;
 
 	err = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
 	if (err) {

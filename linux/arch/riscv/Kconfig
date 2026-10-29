@@ -300,6 +300,25 @@ config COVE_IO_GUEST
 	  of the xs-cvm simulator's experimental CoVE-IO authorization protocol.
 	  It does not implement TDISP, SPDM, device attestation, or PCIe IDE.
 
+config COVE_IO_NIC
+	bool "xs-cvm private DMA for QEMU e1000e"
+	default y
+	depends on COVE_IO_GUEST && PCI && MMU
+	select ARCH_HAS_DMA_OPS
+	help
+	  Enable with cove_io_nic=1 in the confidential guest only. Uses coherent
+	  private pages and synchronous simulator DMA preparation per 82574L,
+	  with each device independently associated with its accepted TDI.
+	  DMA authorization lasts until TDI STOP, rather than buffer unmap.
+
+config COVE_IO_EDU_TEST
+	bool "xs-cvm direct EDU integration test"
+	depends on COVE_IO_GUEST && PCI && PCI_MSI
+	help
+	  Opt-in single-device simulator validation. Enable with
+	  cove_io_edu_test=1. Exercises private DMA, a real MSI handler and
+	  Guest STOP with pending DMA. Not a general-purpose device driver.
+
 config MMU
 	bool "MMU-based Paged Memory Management Support"
 	default y

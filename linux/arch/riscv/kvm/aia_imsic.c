@@ -17,6 +17,7 @@
 #include <linux/workqueue.h>
 #include <kvm/iodev.h>
 #include <asm/csr.h>
+#include <asm/sbi.h>
 #include <asm/kvm_mmu.h>
 #include <cvm/iie-cvm-sbi.h>
 
@@ -57,15 +58,17 @@ struct imsic {
 
 	/* IMSIC SW-file */
 	struct imsic_mrif *swfile;
-	phys_addr_t swfile_pa;
 	raw_spinlock_t swfile_extirq_lock;
-	atomic_t mrif_users;
-	struct work_struct mrif_refresh_work;
-	struct kvm *mrif_refresh_kvm;
-	u64 mrif_refresh_vcpu_id;
-	spinlock_t mrif_refresh_lock;
-	bool mrif_refresh_queued;
-	bool mrif_refresh_needed;
+	/* Protected by vsfile_lock; producers pin the file until IOFENCE. */
+	atomic_t direct_users;
+	bool direct_transition;
+	bool trusted_file; /* pinned for the entire confidential vCPU lifetime */
+	struct work_struct direct_refresh_work;
+	struct kvm *direct_refresh_kvm;
+	u64 direct_refresh_vcpu_id;
+	spinlock_t direct_refresh_lock;
+	bool direct_refresh_queued;
+	bool direct_refresh_needed;
 };
 
 #define imsic_vs_csr_read(__c)			\
@@ -595,83 +598,54 @@ static void imsic_vsfile_local_update(int vsfile_hgei, u32 nr_eix,
 	csr_write(CSR_VSISELECT, old_vsiselect);
 }
 
-static void imsic_vsfile_local_set_pending(int vsfile_hgei, u32 nr_eix,
-					   struct imsic_mrif *mrif)
-{
-	u32 i;
-	struct imsic_mrif_eix *eix;
-	unsigned long new_hstatus, old_hstatus, old_vsiselect;
-
-	/* We can only update if we have a HW IMSIC context */
-	if (vsfile_hgei <= 0)
-		return;
-
-	old_vsiselect = csr_read(CSR_VSISELECT);
-	old_hstatus = csr_read(CSR_HSTATUS);
-	new_hstatus = old_hstatus & ~HSTATUS_VGEIN;
-	new_hstatus |= ((unsigned long)vsfile_hgei) << HSTATUS_VGEIN_SHIFT;
-	csr_write(CSR_HSTATUS, new_hstatus);
-
-	for (i = 0; i < nr_eix; i++) {
-		eix = &mrif->eix[i];
-		imsic_eix_set(IMSIC_EIP0 + i * 2, eix->eip[0]);
-#ifdef CONFIG_32BIT
-		imsic_eix_set(IMSIC_EIP0 + i * 2 + 1, eix->eip[1]);
-#endif
-	}
-
-	csr_write(CSR_HSTATUS, old_hstatus);
-	csr_write(CSR_VSISELECT, old_vsiselect);
-}
-
-static void imsic_mrif_refresh_work(struct work_struct *work)
+static void imsic_direct_refresh_work(struct work_struct *work)
 {
 	struct imsic *imsic = container_of(work, struct imsic,
-					  mrif_refresh_work);
+					  direct_refresh_work);
 	unsigned long flags;
 
 	for (;;) {
-		spin_lock_irqsave(&imsic->mrif_refresh_lock, flags);
-		imsic->mrif_refresh_needed = false;
-		spin_unlock_irqrestore(&imsic->mrif_refresh_lock, flags);
+		spin_lock_irqsave(&imsic->direct_refresh_lock, flags);
+		imsic->direct_refresh_needed = false;
+		spin_unlock_irqrestore(&imsic->direct_refresh_lock, flags);
 
-		riscv_iommu_cove_io_mrif_refresh(imsic->mrif_refresh_kvm,
-						 imsic->mrif_refresh_vcpu_id);
+		riscv_iommu_cove_io_imsic_refresh(imsic->direct_refresh_kvm,
+						 imsic->direct_refresh_vcpu_id);
 
-		spin_lock_irqsave(&imsic->mrif_refresh_lock, flags);
-		if (!imsic->mrif_refresh_needed) {
-			imsic->mrif_refresh_queued = false;
-			spin_unlock_irqrestore(&imsic->mrif_refresh_lock,
+		spin_lock_irqsave(&imsic->direct_refresh_lock, flags);
+		if (!imsic->direct_refresh_needed) {
+			imsic->direct_refresh_queued = false;
+			spin_unlock_irqrestore(&imsic->direct_refresh_lock,
 					       flags);
 			break;
 		}
-		spin_unlock_irqrestore(&imsic->mrif_refresh_lock, flags);
+		spin_unlock_irqrestore(&imsic->direct_refresh_lock, flags);
 	}
-	kvm_put_kvm(imsic->mrif_refresh_kvm);
+	kvm_put_kvm(imsic->direct_refresh_kvm);
 }
 
-static void imsic_mrif_queue_refresh(struct kvm_vcpu *vcpu)
+static void imsic_direct_queue_refresh(struct kvm_vcpu *vcpu)
 {
 	struct imsic *imsic = vcpu->arch.aia_context.imsic_state;
 	unsigned long flags;
 	bool queue = false;
 
-	if (!imsic || !atomic_read(&imsic->mrif_users))
+	if (!imsic || !atomic_read(&imsic->direct_users))
 		return;
 
-	spin_lock_irqsave(&imsic->mrif_refresh_lock, flags);
-	imsic->mrif_refresh_needed = true;
-	if (!imsic->mrif_refresh_queued) {
-		imsic->mrif_refresh_queued = true;
+	spin_lock_irqsave(&imsic->direct_refresh_lock, flags);
+	imsic->direct_refresh_needed = true;
+	if (!imsic->direct_refresh_queued) {
+		imsic->direct_refresh_queued = true;
 		kvm_get_kvm(vcpu->kvm);
 		queue = true;
 	}
-	spin_unlock_irqrestore(&imsic->mrif_refresh_lock, flags);
+	spin_unlock_irqrestore(&imsic->direct_refresh_lock, flags);
 
-	if (queue && !queue_work(system_unbound_wq, &imsic->mrif_refresh_work)) {
-		spin_lock_irqsave(&imsic->mrif_refresh_lock, flags);
-		imsic->mrif_refresh_queued = false;
-		spin_unlock_irqrestore(&imsic->mrif_refresh_lock, flags);
+	if (queue && !queue_work(system_unbound_wq, &imsic->direct_refresh_work)) {
+		spin_lock_irqsave(&imsic->direct_refresh_lock, flags);
+		imsic->direct_refresh_queued = false;
+		spin_unlock_irqrestore(&imsic->direct_refresh_lock, flags);
 		kvm_put_kvm(vcpu->kvm);
 	}
 }
@@ -767,88 +741,6 @@ static void imsic_swfile_update(struct kvm_vcpu *vcpu,
 	imsic_swfile_extirq_update(vcpu);
 }
 
-static void imsic_mrif_shadow_sync_from_vsfile(struct kvm_vcpu *vcpu)
-{
-	u32 i;
-	unsigned long flags;
-	struct imsic_mrif tmrif;
-	struct imsic_mrif_eix *seix, *eix;
-	struct imsic *imsic = vcpu->arch.aia_context.imsic_state;
-	struct imsic_mrif *smrif;
-	int vsfile_hgei, vsfile_cpu;
-
-	if (!imsic || !atomic_read(&imsic->mrif_users))
-		return;
-
-	read_lock_irqsave(&imsic->vsfile_lock, flags);
-	vsfile_hgei = imsic->vsfile_hgei;
-	vsfile_cpu = imsic->vsfile_cpu;
-	read_unlock_irqrestore(&imsic->vsfile_lock, flags);
-
-	if (vsfile_cpu < 0 || vsfile_hgei <= 0)
-		return;
-
-	memset(&tmrif, 0, sizeof(tmrif));
-	imsic_vsfile_read(vsfile_hgei, vsfile_cpu, imsic->nr_hw_eix,
-			  false, &tmrif);
-
-	smrif = imsic->swfile;
-	imsic_mrif_atomic_write(smrif, &smrif->eidelivery,
-				tmrif.eidelivery);
-	imsic_mrif_atomic_write(smrif, &smrif->eithreshold,
-				tmrif.eithreshold);
-	for (i = 0; i < imsic->nr_eix; i++) {
-		seix = &smrif->eix[i];
-		eix = &tmrif.eix[i];
-		imsic_mrif_atomic_write(smrif, &seix->eie[0], eix->eie[0]);
-#ifdef CONFIG_32BIT
-		imsic_mrif_atomic_write(smrif, &seix->eie[1], eix->eie[1]);
-#endif
-	}
-}
-
-static void imsic_mrif_flush_pending_to_vsfile(struct kvm_vcpu *vcpu)
-{
-	u32 i;
-	bool pending = false;
-	unsigned long flags;
-	struct imsic_mrif tmrif;
-	struct imsic_mrif_eix *seix, *eix;
-	struct imsic *imsic = vcpu->arch.aia_context.imsic_state;
-	struct imsic_mrif *smrif;
-	int vsfile_hgei, vsfile_cpu;
-
-	if (!imsic || !atomic_read(&imsic->mrif_users))
-		return;
-
-	read_lock_irqsave(&imsic->vsfile_lock, flags);
-	vsfile_hgei = imsic->vsfile_hgei;
-	vsfile_cpu = imsic->vsfile_cpu;
-	read_unlock_irqrestore(&imsic->vsfile_lock, flags);
-
-	if (vsfile_cpu != vcpu->cpu || vsfile_hgei <= 0)
-		return;
-
-	memset(&tmrif, 0, sizeof(tmrif));
-	smrif = imsic->swfile;
-	for (i = 0; i < imsic->nr_eix; i++) {
-		seix = &smrif->eix[i];
-		eix = &tmrif.eix[i];
-		eix->eip[0] = imsic_mrif_atomic_rmw(smrif, &seix->eip[0],
-						    0, -1UL);
-		pending |= !!eix->eip[0];
-#ifdef CONFIG_32BIT
-		eix->eip[1] = imsic_mrif_atomic_rmw(smrif, &seix->eip[1],
-						    0, -1UL);
-		pending |= !!eix->eip[1];
-#endif
-	}
-
-	if (pending)
-		imsic_vsfile_local_set_pending(vsfile_hgei, imsic->nr_hw_eix,
-					       &tmrif);
-}
-
 bool kvm_riscv_vcpu_aia_imsic_has_interrupt(struct kvm_vcpu *vcpu)
 {
 	struct imsic *imsic = vcpu->arch.aia_context.imsic_state;
@@ -912,6 +804,11 @@ void kvm_riscv_vcpu_aia_imsic_release(struct kvm_vcpu *vcpu)
 
 	/* Read and clear IMSIC VS-file details */
 	write_lock_irqsave(&imsic->vsfile_lock, flags);
+	if (atomic_read(&imsic->direct_users) || imsic->direct_transition || imsic->trusted_file) {
+		write_unlock_irqrestore(&imsic->vsfile_lock, flags);
+		return;
+	}
+	imsic->direct_transition = true;
 	old_vsfile_hgei = imsic->vsfile_hgei;
 	old_vsfile_cpu = imsic->vsfile_cpu;
 	imsic->vsfile_cpu = imsic->vsfile_hgei = -1;
@@ -921,7 +818,7 @@ void kvm_riscv_vcpu_aia_imsic_release(struct kvm_vcpu *vcpu)
 
 	/* Do nothing, if no IMSIC VS-file to release */
 	if (old_vsfile_cpu < 0)
-		return;
+		goto released;
 
 	/*
 	 * At this point, all interrupt producers are still using
@@ -951,6 +848,10 @@ void kvm_riscv_vcpu_aia_imsic_release(struct kvm_vcpu *vcpu)
 
 	/* Free-up old IMSIC VS-file */
 	kvm_riscv_aia_free_hgei(old_vsfile_cpu, old_vsfile_hgei);
+released:
+	write_lock_irqsave(&imsic->vsfile_lock, flags);
+	imsic->direct_transition = false;
+	write_unlock_irqrestore(&imsic->vsfile_lock, flags);
 }
 
 int kvm_riscv_vcpu_aia_imsic_update(struct kvm_vcpu *vcpu)
@@ -974,24 +875,41 @@ int kvm_riscv_vcpu_aia_imsic_update(struct kvm_vcpu *vcpu)
 		return 1;
 
 	/* Read old IMSIC VS-file details */
-	read_lock_irqsave(&imsic->vsfile_lock, flags);
+	write_lock_irqsave(&imsic->vsfile_lock, flags);
 	old_vsfile_hgei = imsic->vsfile_hgei;
 	old_vsfile_cpu = imsic->vsfile_cpu;
-	read_unlock_irqrestore(&imsic->vsfile_lock, flags);
+
+	/* Keep the hardware file reserved while a device can address it.
+	 * Migration requires unbind first; never recycle a live MSI target.
+	 */
+	if (old_vsfile_cpu >= 0 && old_vsfile_cpu != vcpu->cpu &&
+	    (atomic_read(&imsic->direct_users) || imsic->trusted_file)) {
+		write_unlock_irqrestore(&imsic->vsfile_lock, flags);
+		run->fail_entry.hardware_entry_failure_reason =
+			KVM_EXIT_FAIL_ENTRY_NO_VSFILE;
+		run->fail_entry.cpu = vcpu->cpu;
+		run->exit_reason = KVM_EXIT_FAIL_ENTRY;
+		return 0;
+	}
 
 	/* Do nothing if we are continuing on same CPU */
 	if (old_vsfile_cpu == vcpu->cpu) {
-		imsic_mrif_shadow_sync_from_vsfile(vcpu);
-		imsic_mrif_flush_pending_to_vsfile(vcpu);
+		write_unlock_irqrestore(&imsic->vsfile_lock, flags);
 		return 1;
 	}
+	imsic->direct_transition = true;
+	write_unlock_irqrestore(&imsic->vsfile_lock, flags);
 
 	/* Allocate new IMSIC VS-file */
 	ret = kvm_riscv_aia_alloc_hgei(vcpu->cpu, vcpu,
 				       &new_vsfile_va, &new_vsfile_pa);
 	if (ret <= 0) {
+		write_lock_irqsave(&imsic->vsfile_lock, flags);
+		imsic->direct_transition = false;
+		write_unlock_irqrestore(&imsic->vsfile_lock, flags);
 		/* For HW acceleration mode, we can't continue */
-		if (kvm->arch.aia.mode == KVM_DEV_RISCV_AIA_MODE_HWACCEL) {
+		if (kvm->arch.aia.mode == KVM_DEV_RISCV_AIA_MODE_HWACCEL ||
+		    (atomic_read(&imsic->direct_users) || vcpu->kvm->cmode)) {
 			run->fail_entry.hardware_entry_failure_reason =
 								KVM_EXIT_FAIL_ENTRY_NO_VSFILE;
 			run->fail_entry.cpu = vcpu->cpu;
@@ -1020,12 +938,42 @@ int kvm_riscv_vcpu_aia_imsic_update(struct kvm_vcpu *vcpu)
 	/* Zero-out new IMSIC VS-file */
 	imsic_vsfile_local_clear(new_vsfile_hgei, imsic->nr_hw_eix);
 
+
 	/* Update G-stage mapping for the new IMSIC VS-file */
 	ret = kvm_riscv_mmu_ioremap(kvm, vcpu->arch.aia_context.imsic_addr,
 				    new_vsfile_pa, IMSIC_MMIO_PAGE_SZ,
 				    true, true);
 	if (ret)
 		goto fail_free_vsfile_hgei;
+
+	if (vcpu->kvm->cmode) {
+		struct sbiret r;
+		bool converted;
+		r = sbi_ecall(SBI_EXT_COVI, 2, new_vsfile_pa, 0, 0, 0, 0, 0);
+		converted = !r.error;
+		if (!r.error) r = sbi_ecall(SBI_EXT_COVH, 3, 0, 0, 0, 0, 0, 0);
+		if (!r.error) r = sbi_ecall(SBI_EXT_COVH, 4, 0, 0, 0, 0, 0, 0);
+		if (!r.error) r = sbi_ecall(SBI_EXT_COVI, 4,
+			vcpu->kvm->arch.vmid.cvm_id, vcpu->vcpu_id,
+			BIT(new_vsfile_hgei), 0, 0, 0);
+		if (r.error) {
+			ret = sbi_err_map_linux_errno(r.error);
+			kvm_riscv_mmu_iounmap(kvm, vcpu->arch.aia_context.imsic_addr,
+					      IMSIC_MMIO_PAGE_SZ);
+			/* A failed fence/reclaim must not recycle a protected HGEI.
+			 * Quarantine the allocation until reboot if ownership is unclear. */
+			if (converted && sbi_ecall(SBI_EXT_COVI, 3, new_vsfile_pa,
+						 0, 0, 0, 0, 0).error) {
+				kvm_riscv_aia_quarantine_hgei(vcpu->cpu, new_vsfile_hgei);
+				write_lock_irqsave(&imsic->vsfile_lock, flags);
+				imsic->direct_transition = false;
+				write_unlock_irqrestore(&imsic->vsfile_lock, flags);
+				return ret;
+			}
+			goto fail_free_vsfile_hgei;
+		}
+		imsic->trusted_file = true;
+	}
 
 	/* TODO: Update the IOMMU mapping ??? */
 
@@ -1057,9 +1005,12 @@ int kvm_riscv_vcpu_aia_imsic_update(struct kvm_vcpu *vcpu)
 	}
 
 	/* Restore register state in the new IMSIC VS-file */
-	imsic_vsfile_local_update(new_vsfile_hgei, imsic->nr_hw_eix, &tmrif);
-	imsic_mrif_shadow_sync_from_vsfile(vcpu);
-	imsic_mrif_queue_refresh(vcpu);
+	if (!imsic->trusted_file)
+		imsic_vsfile_local_update(new_vsfile_hgei, imsic->nr_hw_eix, &tmrif);
+	write_lock_irqsave(&imsic->vsfile_lock, flags);
+	imsic->direct_transition = false;
+	write_unlock_irqrestore(&imsic->vsfile_lock, flags);
+	imsic_direct_queue_refresh(vcpu);
 
 done:
 	/* Set VCPU HSTATUS.VGEIN to new IMSIC VS-file */
@@ -1072,6 +1023,9 @@ done:
 	return 1;
 
 fail_free_vsfile_hgei:
+	write_lock_irqsave(&imsic->vsfile_lock, flags);
+	imsic->direct_transition = false;
+	write_unlock_irqrestore(&imsic->vsfile_lock, flags);
 	kvm_riscv_aia_free_hgei(vcpu->cpu, new_vsfile_hgei);
 	return ret;
 }
@@ -1188,8 +1142,9 @@ int kvm_riscv_aia_imsic_has_attr(struct kvm *kvm, unsigned long type)
 	return imsic_mrif_isel_check(imsic->nr_eix, isel);
 }
 
-int kvm_riscv_aia_imsic_mrif_enable(struct kvm *kvm, u64 vcpu_id)
+int kvm_riscv_aia_imsic_direct_enable(struct kvm *kvm, u64 vcpu_id)
 {
+	unsigned long flags;
 	struct kvm_vcpu *vcpu;
 	struct imsic *imsic;
 
@@ -1204,13 +1159,73 @@ int kvm_riscv_aia_imsic_mrif_enable(struct kvm *kvm, u64 vcpu_id)
 	if (!imsic)
 		return -ENODEV;
 
-	atomic_inc(&imsic->mrif_users);
-	imsic_mrif_shadow_sync_from_vsfile(vcpu);
+	if (kvm->arch.aia.mode == KVM_DEV_RISCV_AIA_MODE_EMUL)
+		return -EOPNOTSUPP;
+
+	write_lock_irqsave(&imsic->vsfile_lock, flags);
+	if (imsic->direct_transition) {
+		write_unlock_irqrestore(&imsic->vsfile_lock, flags);
+		return -EAGAIN;
+	}
+	atomic_inc(&imsic->direct_users);
+	write_unlock_irqrestore(&imsic->vsfile_lock, flags);
 	return 0;
 }
-EXPORT_SYMBOL_GPL(kvm_riscv_aia_imsic_mrif_enable);
+EXPORT_SYMBOL_GPL(kvm_riscv_aia_imsic_direct_enable);
 
-void kvm_riscv_aia_imsic_mrif_disable(struct kvm *kvm, u64 vcpu_id)
+struct imsic_direct_clear {
+	int hgei;
+	u32 iid;
+};
+
+static void imsic_direct_clear_local(void *data)
+{
+	struct imsic_direct_clear *clear = data;
+	unsigned long old_hstatus = csr_read(CSR_HSTATUS);
+	unsigned long old_isel = csr_read(CSR_VSISELECT);
+	unsigned long hstatus = old_hstatus & ~HSTATUS_VGEIN;
+
+	hstatus |= (unsigned long)clear->hgei << HSTATUS_VGEIN_SHIFT;
+	csr_write(CSR_HSTATUS, hstatus);
+	csr_write(CSR_VSISELECT, IMSIC_EIP0 +
+		  (clear->iid / BITS_PER_LONG) * (BITS_PER_LONG / 32));
+	csr_clear(CSR_VSIREG, BIT(clear->iid % BITS_PER_LONG));
+	csr_write(CSR_HSTATUS, old_hstatus);
+	csr_write(CSR_VSISELECT, old_isel);
+}
+
+/* The IOMMU caller serializes this with bind/refresh and has already drained
+ * device writes. Other IIDs and guest interrupt-enable state stay untouched.
+ */
+int kvm_riscv_aia_imsic_direct_clear_pending(struct kvm *kvm, u64 vcpu_id,
+					  u32 iid)
+{
+	struct kvm_vcpu *vcpu = kvm_get_vcpu_by_id(kvm, vcpu_id);
+	struct imsic_direct_clear clear;
+	struct imsic *imsic;
+	unsigned long flags;
+	int cpu;
+
+	if (!vcpu || !iid)
+		return -EINVAL;
+	imsic = vcpu->arch.aia_context.imsic_state;
+	if (!imsic || iid >= imsic->nr_msis)
+		return -EINVAL;
+	read_lock_irqsave(&imsic->vsfile_lock, flags);
+	cpu = imsic->vsfile_cpu;
+	clear.hgei = imsic->vsfile_hgei;
+	clear.iid = iid;
+	read_unlock_irqrestore(&imsic->vsfile_lock, flags);
+	if (cpu < 0 || clear.hgei <= 0)
+		return 0;
+	if (!cpu_online(cpu))
+		return -ENODEV;
+	on_each_cpu_mask(cpumask_of(cpu), imsic_direct_clear_local, &clear, 1);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(kvm_riscv_aia_imsic_direct_clear_pending);
+
+void kvm_riscv_aia_imsic_direct_disable(struct kvm *kvm, u64 vcpu_id)
 {
 	struct kvm_vcpu *vcpu;
 	struct imsic *imsic;
@@ -1223,21 +1238,21 @@ void kvm_riscv_aia_imsic_mrif_disable(struct kvm *kvm, u64 vcpu_id)
 		return;
 
 	imsic = vcpu->arch.aia_context.imsic_state;
-	if (!imsic || !atomic_read(&imsic->mrif_users))
+	if (!imsic || !atomic_read(&imsic->direct_users))
 		return;
 
-	atomic_dec(&imsic->mrif_users);
+	atomic_dec(&imsic->direct_users);
 }
-EXPORT_SYMBOL_GPL(kvm_riscv_aia_imsic_mrif_disable);
+EXPORT_SYMBOL_GPL(kvm_riscv_aia_imsic_direct_disable);
 
-int kvm_riscv_aia_imsic_mrif_info(struct kvm *kvm, u64 vcpu_id,
+int kvm_riscv_aia_imsic_direct_info(struct kvm *kvm, u64 vcpu_id,
 				  u64 irq_iid,
-				  struct kvm_riscv_aia_mrif_info *info)
+				  struct kvm_riscv_aia_imsic_info *info)
 {
 	unsigned long flags;
 	struct kvm_vcpu *vcpu;
 	struct imsic *imsic;
-	phys_addr_t notice_pa;
+	phys_addr_t vsfile_pa;
 	int vsfile_hgei, vsfile_cpu;
 
 	if (!info)
@@ -1258,23 +1273,19 @@ int kvm_riscv_aia_imsic_mrif_info(struct kvm *kvm, u64 vcpu_id,
 	read_lock_irqsave(&imsic->vsfile_lock, flags);
 	vsfile_hgei = imsic->vsfile_hgei;
 	vsfile_cpu = imsic->vsfile_cpu;
-	notice_pa = imsic->vsfile_pa;
+	vsfile_pa = imsic->vsfile_pa;
 	read_unlock_irqrestore(&imsic->vsfile_lock, flags);
 
-	if (vsfile_cpu < 0 || vsfile_hgei <= 0 || !notice_pa)
+	if (vsfile_cpu < 0 || vsfile_hgei <= 0 || !vsfile_pa)
 		return -EAGAIN;
 
-	imsic_mrif_shadow_sync_from_vsfile(vcpu);
-
-	info->mrif_pa = imsic->swfile_pa;
-	info->notice_pa = notice_pa;
+	info->vsfile_pa = vsfile_pa;
 	info->imsic_addr = vcpu->arch.aia_context.imsic_addr;
-	info->notice_iid = irq_iid;
 	info->nr_msis = imsic->nr_msis;
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(kvm_riscv_aia_imsic_mrif_info);
+EXPORT_SYMBOL_GPL(kvm_riscv_aia_imsic_direct_info);
 
 void kvm_riscv_vcpu_aia_imsic_reset(struct kvm_vcpu *vcpu)
 {
@@ -1304,6 +1315,12 @@ int kvm_riscv_vcpu_aia_imsic_inject(struct kvm_vcpu *vcpu,
 	iid = (offset == IMSIC_MMIO_SETIPNUM_BE) ? __swab32(iid) : iid;
 	if (imsic->nr_msis <= iid)
 		return -EINVAL;
+
+	if (vcpu->kvm->cmode) {
+		struct sbiret r = sbi_ecall(SBI_EXT_COVI, 7,
+			vcpu->kvm->arch.vmid.cvm_id, vcpu->vcpu_id, iid, 0, 0, 0);
+		return r.error ? sbi_err_map_linux_errno(r.error) : 0;
+	}
 
 	read_lock_irqsave(&imsic->vsfile_lock, flags);
 
@@ -1375,11 +1392,11 @@ int kvm_riscv_vcpu_aia_imsic_init(struct kvm_vcpu *vcpu)
 	imsic->nr_eix = BITS_TO_U64(imsic->nr_msis);
 	imsic->nr_hw_eix = BITS_TO_U64(kvm_riscv_aia_max_ids);
 	imsic->vsfile_hgei = imsic->vsfile_cpu = -1;
-	atomic_set(&imsic->mrif_users, 0);
-	spin_lock_init(&imsic->mrif_refresh_lock);
-	INIT_WORK(&imsic->mrif_refresh_work, imsic_mrif_refresh_work);
-	imsic->mrif_refresh_kvm = kvm;
-	imsic->mrif_refresh_vcpu_id = vcpu->vcpu_id;
+	atomic_set(&imsic->direct_users, 0);
+	spin_lock_init(&imsic->direct_refresh_lock);
+	INIT_WORK(&imsic->direct_refresh_work, imsic_direct_refresh_work);
+	imsic->direct_refresh_kvm = kvm;
+	imsic->direct_refresh_vcpu_id = vcpu->vcpu_id;
 
 	/* Setup IMSIC SW-file */
 	swfile_page = alloc_pages(GFP_KERNEL | __GFP_ZERO,
@@ -1389,7 +1406,6 @@ int kvm_riscv_vcpu_aia_imsic_init(struct kvm_vcpu *vcpu)
 		goto fail_free_imsic;
 	}
 	imsic->swfile = page_to_virt(swfile_page);
-	imsic->swfile_pa = page_to_phys(swfile_page);
 	raw_spin_lock_init(&imsic->swfile_extirq_lock);
 
 	/* Setup IO device */
@@ -1422,7 +1438,7 @@ void kvm_riscv_vcpu_aia_imsic_cleanup(struct kvm_vcpu *vcpu)
 	if (!imsic)
 		return;
 
-	flush_work(&imsic->mrif_refresh_work);
+	flush_work(&imsic->direct_refresh_work);
 	imsic_vsfile_cleanup(imsic);
 
 	mutex_lock(&kvm->slots_lock);

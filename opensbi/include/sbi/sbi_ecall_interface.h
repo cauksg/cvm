@@ -143,6 +143,7 @@
 #define SBI_EXT_CVM_RETRY_LOAD			0x10
 #define SBI_EXT_RECYCLE_MEMORY			0x11
 #define SBI_EXT_CVM_COVE_IO_TDI_OP		0x12
+#define SBI_EXT_CVM_TRUSTED_IOMMU		0x13
 #define SBI_EXT_CVM_TEST			0xffff
 
 /* SBI function IDs for FW feature extension */

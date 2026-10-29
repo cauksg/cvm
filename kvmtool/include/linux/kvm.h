@@ -1263,6 +1263,9 @@ struct swiotlb {
 #define KVM_COVE_IO_TDI_F_DIRECT_DMA		(1U << 1)
 #define KVM_COVE_IO_TDI_F_ALLOW_BOUND_PROBE	(1U << 2)
 #define KVM_COVE_IO_TDI_F_AUTO_ID		(1U << 3)
+#define KVM_COVE_IO_TDI_F_DIRECT_MMIO		(1U << 4)
+/* Project extension: require physical MMIO bitmap enforcement. */
+#define KVM_COVE_IO_TDI_F_MMIO_BITMAP		(1U << 5)
 
 #define KVM_COVE_IO_FEAT_COVH_REGION_BIND	(1ULL << 0)
 #define KVM_COVE_IO_FEAT_COVG_STATE		(1ULL << 1)
@@ -1276,6 +1279,7 @@ struct swiotlb {
 #define KVM_COVE_IO_FEAT_COVG_SIM_ENUM		(1ULL << 9)
 #define KVM_COVE_IO_FEAT_STOP_TRANSACTION	(1ULL << 10)
 #define KVM_COVE_IO_FEAT_AUTO_TDI_ID		(1ULL << 11)
+#define KVM_COVE_IO_FEAT_MMIO_BITMAP		(1ULL << 12)
 
 enum kvm_cove_io_tdi_op {
 	KVM_COVE_IO_TDI_REGISTER	= 0,
@@ -1298,6 +1302,8 @@ enum kvm_cove_io_tdi_op {
 	KVM_COVE_IO_TDI_SET_ERROR	= 17,
 	KVM_COVE_IO_TDI_FINALIZE_STOP	= 18,
 	KVM_COVE_IO_TDI_ENUM_OWNED	= 19,
+	/* Simulator only: kernel obtains BAR0 HPA; userspace cannot choose it. */
+	KVM_COVE_IO_TDI_SET_BAR		= 20,
 };
 
 enum kvm_cove_io_tdi_state {

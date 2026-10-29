@@ -6,7 +6,7 @@ TARGET_VENDOR=${VFIO_PCI_VENDOR:-0x1234}
 TARGET_DEVICE=${VFIO_PCI_DEVICE:-0x11e8}
 ALLOW_UNSAFE_INTERRUPTS=${VFIO_ALLOW_UNSAFE_INTERRUPTS:-0}
 ALLOW_COVE_IO_ISOLATED_MSI=${VFIO_ALLOW_COVE_IO_ISOLATED_MSI:-0}
-ALLOW_COVE_IO_MRIF=${VFIO_ALLOW_COVE_IO_MRIF:-0}
+ALLOW_COVE_IO_IMSIC=${VFIO_ALLOW_COVE_IO_IMSIC:-0}
 ALLOW_COVE_IO_PRI=${VFIO_ALLOW_COVE_IO_PRI:-0}
 
 die()
@@ -135,12 +135,12 @@ if [ "$ALLOW_COVE_IO_ISOLATED_MSI" != "0" ]; then
 		die "COVE-IO isolated MSI parameter is not available"
 fi
 
-if [ "$ALLOW_COVE_IO_MRIF" != "0" ]; then
+if [ "$ALLOW_COVE_IO_IMSIC" != "0" ]; then
 	write_param_if_present Y \
-		/sys/module/riscv_iommu/parameters/cove_io_mrif \
-		/sys/module/iommu/parameters/cove_io_mrif \
-		/sys/module/*/parameters/cove_io_mrif || \
-		die "COVE-IO MRIF parameter is not available"
+		/sys/module/riscv_iommu/parameters/cove_io_imsic \
+		/sys/module/iommu/parameters/cove_io_imsic \
+		/sys/module/*/parameters/cove_io_imsic || \
+		die "COVE-IO IMSIC parameter is not available"
 fi
 
 if [ "$ALLOW_COVE_IO_PRI" != "0" ]; then

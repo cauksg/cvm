@@ -12,6 +12,7 @@
 #include <linux/kvm_host.h>
 #include <linux/uaccess.h>
 #include <linux/cpufeature.h>
+#include <asm/sbi.h>
 
 static int aia_create(struct kvm_device *dev, u32 type)
 {
@@ -171,6 +172,12 @@ static int aia_imsic_addr(struct kvm *kvm, u64 *addr,
 	if (!vcpu)
 		return -EINVAL;
 	vcpu_aia = &vcpu->arch.aia_context;
+	/* The address cannot change after INIT. Reading it must not wait for
+	 * another vCPU to leave KVM_RUN (which may be asleep in WFI). */
+	if (!write && kvm_riscv_aia_initialized(kvm)) {
+		*addr = READ_ONCE(vcpu_aia->imsic_addr);
+		return 0;
+	}
 
 	if (write) {
 		/* Writes can only be done before irqchip is initialized */
@@ -281,11 +288,47 @@ static int aia_init(struct kvm *kvm)
 			goto fail_cleanup_imsics;
 	}
 
+	if (kvm->cmode) {
+		struct {
+			unsigned long base;
+			u32 group_bits, group_shift, hart_bits, guest_bits, guests;
+		} *params = kzalloc(sizeof(*params), GFP_KERNEL);
+		struct sbiret r;
+		if (!params) {
+			ret = -ENOMEM;
+			goto fail_cleanup_all_imsics;
+		}
+		params->base = base_ppn << IMSIC_MMIO_PAGE_SHIFT;
+		params->group_bits = aia->nr_group_bits;
+		params->group_shift = aia->nr_group_shift;
+		params->hart_bits = aia->nr_hart_bits;
+		params->guest_bits = aia->nr_guest_bits;
+		r = sbi_ecall(SBI_EXT_COVI, 0, kvm->arch.vmid.cvm_id,
+			      __pa(params), sizeof(*params), 0, 0, 0);
+		kfree(params);
+		if (r.error) {
+			pr_err("COVI init failed: %ld\n", r.error);
+			ret = sbi_err_map_linux_errno(r.error);
+			goto fail_cleanup_all_imsics;
+		}
+		kvm_for_each_vcpu(idx, vcpu, kvm) {
+			r = sbi_ecall(SBI_EXT_COVI, 1, kvm->arch.vmid.cvm_id,
+				      vcpu->vcpu_id, vcpu->arch.aia_context.imsic_addr, 0, 0, 0);
+			if (r.error) {
+				ret = sbi_err_map_linux_errno(r.error);
+				goto fail_cleanup_all_imsics;
+			}
+		}
+	}
+
 	/* Set the initialized flag */
 	kvm->arch.aia.initialized = true;
 
 	return 0;
 
+fail_cleanup_all_imsics:
+	/* The Monitor configuration stays fail-closed until VM destruction. */
+	idx = atomic_read(&kvm->online_vcpus);
 fail_cleanup_imsics:
 	for (i = idx - 1; i >= 0; i--) {
 		vcpu = kvm_get_vcpu(kvm, i);

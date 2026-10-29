@@ -462,6 +462,22 @@ void kvm_riscv_aia_free_hgei(int cpu, int hgei)
 	raw_spin_unlock_irqrestore(&hgctrl->lock, flags);
 }
 
+/* Failed trusted reclaim: retain the allocation bit, but never retain a
+ * pointer to a vCPU that may be destroyed. Reboot recovers these files. */
+void kvm_riscv_aia_quarantine_hgei(int cpu, int hgei)
+{
+	unsigned long flags;
+	struct aia_hgei_control *hgctrl = per_cpu_ptr(&aia_hgei, cpu);
+
+	if (!kvm_riscv_aia_available() || !hgctrl ||
+	    hgei <= 0 || hgei > kvm_riscv_aia_nr_hgei)
+		return;
+	raw_spin_lock_irqsave(&hgctrl->lock, flags);
+	hgctrl->free_bitmap &= ~BIT(hgei);
+	hgctrl->owners[hgei] = NULL;
+	raw_spin_unlock_irqrestore(&hgctrl->lock, flags);
+}
+
 static irqreturn_t hgei_interrupt(int irq, void *dev_id)
 {
 	int i;

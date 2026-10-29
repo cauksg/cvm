@@ -1258,11 +1258,19 @@ static struct kvm *kvm_create_vm(unsigned long type, const char *fdname)
 
 		sbi_ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_ALLOC_ROOT_PT,
 				    __pa(cvm_sbi_params), 0, 0, 0, 0, 0);
+		while (sbi_ret.error == TEE_NO_MEMORY) {
+			r = refill_KVM_memory_pool();
+			if (r)
+				break;
+			sbi_ret = sbi_ecall(SBI_EXT_CVM, SBI_EXT_CVM_ALLOC_ROOT_PT,
+					    __pa(cvm_sbi_params), 0, 0, 0, 0, 0);
+		}
 		kfree(cvm_sbi_params);
 		if (sbi_ret.error) {
 			pr_err("kvm: CVM root page table allocation failed: %ld\n",
 			       sbi_ret.error);
-			r = sbi_ret.error;
+			if (!r)
+				r = sbi_err_map_linux_errno(sbi_ret.error);
 			goto out_err_no_cvm;
 		}
 		kvm->cvm_root_ready = true;
@@ -1425,6 +1433,10 @@ static int kvm_vm_release(struct inode *inode, struct file *filp)
 
 	kvm_irqfd_release(kvm);
 
+#ifdef CONFIG_RISCV
+	if (kvm->cmode)
+		riscv_iommu_cove_io_imsic_unbind_vm(kvm);
+#endif
 	kvm_put_kvm(kvm);
 	return 0;
 }
@@ -5264,7 +5276,8 @@ static int cvm_init_bitmap(struct cvm_list_params *bitmap)
 	unsigned long host_page_num, bitmap_bytes, bitmap_pages;
 	void *bitmap_addr;
 
-	host_page_num = get_num_physpages();
+	/* Physical PFN span includes reserved pages and holes below max_pfn. */
+	host_page_num = max_pfn - (0x80000000UL >> PAGE_SHIFT);
 	bitmap_bytes = DIV_ROUND_UP(host_page_num, BITS_PER_BYTE);
 	bitmap_pages = DIV_ROUND_UP(bitmap_bytes, PAGE_SIZE);
 
@@ -5289,7 +5302,7 @@ static int cvm_init_ownershiptable(struct cvm_list_params *page_own_table)
 	unsigned long host_page_num, page_own_table_num, level1, i, page_vaddr;
 	unsigned long *page_own_table_addr;
 
-	host_page_num = get_num_physpages();
+	host_page_num = max_pfn - (0x80000000UL >> PAGE_SHIFT);
 	page_own_table_num = DIV_ROUND_UP(host_page_num * 8, PAGE_SIZE);
 	page_own_table->page_num = page_own_table_num;
 

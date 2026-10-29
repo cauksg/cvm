@@ -8,6 +8,7 @@
 # back to the device.
 
 set -eu
+. "$(dirname "$0")/cove-io-test-lib.sh"
 
 VFIO_BDF="${VFIO_BDF:-0000:00:02.0}"
 VFIO_BACKEND="${VFIO_BACKEND:-${COVE_IO_TEST_VFIO_BACKEND:-legacy}}"
@@ -106,6 +107,8 @@ GUEST_COVE_IO_PRI_OVERFLOW_COUNT="$PRI_OVERFLOW_COUNT" \
 GUEST_APPEND="${GUEST_APPEND:-quiet loglevel=3 unaligned_scalar_speed=fast}" \
 run_timeout -s KILL "$WAIT_SECS" ./run-guest-os.sh >"$PRI_LOG" 2>&1 ||
 	fail "nested guest EDU PRI run failed"
+
+cove_io_check_guest_log "$PRI_LOG" edu-pri || fail 'PRI completion/teardown checks failed'
 
 if command -v dmesg >/dev/null 2>&1; then
 	dmesg >"$DMESG_LOG" 2>/dev/null || true

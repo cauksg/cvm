@@ -1877,6 +1877,9 @@ static const struct reserved_mem_ops rmem_swiotlb_ops = {
 	.device_release = rmem_swiotlb_device_release,
 };
 
+#ifdef CONFIG_RISCV
+#include <asm/sbi.h>
+#endif
 static int __init rmem_swiotlb_setup(struct reserved_mem *rmem)
 {
 	unsigned long node = rmem->fdt_node;
@@ -1886,6 +1889,21 @@ static int __init rmem_swiotlb_setup(struct reserved_mem *rmem)
 	    of_get_flat_dt_prop(node, "linux,dma-default", NULL) ||
 	    of_get_flat_dt_prop(node, "no-map", NULL))
 		return -EINVAL;
+
+#ifdef CONFIG_RISCV
+    {
+        struct sbiret probe = sbi_ecall(SBI_EXT_BASE, SBI_EXT_BASE_PROBE_EXT,
+                                       0x434f5647, 0, 0, 0, 0, 0);
+        if (!probe.error && probe.value) {
+            struct sbiret ret = sbi_ecall(0x434f5647, 1089,
+                                         rmem->base, rmem->size, 0, 0, 0, 0);
+            if (ret.error && ret.error != SBI_ERR_NOT_SUPPORTED) {
+                pr_err("CVM shared window acceptance failed: %ld\n", ret.error);
+                return -EPERM;
+            }
+        }
+    }
+#endif
 
 	rmem->ops = &rmem_swiotlb_ops;
 	pr_info("Reserved memory: created restricted DMA pool at %pa, size %ld MiB\n",

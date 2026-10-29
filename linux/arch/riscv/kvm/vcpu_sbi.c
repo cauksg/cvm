@@ -10,6 +10,7 @@
 #include <linux/err.h>
 #include <linux/kvm_host.h>
 #include <asm/sbi.h>
+#include <cvm/iie-cvm-sbi.h>
 #include <asm/kvm_vcpu_sbi.h>
 
 #ifndef CONFIG_RISCV_SBI_V01
@@ -597,6 +598,36 @@ int kvm_riscv_vcpu_sbi_ecall(struct kvm_vcpu *vcpu, struct kvm_run *run)
 		.utrap = &utrap,
 	};
 	bool ext_is_v01 = false;
+
+	/* The Monitor has committed this per-vCPU injection policy. Complete
+	 * the COVG-required Host exit/resume without a userspace SBI exit. */
+	if (vcpu->kvm->cmode && cp->a7 == SBI_EXT_COVG &&
+	    (cp->a6 == 4 || cp->a6 == 5)) {
+		cp->a0 = SBI_SUCCESS;
+		cp->a1 = 0;
+		goto ecall_done;
+	}
+
+	/* STOP and simulator DMA preparation are forwarded after Monitor validation.
+	 * Complete it inside KVM; never expose this operation to userspace.
+	 */
+	if (vcpu->kvm->cmode && cp->a7 == SBI_EXT_COVG &&
+	    cp->a6 == SBI_EXT_COVG_STOP_INTERFACE) {
+		long repeated = (long)cp->a1;
+
+		sbi_ret.err_val = kvm_riscv_cove_io_guest_stop(vcpu, cp->a0) ?
+				  SBI_ERR_FAILURE : repeated;
+		cp->a0 = sbi_ret.err_val;
+		goto ecall_done;
+	}
+
+	if (vcpu->kvm->cmode && cp->a7 == SBI_EXT_COVG &&
+	    cp->a6 == SBI_EXT_COVG_SIM_PREPARE_DMA) {
+		cp->a0 = kvm_riscv_cove_io_guest_prepare_dma(vcpu,
+			cp->a0, cp->a1, cp->a2) ? SBI_ERR_FAILURE : SBI_SUCCESS;
+		cp->a1 = 0;
+		goto ecall_done;
+	}
 
 	sbi_ext = kvm_vcpu_sbi_find_ext(vcpu, cp->a7);
 	if (sbi_ext && sbi_ext->handler) {

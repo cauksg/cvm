@@ -141,6 +141,7 @@ int vfio_pci_setup_device(struct kvm *kvm, struct vfio_device *device);
 void vfio_pci_teardown_device(struct kvm *kvm, struct vfio_device *vdev);
 u64 vfio__start_cove_io_tdis(struct kvm *kvm, u64 first_tdi_id);
 void vfio__probe_cove_io_tdis(struct kvm *kvm);
+bool vfio__test_irq_rollback(struct kvm *kvm);
 u64 vfio__first_cove_io_device_id(struct kvm *kvm);
 u64 vfio__first_cove_io_wrong_rid_device_id(struct kvm *kvm);
 u64 vfio__first_cove_io_iommu_group(struct kvm *kvm);

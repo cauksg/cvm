@@ -223,6 +223,9 @@ int kvm_riscv_vcpu_set_reg_timer(struct kvm_vcpu *vcpu,
 			return -EINVAL;
 		break;
 	case KVM_REG_RISCV_TIMER_REG(time):
+		/* Monitor pins CVM HTIMEDELTA to zero; Host cannot change its epoch. */
+		if (vcpu->kvm->cmode)
+			return -EOPNOTSUPP;
 		gt->time_delta = reg_val - get_cycles64();
 		break;
 	case KVM_REG_RISCV_TIMER_REG(compare):
@@ -385,5 +388,7 @@ void kvm_riscv_guest_timer_init(struct kvm *kvm)
 	struct kvm_guest_timer *gt = &kvm->arch.timer;
 
 	riscv_cs_get_mult_shift(&gt->nsec_mult, &gt->nsec_shift);
-	gt->time_delta = -get_cycles64();
+	/* CVM deadlines use physical time, matching Monitor-owned HTIMEDELTA=0.
+	 * Applying the usual negative VM-start offset can strand a CVM in WFI. */
+	gt->time_delta = kvm->cmode ? 0 : -get_cycles64();
 }

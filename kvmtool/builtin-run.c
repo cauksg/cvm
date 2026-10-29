@@ -863,6 +863,16 @@ static int kvm_cmd_run_work(struct kvm *kvm)
 static int kvm_cmd_run_cove_io_test_pause(void)
 {
 	unsigned int pause_secs = cove_io__test_pause_before_run_secs();
+	const char *gate = getenv("COVE_IO_TEST_START_GATE");
+
+	if (gate && *gate) {
+		pr_info("COVE-IO test: waiting for start gate %s", gate);
+		while (access(gate, F_OK)) {
+			if (errno != ENOENT)
+				die("COVE-IO start gate access failed: %s", strerror(errno));
+			sleep(1);
+		}
+	}
 
 	if (!pause_secs)
 		return 0;
@@ -895,11 +905,17 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 	int ret = -EFAULT;
 	struct kvm *kvm;
 
+	if (getenv("COVE_IO_TEST_STOP_DMA"))
+		setvbuf(stdout, NULL, _IONBF, 0);
 	kvm = kvm_cmd_run_init(argc, argv);
 	if (IS_ERR(kvm))
 		return PTR_ERR(kvm);
 
 	if (kvm_run_init_stopped)
+		ret = 0;
+	else if (cove_io__resource_test(kvm))
+		ret = 0;
+	else if (vfio__test_irq_rollback(kvm))
 		ret = 0;
 	else if (kvm_cmd_run_cove_io_test_pause())
 		ret = 0;

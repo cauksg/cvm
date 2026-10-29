@@ -9,4 +9,5 @@
 	url = https://gitee.com/lubailong/dtc.git
 [submodule "qemu"]
 	path = qemu
-	url = https://gitee.com/lubailong/qemu.git
+	url = git@github.com:cauksg/cvm.git
+	branch = qemu-secure-io

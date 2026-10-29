@@ -153,6 +153,9 @@ static int vfio_pci_enable_msis(struct kvm *kvm, struct vfio_device *vdev,
 			return ret;
 		}
 
+		/* Physical MSI allocation has now completed; commit guest IID. */
+		vfio_pci_bind_cove_io_msi_irqs(kvm, vdev, msis);
+
 		msi_set_enabled(msis->host_state, true);
 		msi_set_empty(msis->host_state, empty);
 
@@ -252,7 +255,21 @@ static void vfio_pci_bind_cove_io_irq_target(struct kvm *kvm,
 					     u64 vcpu_id, u64 irq_iid,
 					     const char *name)
 {
+	struct kvm_cove_io_tdi state = {
+		.op = KVM_COVE_IO_TDI_GET_STATE,
+		.tdi_id = vdev->cove_io_tdi_id,
+	};
+
 	if (!vfio_pci_cove_io_irq_bind_enabled(kvm, vdev) || !irq_num)
+		return;
+
+	/* Guest pci teardown may rewrite MSI after COVG STOP. Keep that target
+	 * unauthorized instead of treating a terminal-state bind as fatal.
+	 * Monitor still checks state atomically if STOP races this query.
+	 */
+	cove_io__tdi_op(kvm, &state);
+	if (state.state != KVM_COVE_IO_TDI_STATE_BOUND &&
+	    state.state != KVM_COVE_IO_TDI_STATE_STARTED)
 		return;
 
 	cove_io__bind_irq_target_iid_device(kvm, vdev->cove_io_tdi_id,
@@ -957,6 +974,12 @@ static int vfio_pci_parse_caps(struct vfio_device *vdev)
 
 		switch (cap->type) {
 		case PCI_CAP_ID_MSIX:
+			/* Direct prototype routes one MSI through IMSIC. Do not expose
+			 * a writable MSI-X table or invite a multivector driver path.
+			 */
+			if (getenv("COVE_IO_DIRECT_MMIO") &&
+			    strcmp(getenv("COVE_IO_DIRECT_MMIO"), "0"))
+				continue;
 			ret = vfio_pci_add_cap(vdev, virt_hdr, cap, pos);
 			if (ret)
 				return ret;
@@ -1037,6 +1060,15 @@ static int vfio_pci_parse_cfg_space(struct vfio_device *vdev)
 		return -EOPNOTSUPP;
 	}
 
+	/* This direct NIC prototype authorizes one MSI through IMSIC. Never
+	 * create a transient INTx grant while the driver tests/reallocates MSI.
+	 */
+	if (pdev->hdr.vendor_id == 0x8086 && pdev->hdr.device_id == 0x10d3 &&
+	    getenv("COVE_IO_DIRECT_MMIO") &&
+	    strcmp(getenv("COVE_IO_DIRECT_MMIO"), "0")) {
+		pdev->hdr.irq_pin = 0;
+		pdev->hdr.irq_line = 0;
+	}
 	if (pdev->hdr.irq_pin)
 		pdev->irq_modes |= VFIO_PCI_IRQ_MODE_INTX;
 
@@ -1608,6 +1640,14 @@ void vfio_pci_update_cove_io_mmio(struct kvm *kvm, struct vfio_device *vdev)
 	u64 total_size = 0;
 	size_t i;
 
+	if (getenv("COVE_IO_DIRECT_MMIO") &&
+	    strcmp(getenv("COVE_IO_DIRECT_MMIO"), "0")) {
+		struct vfio_region *bar = &vdev->regions[VFIO_PCI_BAR0_REGION_INDEX];
+
+		vdev->cove_io_mmio_gpa = bar->guest_phys_addr;
+		vdev->cove_io_mmio_size = bar->info.size;
+		return;
+	}
 	for (i = VFIO_PCI_BAR0_REGION_INDEX; i <= VFIO_PCI_BAR5_REGION_INDEX; i++) {
 		struct vfio_region *region;
 		u64 region_start, region_end;
@@ -1777,7 +1817,7 @@ static void vfio_pci_probe_cove_io_sparse_irq(struct kvm *kvm,
 		u64 retarget = COVE_IO_VFIO_TEST_IRQ_TARGET + 1;
 		u64 iid0 = COVE_IO_VFIO_TEST_IRQ_IID;
 		u64 iid1 = COVE_IO_VFIO_TEST_IRQ_IID + 1;
-		unsigned int loops = cove_io__test_mrif_retarget_loops();
+		unsigned int loops = cove_io__test_imsic_retarget_loops();
 		unsigned int i;
 		u64 old_vcpu = 0;
 		u64 old_iid = iid0;
@@ -1794,7 +1834,7 @@ static void vfio_pci_probe_cove_io_sparse_irq(struct kvm *kvm,
 		tdi.irq_iid = iid0;
 		tdi.device_id = vdev->cove_io_device_id;
 		cove_io__expect_probe(kvm, tdi, true,
-				      "vfio-irq-mrif-retarget-vcpu0");
+				      "vfio-irq-imsic-retarget-vcpu0");
 
 		for (i = 0; i < loops; i++) {
 			u64 new_vcpu = (i + 1) % kvm->nrcpus;
@@ -1817,10 +1857,10 @@ static void vfio_pci_probe_cove_io_sparse_irq(struct kvm *kvm,
 			tdi.device_id = vdev->cove_io_device_id;
 			if (i == 0) {
 				cove_io__expect_probe(kvm, tdi, false,
-						      "vfio-irq-mrif-retarget-old-vcpu");
+						      "vfio-irq-imsic-retarget-old-vcpu");
 			} else {
 				snprintf(name, sizeof(name),
-					 "vfio-irq-mrif-retarget-loop%u-old",
+					 "vfio-irq-imsic-retarget-loop%u-old",
 					 i);
 				cove_io__expect_probe(kvm, tdi, false, name);
 			}
@@ -1833,10 +1873,10 @@ static void vfio_pci_probe_cove_io_sparse_irq(struct kvm *kvm,
 			tdi.device_id = vdev->cove_io_device_id;
 			if (i == 0 && new_vcpu == 1 && new_iid == iid1) {
 				cove_io__expect_probe(kvm, tdi, true,
-						      "vfio-irq-mrif-retarget-vcpu1");
+						      "vfio-irq-imsic-retarget-vcpu1");
 			} else {
 				snprintf(name, sizeof(name),
-					 "vfio-irq-mrif-retarget-loop%u-vcpu%llu",
+					 "vfio-irq-imsic-retarget-loop%u-vcpu%llu",
 					 i, (unsigned long long)new_vcpu);
 				cove_io__expect_probe(kvm, tdi, true, name);
 			}
@@ -1855,7 +1895,7 @@ static void vfio_pci_probe_cove_io_sparse_irq(struct kvm *kvm,
 		tdi.irq_iid = old_iid;
 		tdi.device_id = vdev->cove_io_device_id;
 		cove_io__expect_probe(kvm, tdi, false,
-				      "vfio-irq-mrif-retarget-unbound");
+				      "vfio-irq-imsic-retarget-unbound");
 	}
 }
 
@@ -1870,6 +1910,12 @@ u64 vfio_pci_start_cove_io_tdi(struct kvm *kvm, struct vfio_device *vdev,
 	u64 iommu_group = vdev->group ? vdev->group->id :
 			  COVE_IO_IOMMU_GROUP_NONE;
 	u64 device_id;
+	bool mmio_bitmap = getenv("COVE_IO_MMIO_BITMAP") &&
+		strcmp(getenv("COVE_IO_MMIO_BITMAP"), "0");
+
+	if (mmio_bitmap && (!getenv("COVE_IO_DIRECT_MMIO") ||
+			   !strcmp(getenv("COVE_IO_DIRECT_MMIO"), "0")))
+		die("COVE_IO_MMIO_BITMAP requires COVE_IO_DIRECT_MMIO=1");
 
 	vdev->cove_io_device_id = vdev->params->cove_io_device_id;
 	device_id = vdev->cove_io_device_id;
@@ -1906,6 +1952,52 @@ u64 vfio_pci_start_cove_io_tdi(struct kvm *kvm, struct vfio_device *vdev,
 			   vdev->cove_io_irq_id,
 			   skip_irq ? 0 : vdev->cove_io_irq_num);
 	vdev->cove_io_tdi_id = tdi_id;
+	if (getenv("COVE_IO_DIRECT_MMIO") &&
+	    strcmp(getenv("COVE_IO_DIRECT_MMIO"), "0")) {
+		struct kvm_cove_io_tdi bar = {
+			.op = KVM_COVE_IO_TDI_SET_BAR,
+			.tdi_id = tdi_id,
+			.device_id = device_id,
+			.iommu_group = iommu_group,
+			.mmio_gpa = vdev->cove_io_mmio_gpa,
+			.mmio_size = vdev->cove_io_mmio_size,
+		};
+
+		if (!cove_io__direct_dma_enabled() || kvm->nrcpus > 4)
+			die("COVE-IO direct MMIO requires direct DMA and at most four vCPUs");
+		if (mmio_bitmap) {
+			struct kvm_cove_io_tdi caps = {
+				.op = KVM_COVE_IO_TDI_GET_FEATURES,
+			};
+
+			cove_io__tdi_op(kvm, &caps);
+			if (!(caps.features & KVM_COVE_IO_FEAT_MMIO_BITMAP))
+				die("MMIO bitmap hardware backend is not registered by Monitor");
+			bar.flags |= KVM_COVE_IO_TDI_F_MMIO_BITMAP;
+		}
+		{
+			struct kvm_cove_io_tdi invalid = bar;
+
+			invalid.mmio_size -= PAGE_SIZE;
+			if (!ioctl(kvm->vm_fd, KVM_COVE_IO_TDI_OP, &invalid))
+				die("COVE-IO direct BAR accepted partial BAR");
+			invalid = bar;
+			invalid.flags = KVM_COVE_IO_TDI_F_EXPECT_GENERATION;
+			invalid.generation = ~0ULL;
+			if (!ioctl(kvm->vm_fd, KVM_COVE_IO_TDI_OP, &invalid))
+				die("COVE-IO direct BAR accepted stale generation");
+			invalid = bar;
+			invalid.device_id ^= 1;
+			if (!ioctl(kvm->vm_fd, KVM_COVE_IO_TDI_OP, &invalid))
+				die("COVE-IO direct BAR accepted wrong RID");
+			pr_info("COVE-IO direct BAR negative checks: partial/stale/RID denied");
+		}
+		cove_io__tdi_op(kvm, &bar);
+		if (mmio_bitmap && !(bar.flags & KVM_COVE_IO_TDI_F_MMIO_BITMAP))
+			die("Monitor did not enable the requested MMIO bitmap protection");
+		pr_info("COVE-IO direct BAR0 registered; waiting for Guest START");
+	}
+
 
 	pr_info("COVE-IO vfio-pci TDI %llu started for %s: device_id=0x%llx segment=0x%x rid=0x%x iommu_group=%llu mmio=0x%llx+0x%llx dma=0x%llx+0x%llx irq=%llu+%llu",
 		(unsigned long long)tdi_id,

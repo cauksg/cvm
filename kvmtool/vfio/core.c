@@ -45,6 +45,119 @@ static int vfio_map_cvm_restricted_dma_device(struct kvm *kvm,
 static void vfio_unmap_cvm_restricted_dma_device(struct kvm *kvm,
 						 struct vfio_device *vdev);
 
+bool vfio__test_irq_rollback(struct kvm *kvm)
+{
+	struct kvm_cove_io_tdi request;
+	struct vfio_device *vdev;
+
+	if (!getenv("COVE_IO_TEST_IRQ_ROLLBACK"))
+		return false;
+	if (!kvm->cfg.cmode || kvm->cfg.num_vfio_devices != 1)
+		die("FAIL: IRQ rollback test requires one CVM PCI device");
+	vdev = &vfio_devices[0];
+	request = (struct kvm_cove_io_tdi) {
+		.op = KVM_COVE_IO_TDI_IRQ_BIND,
+		.tdi_id = vdev->cove_io_tdi_id,
+		.irq_id = 0x300000,
+		.irq_num = 1,
+		.vcpu_id = 4096,
+		.irq_iid = 5,
+		.device_id = vdev->cove_io_device_id,
+	};
+	if (!ioctl(kvm->vm_fd, KVM_COVE_IO_TDI_OP, &request))
+		die("FAIL: MRIF bind accepted nonexistent vCPU");
+	request.op = KVM_COVE_IO_TDI_GET_STATE;
+	cove_io__tdi_op(kvm, &request);
+	if (request.state != KVM_COVE_IO_TDI_STATE_ERROR)
+		die("FAIL: hardware IRQ bind failure did not roll back to ERROR");
+	request = (struct kvm_cove_io_tdi) {
+		.op = KVM_COVE_IO_TDI_FIND_IRQ,
+		.flags = KVM_COVE_IO_TDI_F_ALLOW_BOUND_PROBE,
+		.irq_id = 0x300000,
+		.vcpu_id = 4096,
+		.irq_iid = 5,
+		.device_id = vdev->cove_io_device_id,
+	};
+	if (!ioctl(kvm->vm_fd, KVM_COVE_IO_TDI_OP, &request))
+		die("FAIL: IRQ authorization survived failed hardware bind");
+	cove_io__teardown_tdi(kvm, vdev->cove_io_tdi_id);
+	request = (struct kvm_cove_io_tdi) {
+		.op = KVM_COVE_IO_TDI_GET_STATE,
+		.tdi_id = vdev->cove_io_tdi_id,
+	};
+	cove_io__tdi_op(kvm, &request);
+	if (request.state != KVM_COVE_IO_TDI_STATE_FREE)
+		die("FAIL: IRQ rollback cleanup did not reach FREE");
+	pr_info("PASS: IMSIC partial-bind rollback state=ERROR authorization=denied cleanup=FREE");
+	return true;
+}
+
+#ifdef CONFIG_RISCV
+static u64 vfio_test_edu_reg(struct vfio_device *vdev, u64 offset,
+			   u64 value, bool write)
+{
+	ssize_t count;
+	u64 address = vdev->regions[VFIO_PCI_BAR0_REGION_INDEX].info.offset + offset;
+
+	count = write ? pwrite(vdev->fd, &value, sizeof(value), address) :
+		pread(vdev->fd, &value, sizeof(value), address);
+	if (count != sizeof(value))
+		die("FAIL: EDU test register access offset=%llu", offset);
+	return value;
+}
+
+static void vfio_test_edu_wait(struct vfio_device *vdev)
+{
+	unsigned int attempt;
+
+	for (attempt = 0; attempt < 5000; attempt++) {
+		if (!(vfio_test_edu_reg(vdev, 0x98, 0, false) & 1))
+			return;
+		usleep(1000);
+	}
+	die("FAIL: EDU DMA completion timeout");
+}
+
+static void vfio_test_stop_dma(struct kvm *kvm, struct vfio_device *vdev)
+{
+	struct kvm_cove_io_tdi request = {
+		.op = KVM_COVE_IO_TDI_STOP,
+		.tdi_id = vdev->cove_io_tdi_id,
+	};
+	volatile u64 *target = guest_flat_to_host(kvm, CVM_VFIO_RMEM_ADDR);
+
+	if (vdev->pci.hdr.vendor_id != 0x1234 || vdev->pci.hdr.device_id != 0x11e8)
+		die("FAIL: STOP DMA test requires QEMU EDU");
+	if (!target)
+		die("FAIL: STOP DMA test missing shared target");
+	if (!(vfio_test_edu_reg(vdev, 0x98, 0, false) & 1))
+		die("FAIL: STOP DMA test did not catch a pending request");
+	*target = 0x1122334455667788ULL;
+	__sync_synchronize();
+	cove_io__tdi_op(kvm, &request);
+	vfio_test_edu_wait(vdev);
+	__sync_synchronize();
+	if (*target != 0x1122334455667788ULL)
+		die("FAIL: in-flight DMA wrote after STOP returned");
+	vfio_test_edu_reg(vdev, 0x80, 0x40000, true);
+	vfio_test_edu_reg(vdev, 0x88, CVM_VFIO_RMEM_ADDR, true);
+	vfio_test_edu_reg(vdev, 0x90, sizeof(*target), true);
+	vfio_test_edu_reg(vdev, 0x98, 3, true);
+	vfio_test_edu_wait(vdev);
+	__sync_synchronize();
+	if (*target != 0x1122334455667788ULL)
+		die("FAIL: fresh DMA wrote after STOP");
+	request = (struct kvm_cove_io_tdi) {
+		.op = KVM_COVE_IO_TDI_FIND_DMA,
+		.device_id = vdev->cove_io_device_id,
+		.dma_gpa = CVM_VFIO_RMEM_ADDR,
+	};
+	if (!ioctl(kvm->vm_fd, KVM_COVE_IO_TDI_OP, &request))
+		die("FAIL: DMA authorization survived STOP");
+	pr_info("CHECK: STOP DMA pending=observed in_flight_write=blocked fresh_write=blocked authorization=denied");
+}
+#endif
+
 static int vfio_device_pci_parser(const struct option *opt, char *arg,
 				  struct vfio_device_params *dev)
 {
@@ -207,6 +320,11 @@ static void vfio_mmio_access(struct kvm_cpu *vcpu, u64 addr, u8 *data, u32 len,
 	struct vfio_device *vdev = region->vdev;
 
 	u32 offset = addr - region->guest_phys_addr;
+	if (getenv("COVE_IO_DIRECT_MMIO") &&
+	    strcmp(getenv("COVE_IO_DIRECT_MMIO"), "0"))
+		die("COVE-IO direct BAR unexpectedly trapped to userspace at 0x%llx",
+		    (unsigned long long)addr);
+
 
 	if (len < 1 || len > 8)
 		goto err_report;
@@ -220,6 +338,11 @@ static void vfio_mmio_access(struct kvm_cpu *vcpu, u64 addr, u8 *data, u32 len,
 		nr = pwrite(vdev->fd, &val, len, region->info.offset + offset);
 		if ((u32)nr != len)
 			goto err_report;
+#ifdef CONFIG_RISCV
+		if (offset == 0x98 && len == 8 && val == 3 &&
+		    getenv("COVE_IO_TEST_STOP_DMA"))
+			vfio_test_stop_dma(vcpu->kvm, vdev);
+#endif
 	} else {
 		if (!(region->info.flags & VFIO_REGION_INFO_FLAG_READ))
 			goto err_report;

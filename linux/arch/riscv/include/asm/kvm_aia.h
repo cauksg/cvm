@@ -73,11 +73,9 @@ struct kvm_vcpu_aia {
 	void		*imsic_state;
 };
 
-struct kvm_riscv_aia_mrif_info {
-	phys_addr_t	mrif_pa;
-	phys_addr_t	notice_pa;
+struct kvm_riscv_aia_imsic_info {
+	phys_addr_t	vsfile_pa;
 	gpa_t		imsic_addr;
-	u32		notice_iid;
 	u32		nr_msis;
 };
 
@@ -115,11 +113,13 @@ int kvm_riscv_vcpu_aia_imsic_inject(struct kvm_vcpu *vcpu,
 				    u32 guest_index, u32 offset, u32 iid);
 int kvm_riscv_vcpu_aia_imsic_init(struct kvm_vcpu *vcpu);
 void kvm_riscv_vcpu_aia_imsic_cleanup(struct kvm_vcpu *vcpu);
-int kvm_riscv_aia_imsic_mrif_enable(struct kvm *kvm, u64 vcpu_id);
-void kvm_riscv_aia_imsic_mrif_disable(struct kvm *kvm, u64 vcpu_id);
-int kvm_riscv_aia_imsic_mrif_info(struct kvm *kvm, u64 vcpu_id,
+int kvm_riscv_aia_imsic_direct_enable(struct kvm *kvm, u64 vcpu_id);
+int kvm_riscv_aia_imsic_direct_clear_pending(struct kvm *kvm, u64 vcpu_id,
+					  u32 iid);
+void kvm_riscv_aia_imsic_direct_disable(struct kvm *kvm, u64 vcpu_id);
+int kvm_riscv_aia_imsic_direct_info(struct kvm *kvm, u64 vcpu_id,
 				  u64 irq_iid,
-				  struct kvm_riscv_aia_mrif_info *info);
+				  struct kvm_riscv_aia_imsic_info *info);
 
 int kvm_riscv_aia_aplic_set_attr(struct kvm *kvm, unsigned long type, u32 v);
 int kvm_riscv_aia_aplic_get_attr(struct kvm *kvm, unsigned long type, u32 *v);
@@ -181,6 +181,7 @@ void kvm_riscv_aia_destroy_vm(struct kvm *kvm);
 int kvm_riscv_aia_alloc_hgei(int cpu, struct kvm_vcpu *owner,
 			     void __iomem **hgei_va, phys_addr_t *hgei_pa);
 void kvm_riscv_aia_free_hgei(int cpu, int hgei);
+void kvm_riscv_aia_quarantine_hgei(int cpu, int hgei);
 
 void kvm_riscv_aia_enable(void);
 void kvm_riscv_aia_disable(void);
